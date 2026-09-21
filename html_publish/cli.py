@@ -99,6 +99,7 @@ def _parser() -> Parser:
     plan.add_argument("--name", required=True, type=_name)
     plan.add_argument("--source", required=True, type=Path)
     plan.add_argument("--target", required=True)
+    plan.add_argument("--expected-revision", type=Revision)
     plan.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
 
     publish = commands.add_parser("publish", help="archive, activate, and verify an artifact")
@@ -493,7 +494,12 @@ def main(argv: list[str] | None = None) -> int:
         store = PublicationStore(config, deadline)
         with _command_alarm(config.limits.command_seconds):
             if parsed.operation == "plan":
-                report = store.plan(parsed.name, parsed.source, parsed.target)
+                report = store.plan(
+                    parsed.name,
+                    parsed.source,
+                    parsed.target,
+                    parsed.expected_revision,
+                )
             elif parsed.operation == "publish":
                 report = store.publish(
                     parsed.name,

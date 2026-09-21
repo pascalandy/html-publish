@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -130,6 +131,22 @@ class PublisherCliTest(unittest.TestCase):
     def test_plan_is_advisory_and_does_not_create_persistent_state(self) -> None:
         source = self.root / "report.html"
         source.write_bytes(b"<!doctype html><h1>planned</h1>\n")
+
+        guarded = self.run_cli(
+            "plan",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            "missing-active-revision",
+        )
+        self.assertEqual(guarded.returncode, 0, guarded.stderr)
+        self.assertEqual(self.payload(guarded)["prediction"], "conflict")
+        self.assertFalse(self.archive.exists())
+        self.assertFalse(self.runtime.exists())
 
         result = self.run_cli(
             "plan",
@@ -293,6 +310,366 @@ class PublisherCliTest(unittest.TestCase):
             b"<!doctype html><h1>old</h1>\n",
         )
 
+    def test_guarded_update_replaces_complete_site_and_preserves_other_page(self) -> None:
+        other = self.root / "other.html"
+        other.write_bytes(b"<!doctype html><h1>other</h1>\n")
+        other_result = self.run_cli(
+            "publish",
+            "--name",
+            "other",
+            "--source",
+            str(other),
+            "--target",
+            self.base_url,
+        )
+        self.assertEqual(other_result.returncode, 0, other_result.stderr)
+        other_payload = self.payload(other_result)
+        other_link = os.readlink(self.runtime / "public" / "other")
+
+        site = self.root / "site"
+        (site / "assets").mkdir(parents=True)
+        (site / "index.html").write_bytes(b"<!doctype html><h1>A</h1>\n")
+        (site / "assets" / "removed.css").write_bytes(b"body{color:red}\n")
+        first = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(site),
+            "--target",
+            self.base_url,
+        )
+        self.assertEqual(first.returncode, 0, first.stderr)
+        first_payload = self.payload(first)
+        first_revision = first_payload["active_revision"]
+        stable_url = first_payload["url"]
+        first_commit = self.git("rev-parse", "refs/heads/published")
+        first_link = os.readlink(self.runtime / "public" / "report")
+
+        (site / "index.html").write_bytes(b"<!doctype html><h1>B</h1>\n")
+        (site / "assets" / "removed.css").unlink()
+        (site / "assets" / "added.js").write_bytes(b"document.body.dataset.ready='yes'\n")
+
+        planned = self.run_cli(
+            "plan",
+            "--name",
+            "report",
+            "--source",
+            str(site),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            first_revision,
+        )
+        self.assertEqual(planned.returncode, 0, planned.stderr)
+        planned_payload = self.payload(planned)
+        self.assertEqual(planned_payload["prediction"], "update")
+        self.assertEqual(planned_payload["expected_revision"], first_revision)
+        self.assertEqual(planned_payload["differences"]["added"], ["assets/added.js"])
+        self.assertEqual(planned_payload["differences"]["changed"], ["index.html"])
+        self.assertEqual(planned_payload["differences"]["deleted"], ["assets/removed.css"])
+        self.assertEqual(self.git("rev-parse", "refs/heads/published"), first_commit)
+        self.assertEqual(os.readlink(self.runtime / "public" / "report"), first_link)
+
+        updated = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(site),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            first_revision,
+        )
+        self.assertEqual(updated.returncode, 0, updated.stderr)
+        updated_payload = self.payload(updated)
+        self.assertEqual(updated_payload["outcome"], "published")
+        self.assertEqual(updated_payload["url"], stable_url)
+        self.assertNotEqual(updated_payload["active_revision"], first_revision)
+        self.assertEqual(updated_payload["active_revision"], updated_payload["requested_revision"])
+        self.assertEqual(updated_payload["verification"]["result"], "passed")
+        self.assertEqual(
+            updated_payload["effects"],
+            {"archive_advanced": True, "activated": True},
+        )
+        tree_paths = self.git("ls-tree", "-r", "--name-only", "refs/heads/published").splitlines()
+        self.assertEqual(
+            tree_paths,
+            ["other/site/index.html", "report/site/assets/added.js", "report/site/index.html"],
+        )
+        self.assertEqual(os.readlink(self.runtime / "public" / "other"), other_link)
+        self.assertEqual(
+            other_payload["active_revision"],
+            self.payload(self.run_cli("status", "--name", "other"))["active_revision"],
+        )
+        self.assertEqual(
+            (self.runtime / "public" / "other" / "index.html").read_bytes(), other.read_bytes()
+        )
+        with urllib.request.urlopen(stable_url, timeout=2) as response:
+            self.assertEqual(response.read(), b"<!doctype html><h1>B</h1>\n")
+        with urllib.request.urlopen(f"{stable_url}assets/added.js", timeout=2) as response:
+            self.assertEqual(response.read(), b"document.body.dataset.ready='yes'\n")
+        with self.assertRaises(urllib.error.HTTPError) as missing:
+            urllib.request.urlopen(f"{stable_url}assets/removed.css", timeout=2)
+        self.assertEqual(missing.exception.code, 404)
+
+        updated_commit = self.git("rev-parse", "refs/heads/published")
+        retry_plan = self.run_cli(
+            "plan",
+            "--name",
+            "report",
+            "--source",
+            str(site),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            first_revision,
+        )
+        self.assertEqual(retry_plan.returncode, 0, retry_plan.stderr)
+        self.assertEqual(self.payload(retry_plan)["prediction"], "unchanged")
+        retry = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(site),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            first_revision,
+        )
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual(self.payload(retry)["outcome"], "unchanged")
+        self.assertEqual(
+            self.payload(retry)["effects"],
+            {"archive_advanced": False, "activated": False},
+        )
+        self.assertEqual(self.git("rev-parse", "refs/heads/published"), updated_commit)
+
+    def test_stale_expected_revision_conflicts_without_mutation(self) -> None:
+        source = self.root / "report.html"
+        source.write_bytes(b"<!doctype html><h1>A</h1>\n")
+        first = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+        )
+        self.assertEqual(first.returncode, 0, first.stderr)
+        first_revision = self.payload(first)["active_revision"]
+
+        source.write_bytes(b"<!doctype html><h1>B</h1>\n")
+        second = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            first_revision,
+        )
+        self.assertEqual(second.returncode, 0, second.stderr)
+        second_revision = self.payload(second)["active_revision"]
+        second_commit = self.git("rev-parse", "refs/heads/published")
+
+        source.write_bytes(b"<!doctype html><h1>C</h1>\n")
+        plan = self.run_cli(
+            "plan",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            first_revision,
+        )
+        self.assertEqual(plan.returncode, 0, plan.stderr)
+        self.assertEqual(self.payload(plan)["prediction"], "conflict")
+
+        conflict = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            first_revision,
+        )
+        self.assertEqual(conflict.returncode, 1)
+        conflict_payload = self.payload(conflict)
+        self.assertEqual(conflict_payload["error"]["code"], "revision_conflict")
+        self.assertEqual(
+            conflict_payload["error"]["next_action"]["required_inputs"],
+            ["expected_revision", "active_revision", "requested_revision"],
+        )
+        self.assertEqual(conflict_payload["active_revision"], second_revision)
+        self.assertEqual(
+            conflict_payload["effects"],
+            {"archive_advanced": False, "activated": False},
+        )
+        self.assertEqual(self.git("rev-parse", "refs/heads/published"), second_commit)
+        self.assertEqual(
+            (self.runtime / "public" / "report" / "index.html").read_bytes(),
+            b"<!doctype html><h1>B</h1>\n",
+        )
+
+    def test_two_updates_from_one_revision_yield_one_publish_and_one_conflict(self) -> None:
+        original = self.root / "original.html"
+        original.write_bytes(b"<!doctype html><h1>A</h1>\n")
+        first = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(original),
+            "--target",
+            self.base_url,
+        )
+        self.assertEqual(first.returncode, 0, first.stderr)
+        first_revision = self.payload(first)["active_revision"]
+
+        candidate_b = self.root / "candidate-b.html"
+        candidate_c = self.root / "candidate-c.html"
+        candidate_b.write_bytes(b"<!doctype html><h1>B</h1>\n")
+        candidate_c.write_bytes(b"<!doctype html><h1>C</h1>\n")
+
+        def command(source: Path) -> list[str]:
+            return [
+                sys.executable,
+                "-m",
+                "html_publish",
+                "--config",
+                str(self.config),
+                "--json",
+                "publish",
+                "--name",
+                "report",
+                "--source",
+                str(source),
+                "--target",
+                self.base_url,
+                "--expected-revision",
+                first_revision,
+            ]
+
+        processes = [
+            subprocess.Popen(
+                command(source),
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            for source in (candidate_b, candidate_c)
+        ]
+        results = [process.communicate(timeout=10) for process in processes]
+        payloads = [json.loads(stdout) for stdout, _stderr in results]
+
+        self.assertEqual(sorted(process.returncode for process in processes), [0, 1])
+        self.assertEqual(sorted(payload["outcome"] for payload in payloads), ["error", "published"])
+        conflict_payload = next(payload for payload in payloads if payload["outcome"] == "error")
+        winner_payload = next(payload for payload in payloads if payload["outcome"] == "published")
+        self.assertEqual(conflict_payload["error"]["code"], "revision_conflict")
+        self.assertEqual(self.git("rev-list", "--count", "refs/heads/published"), "2")
+        self.assertEqual(
+            self.payload(self.run_cli("status", "--name", "report"))["active_revision"],
+            winner_payload["requested_revision"],
+        )
+        winner_body = (
+            b"<!doctype html><h1>B</h1>\n"
+            if winner_payload["requested_revision"] == payloads[0]["requested_revision"]
+            else b"<!doctype html><h1>C</h1>\n"
+        )
+        self.assertEqual(
+            (self.runtime / "public" / "report" / "index.html").read_bytes(),
+            winner_body,
+        )
+
+    def test_saved_update_is_reused_when_activation_has_not_happened(self) -> None:
+        source = self.root / "report.html"
+        source.write_bytes(b"<!doctype html><h1>A</h1>\n")
+        first = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+        )
+        self.assertEqual(first.returncode, 0, first.stderr)
+        first_revision = self.payload(first)["active_revision"]
+
+        source.write_bytes(b"<!doctype html><h1>B</h1>\n")
+        plan = self.run_cli(
+            "plan",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            first_revision,
+        )
+        self.assertEqual(plan.returncode, 0, plan.stderr)
+        requested_revision = self.payload(plan)["requested_revision"]
+        invalid_release = self.runtime / "releases" / requested_revision
+        invalid_release.write_text("not a release", encoding="utf-8")
+
+        failed = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            first_revision,
+        )
+        self.assertEqual(failed.returncode, 1)
+        failed_payload = self.payload(failed)
+        self.assertEqual(failed_payload["error"]["code"], "export_corruption")
+        self.assertEqual(
+            failed_payload["effects"],
+            {"archive_advanced": True, "activated": False},
+        )
+        self.assertEqual(failed_payload["archived_revision"], requested_revision)
+        self.assertEqual(failed_payload["active_revision"], first_revision)
+        saved_commit = self.git("rev-parse", "refs/heads/published")
+        invalid_release.unlink()
+
+        recovered = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            first_revision,
+        )
+        self.assertEqual(recovered.returncode, 0, recovered.stderr)
+        recovered_payload = self.payload(recovered)
+        self.assertEqual(recovered_payload["outcome"], "published")
+        self.assertEqual(
+            recovered_payload["effects"],
+            {"archive_advanced": False, "activated": True},
+        )
+        self.assertEqual(recovered_payload["active_revision"], requested_revision)
+        self.assertEqual(self.git("rev-parse", "refs/heads/published"), saved_commit)
+
     def test_delivery_failure_reports_selected_unverified_state(self) -> None:
         source = self.root / "report.html"
         source.write_bytes(b"<!doctype html><h1>offline</h1>\n")
@@ -426,6 +803,34 @@ class PublisherCliTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.payload(result)["outcome"], "published")
         self.assertEqual(self.git("rev-list", "--count", "refs/heads/published"), "1")
+
+    def test_plan_accepts_existing_empty_bare_archive_without_writing(self) -> None:
+        subprocess.run(
+            ["git", "init", "--bare", str(self.archive)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        source = self.root / "report.html"
+        source.write_bytes(b"<!doctype html><h1>planned</h1>\n")
+
+        result = self.run_cli(
+            "plan",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = self.payload(result)
+        self.assertEqual(payload["outcome"], "planned")
+        self.assertEqual(payload["prediction"], "create")
+        self.assertEqual(self.git("for-each-ref", "--format=%(refname)"), "")
+        self.assertIn("count: 0", self.git("count-objects", "-v").splitlines())
+        self.assertFalse(self.runtime.exists())
 
     def test_total_deadline_interrupts_a_trickling_http_body(self) -> None:
         self._stop_server()
