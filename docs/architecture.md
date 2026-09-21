@@ -5,19 +5,24 @@
 The executable is the public interface. A caller supplies a finished artifact, a stable name, and the configured target.
 
 ```sh
+active_revision="$(
+  html-publish --config publisher.json --json status \
+    --name release-notes | jq -r .active_revision
+)"
+
 html-publish --config publisher.json --json plan \
   --name release-notes --source ./notes.html \
-  --target https://om1.example.ts.net/pages/
+  --target https://om1.example.ts.net/pages/ \
+  --expected-revision "$active_revision"
 
 html-publish --config publisher.json --json publish \
   --name release-notes --source ./notes.html \
   --target https://om1.example.ts.net/pages/ \
+  --expected-revision "$active_revision" \
   --request-id attempt-001
-
-html-publish --config publisher.json --json status --name release-notes
 ```
 
-The first slice supports creation, identical retries, and read-only observation. It refuses to replace different active content. Guarded replacement, history, restore, receipts, and production installation remain later work.
+The MVP supports creation, guarded replacement, identical retries, and read-only observation. A caller reads `active_revision` from `status`, then supplies it as `--expected-revision` when planning and publishing changed content. The active revision acts as a compare-and-swap guard, while the publication URL stays stable. History, restore, receipts, and production installation remain later work.
 
 ## Data shape
 
@@ -25,7 +30,13 @@ The publisher keeps saved, selected, and verified facts separate.
 
 ```python
 class PublicationStore:
-    def plan(self, name: Name, source: Path, target: str) -> Report: ...
+    def plan(
+        self,
+        name: Name,
+        source: Path,
+        target: str,
+        expected_revision: Revision | None = None,
+    ) -> Report: ...
     def publish(
         self,
         name: Name,
@@ -70,20 +81,24 @@ class Verification:
 
 `PublicationStore` is the only mutation owner. The caller cannot archive without selection checks or activate before archive persistence.
 
-## First-slice transaction
+`plan` and `publish` share one decision over the requested revision, expected revision, saved page, and active selection. The result is `create`, `update`, `unchanged`, or `conflict`. `plan` observes the full local state and computes the exact requested revision and file differences under the process lock, but it writes only to temporary storage.
+
+## Publication transaction
 
 1. Validate configuration, target identity, and source separation
 2. Capture the complete input into private temporary storage
 3. Acquire one process lock
 4. Observe the archive and selected export
-5. Return `unchanged` for identical healthy active bytes
-6. Save new bytes or reuse an identical saved revision
-7. Export committed bytes into private staging and validate the result
-8. Rename the immutable release into place
-9. Rename a privately staged symlink into `public/<name>`
-10. Verify the stable URL before releasing the lock
+5. Decide `create`, `update`, `unchanged`, or `conflict` from that observation
+6. Return `unchanged` when the requested revision is already active, before checking a stale expectation
+7. For an update, require `expected_revision` to equal the active revision
+8. Save new bytes or reuse an identical saved revision
+9. Export committed bytes into private staging and validate the complete release
+10. Rename the immutable release into place
+11. Rename a privately staged symlink into `public/<name>`
+12. Verify the stable URL before releasing the lock
 
-The lock belongs in the first slice because every name shares one archive branch. Identical retry also belongs here because a response can be lost after any durable write. The full interruption and persistence fault matrix remains in the recovery ticket.
+The lock covers observation, the compare-and-swap decision, activation, and HTTP verification because every name shares one archive branch. A replacement materializes the complete requested site, so files omitted from the new artifact disappear from the active URL while unrelated publications remain intact. Identical retry takes precedence over the revision guard because a response can be lost after the update succeeds. The full interruption and persistence fault matrix remains in the recovery ticket.
 
 ## Synthesis decision
 
@@ -92,7 +107,7 @@ Four independent designs converged on one transaction owner and separate saved, 
 The final shape adds four details from the other candidates.
 
 - One decreasing deadline bounds Git, locks, capture, and HTTP
-- Publication intent reserves `expected_revision` without enabling replacement
+- Publication intent carries `expected_revision` through planning, mutation, and reporting
 - One accepted manifest feeds archive import, release validation, and delivery
 - A validated release remains distinct from metadata-only selection
 
@@ -102,8 +117,9 @@ The design keeps Git helpers private in `store.py`. It avoids a backend protocol
 
 - One lock serializes HTTP verification in exchange for an unambiguous selected revision
 - The store module owns substantial behavior in exchange for keeping mutation order visible in one place
-- `plan` creates a temporary Git repository in exchange for exact revision identity without configured-state mutation
-- The first slice rejects changed active content in exchange for keeping guarded replacement out of the MVP
+- `plan` captures the source and observes complete local state in exchange for exact revision identity, file differences, and the same decision as `publish` without configured-state mutation
+- Immutable complete releases can retain old assets on disk while ensuring deleted assets disappear from the newly selected release
+- Identical content returns `unchanged` before expected revision comparison, which makes a lost-response retry safe while still rejecting competing content from a stale revision
 
 ## Verification boundary
 

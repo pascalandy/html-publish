@@ -9,6 +9,7 @@ import time
 import uuid
 from collections.abc import Generator
 from pathlib import Path, PurePosixPath
+from typing import Literal
 
 from html_publish import _git
 from html_publish.artifact import capture
@@ -35,6 +36,7 @@ from html_publish.model import (
 )
 
 ARCHIVE_REF = "refs/heads/published"
+_PublicationDecision = Literal["create", "update", "unchanged"]
 
 
 def _fsync_directory(path: Path) -> None:
@@ -47,6 +49,59 @@ def _fsync_directory(path: Path) -> None:
 
 def _contains(left: Path, right: Path) -> bool:
     return left == right or left.is_relative_to(right)
+
+
+def _decide_publication(
+    state: LocalState,
+    requested_revision: Revision,
+    expected_revision: Revision | None,
+) -> _PublicationDecision | Failure:
+    selection = state.selection
+    if selection.kind == "degraded":
+        return Failure(
+            "state_degraded",
+            "guard",
+            selection.detail or "The selected export is degraded",
+            "inspect",
+        )
+    if selection.kind == "unobserved":
+        return Failure(
+            "state_unobserved",
+            "guard",
+            selection.detail or "Selected state could not be observed",
+            "inspect",
+        )
+    if selection.kind == "selected":
+        active_revision = selection.revision
+        assert active_revision is not None
+        if active_revision == requested_revision:
+            return "unchanged"
+        if expected_revision == active_revision:
+            return "update"
+        return Failure(
+            "revision_conflict",
+            "guard",
+            "The active publication does not match the expected revision",
+            "review_conflict",
+            ("expected_revision", "active_revision", "requested_revision"),
+        )
+    if expected_revision is not None:
+        return Failure(
+            "revision_conflict",
+            "guard",
+            "An expectation cannot create an absent active publication",
+            "inspect",
+            ("active_revision",),
+        )
+    if state.saved is None or state.saved.site.revision == requested_revision:
+        return "create"
+    return Failure(
+        "revision_conflict",
+        "guard",
+        "Different content is saved while the active publication is absent",
+        "review_conflict",
+        ("archived_revision", "requested_revision"),
+    )
 
 
 class PublicationStore:
@@ -141,7 +196,7 @@ class PublicationStore:
         if create:
             self._ensure_runtime()
         elif not lock_path.exists():
-            if not self.config.runtime.exists() and not self.config.archive.exists():
+            if not self.config.runtime.exists() and self._head() is None:
                 yield
                 return
             raise PublishError(
@@ -525,7 +580,15 @@ class PublicationStore:
                 error.failure.required_inputs,
             ) from error
 
-    def plan(self, name: Name, source: Path, target: str) -> Report:
+    def plan(
+        self,
+        name: Name,
+        source: Path,
+        target: str,
+        expected_revision: Revision | None = None,
+    ) -> Report:
+        captured: CapturedSite | None = None
+        state: LocalState | None = None
         try:
             self._check_target(target)
             self._check_source_separation(source)
@@ -538,24 +601,21 @@ class PublicationStore:
                     self.config.limits,
                     self.deadline,
                 )
-                state = self._state(name, full=False)
-                selected_site = (
-                    self._site(str(state.selection.revision))
-                    if state.selection.kind == "selected" and state.selection.revision
-                    else state.saved.site
-                    if state.saved
-                    else None
-                )
-                if state.selection.kind == "degraded":
-                    prediction = "conflict"
-                elif state.selection.revision == captured.revision:
-                    prediction = "no-op"
-                elif state.selection.kind == "absent" and (
-                    state.saved is None or state.saved.site.revision == captured.revision
-                ):
-                    prediction = "create"
-                else:
-                    prediction = "conflict"
+                with self._lock(create=False):
+                    state = self._state(name, full=True)
+                    selected_site = (
+                        self._site(str(state.selection.revision))
+                        if state.selection.kind == "selected" and state.selection.revision
+                        else state.saved.site
+                        if state.saved
+                        else None
+                    )
+                    decision = _decide_publication(
+                        state,
+                        captured.revision,
+                        expected_revision,
+                    )
+                prediction = "conflict" if isinstance(decision, Failure) else decision
                 details = {
                     "prediction": prediction,
                     "file_count": len(captured.entries),
@@ -568,6 +628,7 @@ class PublicationStore:
                     target,
                     name,
                     publication_url(target, name),
+                    expected_revision=expected_revision,
                     requested_revision=captured.revision,
                     state=state,
                     warnings=captured.warnings,
@@ -585,6 +646,9 @@ class PublicationStore:
                 target,
                 name,
                 publication_url(target, name),
+                expected_revision=expected_revision,
+                requested_revision=captured.revision if captured else None,
+                state=state,
                 error=failure,
             )
 
@@ -613,22 +677,21 @@ class PublicationStore:
                 )
                 with self._lock(create=True):
                     state = self._state(name, full=True)
-                    if state.selection.kind == "degraded":
+                    decision = _decide_publication(
+                        state,
+                        captured.revision,
+                        expected_revision,
+                    )
+                    if isinstance(decision, Failure):
                         raise PublishError(
-                            "state_degraded",
-                            "guard",
-                            state.selection.detail or "The selected export is degraded",
-                            "inspect",
+                            decision.code,
+                            decision.phase,
+                            decision.message,
+                            decision.next_action,
+                            decision.required_inputs,
                         )
-                    if state.selection.kind == "selected":
-                        if state.selection.revision != captured.revision:
-                            raise PublishError(
-                                "revision_conflict",
-                                "guard",
-                                "The MVP refuses to replace different active content",
-                                "review_conflict",
-                                ("active_revision", "requested_revision"),
-                            )
+                    if decision == "unchanged":
+                        assert state.selection.kind == "selected"
                         assert state.selection.release is not None
                         site = self._site(str(captured.revision))
                         verification = self._verify(
@@ -651,31 +714,8 @@ class PublicationStore:
                             verification,
                             captured.warnings,
                         )
-                    if state.selection.kind == "unobserved":
-                        raise PublishError(
-                            "state_unobserved",
-                            "guard",
-                            state.selection.detail or "Selected state could not be observed",
-                            "inspect",
-                        )
-                    if expected_revision is not None:
-                        raise PublishError(
-                            "revision_conflict",
-                            "guard",
-                            "An expectation cannot create an absent active publication",
-                            "inspect",
-                            ("active_revision",),
-                        )
                     saved = state.saved
-                    if saved is not None and saved.site.revision != captured.revision:
-                        raise PublishError(
-                            "revision_conflict",
-                            "guard",
-                            "Different content is saved while the active publication is absent",
-                            "review_conflict",
-                            ("archived_revision", "requested_revision"),
-                        )
-                    if saved is None:
+                    if saved is None or saved.site.revision != captured.revision:
                         expected_head = self._head()
                         saved = self._save(name, captured, expected_head)
                         effects = Effects(True, False)
