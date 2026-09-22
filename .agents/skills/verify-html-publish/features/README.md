@@ -7,6 +7,7 @@ This directory is the maintained source for verifying the user-facing behavior o
 - Start an isolated instance with `scripts/instance.sh start <run_id>` from the skill directory. See SKILL.md Launch.
 - Export `REPO_ROOT`, `RUN_ID`, `INSTANCE`, `CONFIG`, `URL`, `PORT`, and `ARTIFACTS` from the start output. Export `PAGE_A` and `PAGE_B` from the sources output.
 - Create the shell helper `HP() { uv run --project "$REPO_ROOT" html-publish --config "$CONFIG" --json "$@"; }` used by every recipe.
+- The [README publish helper](../../../../README.md#publish-one-page) is the single source for accepted-revision updates. Recipes may inspect reports directly, but any carried baseline must pass the command-exit and successful-outcome gates from that helper. Never assign a baseline from `status`, an error report, or a mutation-to-`jq` pipeline.
 - Run `scripts/instance.sh doctor <run_id>` and require exit 0 before driving.
 - Never drive an instance that this verification run did not start. `allow_http` in the generated config is valid only for the loopback target `127.0.0.1`.
 - One instance may host several page names. Use a fresh page name when a recipe needs untouched state instead of a new instance.
@@ -48,3 +49,7 @@ Keep implementation details out of the map. Name only user paths, stable handles
 - [Identical retry](identical-retry.md) covers unchanged republish with and without a stale expectation.
 - [Advisory planning](advisory-planning.md) covers prediction and differences without persistent writes.
 - [Status observation](status-observation.md) covers single-page state, the paged list, and absent state.
+- [Verification](verification.md) covers healthy verification, delivery failure, local corruption, and preserved observed state.
+- [History and restore](history-and-restore.md) covers bounded history, encoded diff limits, guarded restore, and appended history.
+- [Host diagnostics](host-diagnostics.md) covers named and unnamed host checks, local corruption, and route drift.
+- [Recovery](recovery.md) covers persistence errors and retry state after real process termination.

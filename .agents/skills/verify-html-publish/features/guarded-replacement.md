@@ -7,11 +7,12 @@ Guarded replacement lets a user replace an active page only while the expected a
 - `cas-update` replaces the page when `--expected-revision` equals the active revision.
 - `stale-conflict` rejects an update whose expected revision no longer matches, with exit 1 and no state change.
 - `deleted-assets` removes files omitted from the new artifact from the active URL.
+- `removed-path-verification` requires removed files to return 404 or 410 before the replacement reports success.
 - `url-stable` keeps the publication URL identical across replacements.
 
 ## How to get to it (user POV)
 
-- Read the active revision with `html-publish ... status --name <name>` and pass it as `--expected-revision` on `plan` and `publish` of changed content.
+- Pass the accepted revision from the last successful mutation as `--expected-revision` on `plan` and `publish` of changed content.
 - Omit `--expected-revision` while different content is already active and the CLI refuses with a conflict.
 
 ## Driving it with shell and curl
@@ -25,7 +26,7 @@ Preconditions:
 - **Read the page.** `curl -fsS "$URL/release-notes/"` returns the page B body. The URL is the same string as before the replacement.
 - **Attempt a stale update.** Run `HP publish --name release-notes --source "$PAGE_A" --target "$URL/" --expected-revision "$R1" --request-id attempt-003`. Exit 1, `outcome` is `error`, `error.code` is `revision_conflict`, `error.phase` is `guard`, and `error.next_action` is `{"kind":"review_conflict","required_inputs":["expected_revision","active_revision","requested_revision"]}`.
 - **Confirm no state change.** Run `HP status --name release-notes`. The active revision is still `$R2`, and `curl -fsS "$URL/release-notes/"` still returns page B.
-- **Drop an asset.** Create `$INSTANCE/site-v1/` with `index.html` holding the page B body plus a second file `extra.html`, publish it with `HP publish --name release-notes --source "$INSTANCE/site-v1" --target "$URL/" --expected-revision "$R2" --request-id attempt-004`, and confirm `curl -fsS "$URL/release-notes/extra.html"` returns the extra body. Note the active revision from this report as `$R3`. Then create `$INSTANCE/site-v2/` with the same `index.html` and no `extra.html`, and publish it with `--expected-revision "$R3"` as `attempt-005`. Exit 0 and `outcome` is `published`. Now `curl -sS -o /dev/null -w '%{http_code}' "$URL/release-notes/extra.html"` prints `404` while `curl -fsS "$URL/release-notes/"` still returns the page B body.
+- **Drop an asset.** Create `$INSTANCE/site-v1/` with `index.html` holding the page B body plus a second file `extra.html`, publish it with `HP publish --name release-notes --source "$INSTANCE/site-v1" --target "$URL/" --expected-revision "$R2" --request-id attempt-004`, and confirm `curl -fsS "$URL/release-notes/extra.html"` returns the extra body. Note the active revision from this report as `$R3`. Then create `$INSTANCE/site-v2/` with the same `index.html` and no `extra.html`, and publish it with `--expected-revision "$R3"` as `attempt-005`. Exit 0, `outcome` is `published`, and `verification.scope` includes `removed_paths`. Now `curl -sS -o /dev/null -w '%{http_code}' "$URL/release-notes/extra.html"` prints `404` while `curl -fsS "$URL/release-notes/"` still returns the page B body.
 - **Proof.** Save the transcript and HTTP results under `$ARTIFACTS/guarded-replacement-<run_id>.txt`.
 
 ## Gotchas

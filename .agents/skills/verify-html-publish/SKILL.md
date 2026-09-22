@@ -1,6 +1,6 @@
 ---
 name: "verify-html-publish"
-description: "Use when proving html-publish CLI behavior end to end, including publish, guarded update, retry, plan, and status, through the real executable and its loopback HTTP server."
+description: "Use when proving html-publish CLI behavior end to end, including publish, guarded update, retry, plan, status, verify, history, restore, host diagnostics, and recovery through the real executable and its loopback HTTP server."
 ---
 
 # Verify html-publish
@@ -58,6 +58,10 @@ The report is one JSON object with `schema_version` `1`. Plan details flatten to
 - `plan` on an empty store exits 0 with `"outcome":"planned"` and `"prediction":"create"`.
 - `publish` of new content exits 0 with `"outcome":"published"`, `effects.archive_advanced` and `effects.activated` both true, and `verification.result` `"passed"`.
 - `status` exits 0 with `"outcome":"observed"` and `observation.selection.state` `"selected"` after a publish.
+- `verify` exits 0 with `"outcome":"verified"` and `verification.result` `"passed"` for a healthy selected export.
+- `history` reports page-changing commits in `entries`; restore and diff inputs come from those entries, not top-level state fields.
+- `restore` uses the same expected-revision guard and delivery verification as publish, then appends history instead of rewinding it.
+- Named `status --host-check` validates local archived bytes before it reports delivery success.
 - A competing update with a stale `--expected-revision` exits 1 with `"outcome":"error"`, `error.code` `"revision_conflict"`, and `error.next_action.kind` `"review_conflict"`.
 - `plan` predicts `"conflict"` and still exits 0, because a plan never errors on the guard decision.
 
@@ -108,3 +112,7 @@ It stops the verified process group, verifies that the bounded health request fa
 - [Identical retry](features/identical-retry.md)
 - [Advisory planning](features/advisory-planning.md)
 - [Status observation](features/status-observation.md)
+- [Verification](features/verification.md)
+- [History and restore](features/history-and-restore.md)
+- [Host diagnostics](features/host-diagnostics.md)
+- [Recovery](features/recovery.md)
