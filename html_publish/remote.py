@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 from html_publish import __version__
 from html_publish.artifact import capture
 from html_publish.cli import emit_json, report_dict, usage_report
+from html_publish.configuration import ClientConfig, read_document, selected_path
 from html_publish.delivery import publication_url
 from html_publish.discovery import (
     command_schema,
@@ -40,11 +41,6 @@ from html_publish.model import (
     Revision,
 )
 
-DEFAULT_HOST = "pascal@om1.donkey-arcturus.ts.net"
-DEFAULT_EXECUTABLE = "/home/pascal/.local/share/html-publish/current/.venv/bin/html-publish"
-DEFAULT_CONFIG = "/home/pascal/.config/html-publish/publisher.json"
-DEFAULT_TARGET = "https://om1.donkey-arcturus.ts.net:8444/html-publish/"
-DEFAULT_INCOMING_ROOT = "/home/pascal/.local/share/html-publish/incoming"
 DEFAULT_CONNECT_TIMEOUT = 10
 DEFAULT_COMMAND_SECONDS = 120.0
 
@@ -199,30 +195,35 @@ def _globals(parser: argparse.ArgumentParser, version: str, *, child: bool = Fal
     parser.add_argument(
         "--host",
         type=_host,
-        default=default(DEFAULT_HOST),
-        help=f"SSH destination as user@host (default: {DEFAULT_HOST})",
+        default=default(None),
+        help="SSH destination as user@host (required without client config)",
     )
     parser.add_argument(
         "--remote-executable",
-        default=default(DEFAULT_EXECUTABLE),
-        help=f"host html-publish executable path (default: {DEFAULT_EXECUTABLE})",
+        default=default(None),
+        help="host html-publish executable path (required without client config)",
     )
     parser.add_argument(
         "--remote-config",
-        default=default(DEFAULT_CONFIG),
-        help=f"host publisher JSON configuration path (default: {DEFAULT_CONFIG})",
+        default=default(None),
+        help="host publisher JSON configuration path (required without client config)",
     )
     parser.add_argument(
         "--target",
-        default=default(DEFAULT_TARGET),
-        help=f"publication base URL matching the host configuration (default: {DEFAULT_TARGET})",
+        default=default(None),
+        help="publication base URL matching the host config; required without client config",
     )
     parser.add_argument(
         "--incoming-root",
         type=_remote_path,
-        default=default(PurePosixPath(DEFAULT_INCOMING_ROOT)),
-        help="private host directory for plan and publish uploads "
-        f"(default: {DEFAULT_INCOMING_ROOT})",
+        default=default(None),
+        help="private host directory for plan and publish uploads (required without client config)",
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=default(None),
+        help="client JSON config; defaults to user config when destination flags are absent",
     )
     parser.add_argument(
         "--connect-timeout",
@@ -273,7 +274,8 @@ def _parser(json_version: bool = False) -> Parser:
             operation,
             help_text,
             examples=(
-                f"html-publish-remote {operation} --name release-notes --source ./page.html",
+                f"html-publish-remote --config client.json {operation} "
+                "--name release-notes --source ./page.html",
             ),
             effects=("uploads a private source copy", "reads host state")
             if operation == "plan"
@@ -311,8 +313,8 @@ def _parser(json_version: bool = False) -> Parser:
         "status",
         "observe one publication or a paged list",
         examples=(
-            "html-publish-remote status --name release-notes",
-            "html-publish-remote status --after '<continuation>' --limit 20",
+            "html-publish-remote --config client.json status --name release-notes",
+            "html-publish-remote --config client.json status --after '<continuation>' --limit 20",
         ),
         effects=(
             "reads host state",
@@ -341,7 +343,7 @@ def _parser(json_version: bool = False) -> Parser:
         commands,
         "verify",
         "check selected files and host HTTP delivery",
-        examples=("html-publish-remote verify --name release-notes",),
+        examples=("html-publish-remote --config client.json verify --name release-notes",),
         effects=("reads saved bytes and host delivery", "does not activate"),
     )
     verify.add_argument("--name", required=True, type=_name, help="publication name")
@@ -352,8 +354,9 @@ def _parser(json_version: bool = False) -> Parser:
         "history",
         "list per-name history and optional text differences",
         examples=(
-            "html-publish-remote history --name release-notes",
-            "html-publish-remote history --name release-notes --after '<continuation>' --limit 5",
+            "html-publish-remote --config client.json history --name release-notes",
+            "html-publish-remote --config client.json history --name release-notes "
+            "--after '<continuation>' --limit 5",
         ),
         effects=("reads host Git history", "does not change archive or selection"),
     )
@@ -378,7 +381,7 @@ def _parser(json_version: bool = False) -> Parser:
         "restore",
         "select an archived revision under a revision guard",
         examples=(
-            "html-publish-remote restore --name release-notes "
+            "html-publish-remote --config client.json restore --name release-notes "
             "--archive-commit COMMIT --expected-revision REVISION",
         ),
         effects=(
@@ -410,14 +413,66 @@ def _parser(json_version: bool = False) -> Parser:
 
 def _parse(arguments: list[str]) -> tuple[RemoteSettings, Request]:
     parsed = _parser().parse_args(arguments)
+    fields = ("host", "remote_executable", "remote_config", "target", "incoming_root")
+    supplied = {field: getattr(parsed, field) for field in fields}
+    client: ClientConfig | None = None
+    if parsed.config is not None or any(value is None for value in supplied.values()):
+        selected, source = selected_path("client", parsed.config)
+        if source == "argument" or selected.exists():
+            _, loaded = read_document("client", selected)
+            assert isinstance(loaded, ClientConfig)
+            if loaded.executor.kind != "remote":
+                raise PublishError(
+                    "invalid_config",
+                    "config",
+                    "Selected client config must use remote execution",
+                    "fix_config",
+                )
+            client = loaded
+    effective = {
+        "host": parsed.host or (client.executor.host if client else None),
+        "remote_executable": parsed.remote_executable
+        or (client.executor.remote_executable if client else None),
+        "remote_config": parsed.remote_config
+        or (client.executor.remote_config if client else None),
+        "target": parsed.target or (client.target.base_url if client else None),
+        "incoming_root": parsed.incoming_root
+        or (
+            PurePosixPath(client.executor.incoming_root)
+            if client and client.executor.incoming_root
+            else None
+        ),
+    }
+    missing = ["--" + name.replace("_", "-") for name, value in effective.items() if value is None]
+    if missing:
+        if client is not None:
+            raise PublishError(
+                "invalid_config",
+                "config",
+                "Selected client config lacks remote destination fields: " + ", ".join(missing),
+                "fix_config",
+            )
+        raise UsageFailure(
+            "Remote destination requires " + ", ".join(missing) + " or an explicit client config"
+        )
     settings = RemoteSettings(
-        cast(str, parsed.host),
-        cast(str, parsed.remote_executable),
-        cast(str, parsed.remote_config),
-        cast(str, parsed.target),
-        cast(PurePosixPath, parsed.incoming_root),
-        cast(int, parsed.connect_timeout),
-        cast(float, parsed.command_seconds),
+        cast(str, effective["host"]),
+        cast(str, effective["remote_executable"]),
+        cast(str, effective["remote_config"]),
+        cast(str, effective["target"]),
+        cast(PurePosixPath, effective["incoming_root"]),
+        cast(
+            int,
+            parsed.connect_timeout
+            if _argument_value(arguments, "--connect-timeout") is not None or client is None
+            else client.executor.connect_timeout or DEFAULT_CONNECT_TIMEOUT,
+        ),
+        cast(
+            float,
+            parsed.command_seconds
+            if _argument_value(arguments, "--command-seconds") is not None or client is None
+            else client.limits.command_seconds,
+        ),
     )
     operation = cast(Operation, parsed.operation)
     if operation == "status":
@@ -487,10 +542,14 @@ def _usage_payload(arguments: list[str], failure: Failure) -> dict[str, object]:
         name = Name(_name(raw_name)) if raw_name is not None else None
     except argparse.ArgumentTypeError:
         name = None
-    target = _argument_value(arguments, "--target") or DEFAULT_TARGET
+    target = _argument_value(arguments, "--target")
     try:
-        parsed_target = urlparse(target)
-        valid_target = parsed_target.scheme in {"http", "https"} and bool(parsed_target.hostname)
+        parsed_target = urlparse(target) if target is not None else None
+        valid_target = (
+            parsed_target is not None
+            and parsed_target.scheme in {"http", "https"}
+            and bool(parsed_target.hostname)
+        )
     except ValueError:
         valid_target = False
     request_id = _argument_value(arguments, "--request-id")
@@ -1187,6 +1246,8 @@ def main(argv: list[str] | None = None) -> int:
     except UsageFailure as error:
         failure = Failure("invalid_usage", "usage", str(error), "fix_arguments")
         return emit_json(_usage_payload(arguments, failure), 2)
+    except PublishError as error:
+        return emit_json(_usage_payload(arguments, error.failure), 1)
     deadline = Deadline.start(settings.command_seconds)
     if isinstance(request, ArtifactRequest):
         return _run_artifact(settings, request, deadline)

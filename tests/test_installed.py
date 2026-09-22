@@ -94,7 +94,8 @@ class InstalledWorkflowTest(unittest.TestCase):
                 commands = cast(list[dict[str, object]], schema["commands"])
                 self.assertEqual(
                     [command["name"] for command in commands],
-                    ["plan", "publish", "status", "verify", "history", "restore", "schema"],
+                    ["plan", "publish", "status", "verify", "history", "restore", "schema"]
+                    + (["config", "doctor"] if executable == values["CLI"] else []),
                 )
                 plan = next(command for command in commands if command["name"] == "plan")
                 plan_expected = next(
