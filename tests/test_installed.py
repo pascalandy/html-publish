@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import time
 import unittest
@@ -42,7 +43,7 @@ class InstalledWorkflowTest(unittest.TestCase):
 
             def record(value: dict[str, object]) -> None:
                 with evidence.open("a") as output:
-                    output.write(json.dumps(value) + "\n")
+                    output.write(json.dumps({"run_id": run_id, **value}) + "\n")
 
             def cli(*args: str, exit_code: int = 0) -> dict[str, object]:
                 command = [values["CLI"], "--config", values["CONFIG"], "--json", *args]
@@ -60,6 +61,106 @@ class InstalledWorkflowTest(unittest.TestCase):
                 self.assertEqual(result.returncode, exit_code, result.stdout + result.stderr)
                 return cast(dict[str, object], json.loads(result.stdout))
 
+            remote_executable = str(Path(values["CLI"]).with_name("html-publish-remote"))
+
+            def discovery(
+                executable: str, *args: str, exit_code: int = 0
+            ) -> subprocess.CompletedProcess[str]:
+                command = [executable, *args]
+                result = subprocess.run(
+                    command, cwd=artifacts, capture_output=True, text=True, timeout=30
+                )
+                record(
+                    {
+                        "feature": "#33-help-discovery",
+                        "command": command,
+                        "exit_code": result.returncode,
+                        "stdout": result.stdout,
+                        "stderr": result.stderr,
+                    }
+                )
+                self.assertEqual(result.returncode, exit_code, result.stdout + result.stderr)
+                return result
+
+            for executable in (values["CLI"], remote_executable):
+                schema_result = discovery(executable, "schema")
+                self.assertEqual(schema_result.stderr, "")
+                schema = cast(dict[str, object], json.loads(schema_result.stdout))
+                self.assertEqual(
+                    json.loads(discovery(executable, "schema", "--json").stdout), schema
+                )
+                self.assertEqual(schema["schema_version"], 1)
+                self.assertEqual(schema["executable"], Path(executable).name)
+                commands = cast(list[dict[str, object]], schema["commands"])
+                self.assertEqual(
+                    [command["name"] for command in commands],
+                    ["plan", "publish", "status", "verify", "history", "restore", "schema"],
+                )
+                root_help = discovery(executable, "--help")
+                self.assertEqual(root_help.stderr, "")
+                for option in cast(list[dict[str, object]], schema["global_options"]):
+                    for flag in cast(list[str], option["flags"]):
+                        self.assertIn(flag, root_help.stdout)
+                for command in commands:
+                    name = str(command["name"])
+                    help_result = discovery(executable, "--json", name, "--help")
+                    self.assertEqual(help_result.stderr, "")
+                    self.assertIn("Effects:", help_result.stdout)
+                    self.assertIn("Examples:", help_result.stdout)
+                    for example_text in cast(list[str], command["examples"]):
+                        self.assertIn(example_text, help_result.stdout)
+                    for option in cast(list[dict[str, object]], command["options"]):
+                        for flag in cast(list[str], option["flags"]):
+                            self.assertIn(flag, help_result.stdout)
+                version = cast(
+                    dict[str, object],
+                    json.loads(discovery(executable, "--json", "--version").stdout),
+                )
+                self.assertEqual(version["version"], schema["version"])
+                self.assertEqual(
+                    json.loads(discovery(executable, "publish", "--version", "--json").stdout),
+                    version,
+                )
+                self.assertEqual(
+                    discovery(executable, "--version").stdout.strip(),
+                    f"{Path(executable).name} {schema['version']}",
+                )
+                self.assertEqual(
+                    json.loads(discovery(executable, "--command-seconds", "30", "schema").stdout),
+                    schema,
+                )
+                self.assertEqual(
+                    json.loads(discovery(executable, "schema", "--command-seconds", "30").stdout),
+                    schema,
+                )
+                invalid = discovery(executable, "--json", "status", "--nam", "notes", exit_code=2)
+                self.assertEqual(invalid.stderr, "")
+                self.assertEqual(json.loads(invalid.stdout)["error"]["code"], "invalid_usage")
+                bad_budget = discovery(
+                    executable, "--json", "status", "--command-seconds", "0", exit_code=2
+                )
+                self.assertEqual(bad_budget.stderr, "")
+                self.assertEqual(json.loads(bad_budget.stdout)["error"]["code"], "invalid_usage")
+                plain = discovery(executable, "status", "--nam", "notes", exit_code=2)
+                if executable == values["CLI"]:
+                    self.assertEqual(plain.stdout, "")
+                    self.assertIn("unrecognized arguments", plain.stderr)
+                else:
+                    self.assertEqual(json.loads(plain.stdout)["error"]["code"], "invalid_usage")
+
+            local_schema = cast(
+                dict[str, object], json.loads(discovery(values["CLI"], "schema").stdout)
+            )
+            local_commands = cast(list[dict[str, object]], local_schema["commands"])
+
+            def run_example(name: str, replacements: dict[str, str]) -> dict[str, object]:
+                command = next(item for item in local_commands if item["name"] == name)
+                source = cast(list[str], command["examples"])[0]
+                arguments = [replacements.get(part, part) for part in shlex.split(source)][1:]
+                return cast(
+                    dict[str, object], json.loads(discovery(values["CLI"], *arguments).stdout)
+                )
+
             def fetch(path: str) -> tuple[int, bytes]:
                 try:
                     with urllib.request.urlopen(values["URL"] + path, timeout=3) as response:
@@ -74,6 +175,95 @@ class InstalledWorkflowTest(unittest.TestCase):
             self.assertEqual(plan["prediction"], "create")
             self.assertFalse((run / "instance/archive.git").exists())
             self.assertFalse((run / "instance/runtime").exists())
+            example_values = {
+                "publisher.json": values["CONFIG"],
+                "./page.html": sources["PAGE_A"],
+                "https://host.example/pages/": target,
+            }
+            self.assertEqual(run_example("plan", example_values)["prediction"], "create")
+            example_published = run_example("publish", example_values)
+            self.assertEqual(example_published["outcome"], "published")
+            self.assertEqual(run_example("status", example_values)["outcome"], "observed")
+            self.assertEqual(run_example("verify", example_values)["outcome"], "verified")
+            self.assertEqual(run_example("history", example_values)["outcome"], "observed")
+            example_updated = cli(
+                "publish",
+                "--name",
+                "release-notes",
+                "--source",
+                sources["PAGE_B"],
+                "--target",
+                target,
+                "--expected-revision",
+                str(example_published["active_revision"]),
+            )
+            self.assertEqual(example_updated["outcome"], "published")
+            example_values["COMMIT"] = str(example_published["archive_commit"])
+            example_values["REVISION"] = str(example_updated["active_revision"])
+            self.assertEqual(
+                run_example("restore", example_values)["active_revision"],
+                example_published["active_revision"],
+            )
+            self.assertEqual(fetch("/release-notes/"), (200, Path(sources["PAGE_A"]).read_bytes()))
+            self.assertEqual(fetch("/release-notes/missing.html")[0], 404)
+            redirect_command = [
+                "curl",
+                "-sS",
+                "-o",
+                os.devnull,
+                "-w",
+                "%{http_code}",
+                values["URL"] + "/release-notes",
+            ]
+            redirect = subprocess.run(
+                redirect_command, cwd=artifacts, capture_output=True, text=True, timeout=5
+            )
+            record(
+                {
+                    "feature": "#33-help-discovery",
+                    "command": redirect_command,
+                    "exit_code": redirect.returncode,
+                    "stdout": redirect.stdout,
+                    "stderr": redirect.stderr,
+                }
+            )
+            self.assertEqual(redirect.returncode, 0, redirect.stderr)
+            self.assertEqual(redirect.stdout, "301")
+            before = cli("status", "--name", "release-notes")
+            after = cast(
+                dict[str, object],
+                json.loads(
+                    discovery(
+                        values["CLI"],
+                        "status",
+                        "--name",
+                        "release-notes",
+                        "--config",
+                        values["CONFIG"],
+                        "--json",
+                        "--command-seconds",
+                        "30",
+                    ).stdout
+                ),
+            )
+            self.assertEqual(after["active_revision"], before["active_revision"])
+            before_placement = cast(
+                dict[str, object],
+                json.loads(
+                    discovery(
+                        values["CLI"],
+                        "--command-seconds",
+                        "30",
+                        "--config",
+                        values["CONFIG"],
+                        "--json",
+                        "status",
+                        "--name",
+                        "release-notes",
+                    ).stdout
+                ),
+            )
+            self.assertEqual(before_placement["active_revision"], before["active_revision"])
             a = cli("publish", "--name", "notes", "--source", sources["PAGE_A"], "--target", target)
             self.assertEqual(a["outcome"], "published")
             revision_a = str(a["active_revision"])

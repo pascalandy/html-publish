@@ -200,6 +200,37 @@ class RemoteCliTest(unittest.TestCase):
         ]
         return args + (["--request-id", "attempt-1"] if operation == "publish" else [])
 
+    def test_global_options_after_command_preserve_remote_json_result(self) -> None:
+        options = [
+            "--host",
+            "operator@example.test",
+            "--remote-executable",
+            "/usr/local/bin/html-publish",
+            "--remote-config",
+            "/etc/html-publish/publisher.json",
+            "--target",
+            TARGET,
+            "--incoming-root",
+            "/tmp/html-publish-incoming",
+            "--connect-timeout",
+            "3",
+            "--command-seconds",
+            "10",
+            "--json",
+        ]
+        before = self.run_remote(*options, "status", "--name", "release-notes")
+        after = self.run_remote("status", "--name", "release-notes", *options)
+        for result in (before, after):
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(json.loads(result.stdout), report("status"))
+            self.assertEqual(result.stderr, "")
+        invocations = [entry for entry in self.records() if entry["stage"] == "invoke"]
+        self.assertEqual(len(invocations), 2)
+        for invocation in invocations:
+            self.assertIn("operator@example.test", invocation["argv"])
+            self.assertIn("/usr/local/bin/html-publish", invocation["argv"][-1])
+            self.assertIn("/etc/html-publish/publisher.json", invocation["argv"][-1])
+
     def failure(
         self, operation: str, code: str, phase: str, message: str, action: str, required: list[str]
     ) -> dict[str, Any]:
