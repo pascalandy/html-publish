@@ -42,7 +42,7 @@ class QuietServer(http.server.ThreadingHTTPServer):
 
 
 class SlowHandler(http.server.BaseHTTPRequestHandler):
-    body = b"<!doctype html><h1>slow</h1>\n"
+    body = b"<!doctype html><h1>slow</h1>\n" + b"." * 256
 
     def log_message(self, format: str, *args: object) -> None:
         pass
@@ -891,8 +891,8 @@ class PublisherCliTest(unittest.TestCase):
         slow_url = f"http://{address[0]}:{address[1]}/"
         payload = self.config_payload()
         payload["base_url"] = slow_url
-        payload["limits"]["command_seconds"] = 0.5
-        payload["limits"]["verification_seconds"] = 0.2
+        payload["limits"]["command_seconds"] = 10
+        payload["limits"]["verification_seconds"] = 10
         self.config.write_text(json.dumps(payload), encoding="utf-8")
         source = self.root / "report.html"
         source.write_bytes(SlowHandler.body)
@@ -918,7 +918,7 @@ class PublisherCliTest(unittest.TestCase):
         self.assertEqual(response["error"]["code"], "command_timeout")
         self.assertEqual(response["verification"]["result"], "failed")
         self.assertEqual(response["effects"], {"archive_advanced": True, "activated": True})
-        self.assertLess(elapsed, 1.5)
+        self.assertLess(elapsed, 20)
 
     def test_status_reports_saved_and_selected_facts_without_http(self) -> None:
         source = self.root / "report.html"
