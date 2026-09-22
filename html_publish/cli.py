@@ -13,7 +13,7 @@ from types import FrameType
 from typing import Literal, NoReturn, cast
 from urllib.parse import urlparse
 
-from html_publish import __version__
+from html_publish import __version__, _git
 from html_publish.delivery import publication_url
 from html_publish.model import (
     Config,
@@ -490,6 +490,7 @@ def main(argv: list[str] | None = None) -> int:
         if parsed.config is None:
             raise UsageFailure("--config is required")
         config = load_config(parsed.config)
+        _git.check_supported_version(Deadline.start(min(5.0, config.limits.command_seconds)))
         deadline = Deadline.start(config.limits.command_seconds)
         store = PublicationStore(config, deadline)
         with _command_alarm(config.limits.command_seconds):

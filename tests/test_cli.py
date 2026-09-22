@@ -94,7 +94,10 @@ class PublisherCliTest(unittest.TestCase):
             self.server_thread.join(timeout=2)
 
     def run_cli(
-        self, *arguments: str, json_output: bool = True
+        self,
+        *arguments: str,
+        json_output: bool = True,
+        env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         command = [
             sys.executable,
@@ -112,6 +115,7 @@ class PublisherCliTest(unittest.TestCase):
             text=True,
             capture_output=True,
             check=False,
+            env={**os.environ, **env} if env else None,
         )
 
     def payload(self, result: subprocess.CompletedProcess[str]) -> dict[str, Any]:
@@ -911,9 +915,56 @@ class PublisherCliTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 2)
         payload = self.payload(result)
+        self.assertEqual(payload["schema_version"], 1)
         self.assertEqual(payload["outcome"], "error")
         self.assertEqual(payload["error"]["code"], "invalid_usage")
         self.assertEqual(result.stderr, "")
+
+    def test_plan_reports_configured_capture_limits(self) -> None:
+        payload = self.config_payload()
+        payload["limits"]["max_bytes"] = 2_000
+        payload["limits"]["max_files"] = 7
+        self.config.write_text(json.dumps(payload), encoding="utf-8")
+        source = self.root / "report.html"
+        source.write_bytes(b"<!doctype html><h1>limits</h1>\n")
+
+        result = self.run_cli(
+            "plan",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.payload(result)["limits"],
+            {"max_bytes": 2_000, "max_files": 7},
+        )
+
+    def test_git_older_than_the_supported_minimum_is_rejected(self) -> None:
+        stub = self.root / "stub-bin"
+        stub.mkdir()
+        (stub / "git").write_text("#!/bin/sh\necho 'git version 2.10.0'\n", encoding="utf-8")
+        (stub / "git").chmod(0o755)
+
+        result = self.run_cli("status", env={"PATH": f"{stub}:{os.environ['PATH']}"})
+
+        self.assertEqual(result.returncode, 1)
+        payload = self.payload(result)
+        self.assertEqual(payload["error"]["code"], "git_unsupported")
+        self.assertEqual(payload["error"]["phase"], "version")
+        self.assertIn("2.22", payload["error"]["message"])
+
+    def test_a_missing_git_executable_is_reported_as_unavailable(self) -> None:
+        result = self.run_cli("status", env={"PATH": "/nonexistent-html-publish-bin"})
+
+        self.assertEqual(result.returncode, 1)
+        payload = self.payload(result)
+        self.assertEqual(payload["error"]["code"], "git_unavailable")
+        self.assertEqual(payload["error"]["phase"], "version")
 
 
 if __name__ == "__main__":
