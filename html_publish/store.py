@@ -1003,7 +1003,8 @@ class PublicationStore:
                         f"The page tree is missing at {commit}",
                         "inspect",
                     )
-                older = window[index + 1] if index + 1 < len(window) else None
+                older_commit = window[index + 1] if index + 1 < len(window) else None
+                older = self._page_tree_at(older_commit, name) if older_commit is not None else None
                 changes = self._entry_changes(name, revision, older)
                 entries.append(HistoryEntry(Commit(commit), Revision(revision), changes))
             details: dict[str, object] = {
