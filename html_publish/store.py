@@ -1269,19 +1269,25 @@ class PublicationStore:
                     StatusEntry(Name(candidate), self._state(Name(candidate), full=False))
                     for candidate in selected_names
                 )
+                details = {
+                    "total": len(names),
+                    "truncated": len(ordered) > limit,
+                    "continuation": selected_names[-1] if len(ordered) > limit else None,
+                    "staging": staging,
+                }
+                verification = Verification()
+                if host_check:
+                    checks, verification = self._host_checks(None, None)
+                    details["host_checks"] = checks
                 return Report(
                     "status",
                     "observed",
                     self.config.base_url,
                     None,
                     None,
-                    details={
-                        "total": len(names),
-                        "truncated": len(ordered) > limit,
-                        "continuation": selected_names[-1] if len(ordered) > limit else None,
-                        "staging": staging,
-                    },
+                    details=details,
                     status_entries=entries,
+                    verification=verification,
                 )
         except (OSError, PublishError) as error:
             failure = (
