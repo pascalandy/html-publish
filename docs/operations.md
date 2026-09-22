@@ -6,17 +6,21 @@ This guide operates the private `html-publish` MVP on `om1`. The deployment keep
 
 The working machine needs this checkout, `uv`, Git, `ssh`, and `scp`. SSH must resolve `pascal@om1.donkey-arcturus.ts.net` with strict host-key checking and noninteractive authentication
 
-`om1` needs a checkout of this repository, `uv`, Git, Python, Tailscale, and a user systemd instance. The verified host versions are recorded in the [deployment evidence](evidence/deployment/2026-09-21-om1-controlled-mvp.md)
+`om1` needs a clean checkout of this repository, the reviewed dotfiles `html-publish-install` command, `uv`, Git, Python, Tailscale, and a user systemd instance. The [installed verification record](evidence/deployment/2026-09-22-om1-installed.md) names the exact source, installer, wheel, and remaining gates. The [earlier deployment record](evidence/deployment/2026-09-21-om1-controlled-mvp.md) retains its original scope
 
 ## Install or upgrade
 
-Run the repeatable deployment from the repository root on `om1`
+Run the dotfiles entrypoint as `pascal` on `om1`. Supply the absolute root of a clean checkout and its independently reviewed full commit
 
 ```sh
-just deploy-om1
+html-publish-install \
+	--source /absolute/path/to/reviewed/html-publish \
+	--revision '<reviewed full lowercase commit SHA>'
 ```
 
-The command builds a wheel on `om1`, creates a content-addressed virtual environment, writes the publisher configuration and user unit, starts the service, installs the Tailscale route, and runs health checks. Repeating the command for the same wheel reports `unchanged`. A changed wheel creates and activates a new application release
+The [reviewed dotfiles installer](https://github.com/pascalandy/dotfiles/blob/e868e5246d60960fd68ecebb461a49621a86e036/dot_local/bin/executable_html-publish-install) rejects the wrong machine, user, operating system, dirty checkout, or mismatched revision. It invokes `uv run --frozen python -m html_publish.deploy install --source` inside that checkout. It does not install skills or enable user linger
+
+The deployment module builds a wheel on `om1`, creates a content-addressed virtual environment, writes the publisher configuration and user unit, starts the service, installs the Tailscale route, and runs health checks. Repeating the command for the same wheel reports `unchanged`. A changed wheel creates and activates a new application release. `just deploy-om1` remains a repository convenience command without the dotfiles entrypoint's machine and revision checks
 
 The installer checks configuration, route ownership, unit state, and pointer shape before creating deployment state or preparing a wheel. A conflicting configuration or route stops the install before activation. It checks those inputs again after preparing the release. Existing routes on ports 443, 8443, and 5173 remain untouched
 
@@ -87,10 +91,10 @@ Require both `PASS` results and exit status 0. Preserve the rehearsal tree and c
 
 ## Health checks
 
-Run the complete application and route check from the repository root on `om1`
+Run the complete application and route check through the installed application on `om1`
 
 ```sh
-just health-om1
+/home/pascal/.local/share/html-publish/current/.venv/bin/html-publish-deploy health
 ```
 
 The JSON result reports the active application release and checks the user service, the exact Tailscale route, the loopback health endpoint, and the HTTPS health endpoint. A failed check returns a nonzero exit status
@@ -106,6 +110,48 @@ ssh pascal@om1.donkey-arcturus.ts.net \
 ```
 
 The stable publication root is `https://om1.donkey-arcturus.ts.net:8444/html-publish/`
+
+## Use the six installed commands
+
+Run the installed CLI directly on `om1`. Choose a new publication name and keep each successful mutation result. `status`, `verify`, and `history` are observations and never replace the accepted revision
+
+```sh
+HTML_PUBLISH=/home/pascal/.local/share/html-publish/current/.venv/bin/html-publish
+PUBLISHER_CONFIG=/home/pascal/.config/html-publish/publisher.json
+PUBLISHER_TARGET=https://om1.donkey-arcturus.ts.net:8444/html-publish/
+
+"$HTML_PUBLISH" --config "$PUBLISHER_CONFIG" --json plan \
+	--name release-notes --source ./release-notes-a --target "$PUBLISHER_TARGET"
+"$HTML_PUBLISH" --config "$PUBLISHER_CONFIG" --json publish \
+	--name release-notes --source ./release-notes-a --target "$PUBLISHER_TARGET" \
+	--request-id release-notes-a > publish-a.json
+```
+
+Continue only when the publish exits 0, reports `published` or `unchanged`, and passes verification. Save its `active_revision` as the accepted A revision and its `archive_commit` as the restore identifier
+
+```sh
+"$HTML_PUBLISH" --config "$PUBLISHER_CONFIG" --json status --name release-notes
+"$HTML_PUBLISH" --config "$PUBLISHER_CONFIG" --json verify --name release-notes
+"$HTML_PUBLISH" --config "$PUBLISHER_CONFIG" --json history --name release-notes --limit 5
+
+"$HTML_PUBLISH" --config "$PUBLISHER_CONFIG" --json plan \
+	--name release-notes --source ./release-notes-b --target "$PUBLISHER_TARGET" \
+	--expected-revision '<accepted A revision>'
+"$HTML_PUBLISH" --config "$PUBLISHER_CONFIG" --json publish \
+	--name release-notes --source ./release-notes-b --target "$PUBLISHER_TARGET" \
+	--expected-revision '<accepted A revision>' --request-id release-notes-b > publish-b.json
+```
+
+Apply the same success checks before accepting B. Restore A with B as the guard
+
+```sh
+"$HTML_PUBLISH" --config "$PUBLISHER_CONFIG" --json restore \
+	--name release-notes --archive-commit '<archive_commit from successful A publish>' \
+	--target "$PUBLISHER_TARGET" --expected-revision '<accepted B revision>' \
+	--request-id release-notes-restore-a > restore-a.json
+```
+
+Restore appends history and keeps the stable URL. A failed or lost mutation result does not establish a new baseline. Retain the original expected revision and intended bytes for an identical retry. The [installed run](evidence/deployment/2026-09-22-om1-installed.md#publication-browser-and-second-device-evidence) records this six-command workflow, a stale conflict, and restored A
 
 ## Remote publication and observation
 
@@ -182,38 +228,7 @@ names. History totals count entries remaining after the cursor. Empty pages incl
 
 ## Publication recovery and cleanup
 
-The installed CLI observes and recovers publications without manual Git commands. Read the saved-versus-active facts for one name
-
-```sh
-uv run html-publish --config publisher.json --json status \
-  --name release-notes
-```
-
-Revalidate the selected export and probe the stable URL without activating anything
-
-```sh
-uv run html-publish --config publisher.json --json verify \
-  --name release-notes
-```
-
-List the bounded page history with restore identifiers and changed-path summaries
-
-```sh
-uv run html-publish --config publisher.json --json history \
-  --name release-notes
-```
-
-Restore an earlier revision through the same guarded workflow. Restore requires the currently active revision as `--expected-revision`, appends history instead of rewinding, and keeps the stable URL
-
-```sh
-commit="<archive_commit from history>"
-
-uv run html-publish --config publisher.json --json restore \
-  --name release-notes \
-  --archive-commit "$commit" \
-  --target https://om1.donkey-arcturus.ts.net:8444/html-publish/ \
-  --expected-revision "<accepted active_revision from the last successful mutation>"
-```
+Use the [installed commands](#use-the-six-installed-commands) to inspect saved and active state, verify delivery, read history, and restore a prior revision without manual Git commands
 
 ### Interrupted publications
 
@@ -239,24 +254,24 @@ An orphaned Git ref lock is reported in the `archive_failure` message and is nev
 Roll back to the previously installed application release
 
 ```sh
-just rollback-om1
+/home/pascal/.local/share/html-publish/current/.venv/bin/html-publish-deploy rollback
 ```
 
 To select a known installed release, run the deployment module with its release ID
 
 ```sh
-uv run python -m html_publish.deploy rollback \
-  --release sha256-<wheel-digest>
+/home/pascal/.local/share/html-publish/current/.venv/bin/html-publish-deploy rollback \
+	--release 'sha256-<wheel-digest>'
 ```
 
 Rollback changes the application release pointer and restarts the service. It does not restore publication content or earlier unit and configuration files. A failed rollback restores the exact original application pointers if they still match this attempt's writes. Recovery restart failures remain visible in the error
 
-Reinstall the current checkout with `just deploy-om1` after a rollback
+Return to the reviewed checkout with the same `html-publish-install --source ... --revision ...` command after a rollback
 
 ## Known limits
 
-- User linger is disabled on the verified host, and reboot persistence has not been verified
+- User linger was enabled separately on 2026-09-22 after the installed preservation checks. Reboot persistence remains unverified. See the [startup handoff](evidence/deployment/2026-09-22-om1-installed.md#startup-handoff)
 - A lost SSH connection can leave its private `incoming` directory for operator inspection. The client deadline cannot prove that remote publication stopped
 - Application rollback changes the application release pointer; it does not restore publication content. Publication restore is available through the installed CLI
-- Durable receipts, remote backup, and the browser and second-device fault matrices remain deferred. Controlled SSH and SCP subprocess fixtures cover transport failures and timeouts
+- Durable receipts, remote backup, and the browser and second-device fault matrices remain deferred. Browser and second-device success transitions are recorded. Controlled SSH and SCP fixtures cover transport failures and timeouts, and separate private stores cover installed-executable faults
 - The workflow is a controlled private MVP and is not production-ready

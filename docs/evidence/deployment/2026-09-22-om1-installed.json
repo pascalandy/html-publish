@@ -1,0 +1,996 @@
+{
+  "schema_version": 1,
+  "date": "2026-09-22",
+  "scope": "Installed om1 maintenance, actual browser and second-device observations, and separate private fault stores",
+  "source_sha": "44b6da03562160f974dc222cade2088ed2acd9a1",
+  "source_sha_meaning": "Reviewed target revision for this run. It does not identify the old rollback wheel source.",
+  "installed_release": "sha256-f98c0e17db50a6a1780eb56a57d4d09aac942eb7bbef3f4d0817f12ffd87f489",
+  "rollback_release": "sha256-23a76297d1be8891c41f95f93b9fef6aca51c7311d4e34901809b6ec091befc9",
+  "installed_binary_sha256": "26c4d2af01c854c99a175ae357ddfe9b1bfb75a93de35e9d819e2f7fb1c6e399",
+  "package_hashes_match_source": true,
+  "installer_source_commit": "e868e5246d60960fd68ecebb461a49621a86e036",
+  "script_sha256": {
+    "dotfiles/executable_html-publish-install": "c196dc73ba201a9d98b05f2767af8ba3e124d7b6baf76dcc59d742a91940853a",
+    "capture_manifest.py": "f2b5ceaddd5b8e8780c0e23a503a6b370cd81fde0c8bc7b6e770d640ecdd6ecd",
+    "prove_publication.py": "ebb6ee015db111822b8e45b3b3a0a2ace00d4bbae7bef7d7c76fa9c94fd9bc18",
+    "helper-hashes.json": "1281643c13a37e19d054e8cd7df18fbff305f0b812bc64ae755fb55dd6f2576b",
+    "prove_faults.py": "e6ad68f84d324385b0b688fe007ecc2688f06790d918c24d68350a5ab6a32e8b",
+    "probe_om1_issue2.py": "ff43a635682fff563960695ef7067272c2135f93ee03ca40ef6ccc8f7dcfaaa4",
+    "verify_om1_mvp.py": "91b58c0eea8416d34b8adefb0f5d8a7dec8bb79fb9384a1b0a1f533e1ede79a0"
+  },
+  "raw_roots": {
+    "installed": "/home/pascal/.local/state/html-publish-issue6/20260922-44b6da0",
+    "faults": "/home/pascal/.local/state/codex/orchestrate/html-publish-20260922/store/installed-fault-proof-prep/runs/installed-fault-01"
+  },
+  "redaction": "Allowlisted summary. Existing publication names and paths become existing-publication-N. Full configs, Serve JSON, unrelated unit inventory, response bodies, and unrelated application paths are omitted.",
+  "snapshots": [
+    {
+      "phase": "preinstall",
+      "captured_at": "2026-09-22T13:37:29.522844+00:00",
+      "stable_during_capture": true,
+      "publication_count": 2
+    },
+    {
+      "phase": "postinstall",
+      "captured_at": "2026-09-22T13:39:21.726592+00:00",
+      "stable_during_capture": true,
+      "publication_count": 2
+    },
+    {
+      "phase": "post-reinstall",
+      "captured_at": "2026-09-22T13:40:14.599613+00:00",
+      "stable_during_capture": true,
+      "publication_count": 2
+    },
+    {
+      "phase": "post-publication",
+      "captured_at": "2026-09-22T13:47:00.639744+00:00",
+      "stable_during_capture": true,
+      "publication_count": 3
+    },
+    {
+      "phase": "post-rollback",
+      "captured_at": "2026-09-22T13:48:30.657434+00:00",
+      "stable_during_capture": true,
+      "publication_count": 3
+    },
+    {
+      "phase": "final-installed",
+      "captured_at": "2026-09-22T13:50:01.090079+00:00",
+      "stable_during_capture": true,
+      "publication_count": 3
+    }
+  ],
+  "installation": {
+    "install": {
+      "base_url": "https://om1.donkey-arcturus.ts.net:8444/html-publish/",
+      "health": {
+        "base_url": "https://om1.donkey-arcturus.ts.net:8444/html-publish/",
+        "checks": [
+          {
+            "detail": "sha256-f98c0e17db50a6a1780eb56a57d4d09aac942eb7bbef3f4d0817f12ffd87f489",
+            "name": "current_release",
+            "ok": true
+          },
+          {
+            "detail": "active",
+            "name": "service",
+            "ok": true
+          },
+          {
+            "detail": "exact",
+            "name": "tailscale_route",
+            "ok": true
+          },
+          {
+            "detail": "HTTP 200",
+            "name": "loopback",
+            "ok": true
+          },
+          {
+            "detail": "HTTP 200",
+            "name": "https",
+            "ok": true
+          }
+        ],
+        "healthy": true,
+        "operation": "health",
+        "release": "sha256-f98c0e17db50a6a1780eb56a57d4d09aac942eb7bbef3f4d0817f12ffd87f489"
+      },
+      "operation": "install",
+      "outcome": "updated",
+      "previous": "sha256-23a76297d1be8891c41f95f93b9fef6aca51c7311d4e34901809b6ec091befc9",
+      "release": "sha256-f98c0e17db50a6a1780eb56a57d4d09aac942eb7bbef3f4d0817f12ffd87f489"
+    },
+    "reinstall": {
+      "base_url": "https://om1.donkey-arcturus.ts.net:8444/html-publish/",
+      "health": {
+        "base_url": "https://om1.donkey-arcturus.ts.net:8444/html-publish/",
+        "checks": [
+          {
+            "detail": "sha256-f98c0e17db50a6a1780eb56a57d4d09aac942eb7bbef3f4d0817f12ffd87f489",
+            "name": "current_release",
+            "ok": true
+          },
+          {
+            "detail": "active",
+            "name": "service",
+            "ok": true
+          },
+          {
+            "detail": "exact",
+            "name": "tailscale_route",
+            "ok": true
+          },
+          {
+            "detail": "HTTP 200",
+            "name": "loopback",
+            "ok": true
+          },
+          {
+            "detail": "HTTP 200",
+            "name": "https",
+            "ok": true
+          }
+        ],
+        "healthy": true,
+        "operation": "health",
+        "release": "sha256-f98c0e17db50a6a1780eb56a57d4d09aac942eb7bbef3f4d0817f12ffd87f489"
+      },
+      "operation": "install",
+      "outcome": "unchanged",
+      "previous": "sha256-23a76297d1be8891c41f95f93b9fef6aca51c7311d4e34901809b6ec091befc9",
+      "release": "sha256-f98c0e17db50a6a1780eb56a57d4d09aac942eb7bbef3f4d0817f12ffd87f489"
+    },
+    "rollback": {
+      "base_url": "https://om1.donkey-arcturus.ts.net:8444/html-publish/",
+      "health": {
+        "base_url": "https://om1.donkey-arcturus.ts.net:8444/html-publish/",
+        "checks": [
+          {
+            "detail": "sha256-23a76297d1be8891c41f95f93b9fef6aca51c7311d4e34901809b6ec091befc9",
+            "name": "current_release",
+            "ok": true
+          },
+          {
+            "detail": "active",
+            "name": "service",
+            "ok": true
+          },
+          {
+            "detail": "exact",
+            "name": "tailscale_route",
+            "ok": true
+          },
+          {
+            "detail": "HTTP 200",
+            "name": "loopback",
+            "ok": true
+          },
+          {
+            "detail": "HTTP 200",
+            "name": "https",
+            "ok": true
+          }
+        ],
+        "healthy": true,
+        "operation": "health",
+        "release": "sha256-23a76297d1be8891c41f95f93b9fef6aca51c7311d4e34901809b6ec091befc9"
+      },
+      "operation": "rollback",
+      "outcome": "rolled_back",
+      "previous": "sha256-f98c0e17db50a6a1780eb56a57d4d09aac942eb7bbef3f4d0817f12ffd87f489",
+      "release": "sha256-23a76297d1be8891c41f95f93b9fef6aca51c7311d4e34901809b6ec091befc9"
+    },
+    "return-to-reviewed": {
+      "base_url": "https://om1.donkey-arcturus.ts.net:8444/html-publish/",
+      "health": {
+        "base_url": "https://om1.donkey-arcturus.ts.net:8444/html-publish/",
+        "checks": [
+          {
+            "detail": "sha256-f98c0e17db50a6a1780eb56a57d4d09aac942eb7bbef3f4d0817f12ffd87f489",
+            "name": "current_release",
+            "ok": true
+          },
+          {
+            "detail": "active",
+            "name": "service",
+            "ok": true
+          },
+          {
+            "detail": "exact",
+            "name": "tailscale_route",
+            "ok": true
+          },
+          {
+            "detail": "HTTP 200",
+            "name": "loopback",
+            "ok": true
+          },
+          {
+            "detail": "HTTP 200",
+            "name": "https",
+            "ok": true
+          }
+        ],
+        "healthy": true,
+        "operation": "health",
+        "release": "sha256-f98c0e17db50a6a1780eb56a57d4d09aac942eb7bbef3f4d0817f12ffd87f489"
+      },
+      "operation": "install",
+      "outcome": "updated",
+      "previous": "sha256-23a76297d1be8891c41f95f93b9fef6aca51c7311d4e34901809b6ec091befc9",
+      "release": "sha256-f98c0e17db50a6a1780eb56a57d4d09aac942eb7bbef3f4d0817f12ffd87f489"
+    }
+  },
+  "preservation": {
+    "existing_publications": {
+      "existing-publication-1": {
+        "selection_and_files_unchanged": true
+      },
+      "existing-publication-2": {
+        "selection_and_files_unchanged": true
+      }
+    },
+    "owned_publication_added": "issue6-20260922-44b6da0",
+    "serve_unchanged": true,
+    "same_wheel_reinstall": true,
+    "rollback_original_application_byte_for_byte": true,
+    "return_existing_application_files_unchanged": true,
+    "added_application_files": {
+      ".venv/lib/python3.13/site-packages/html_publish/__pycache__/deploy.cpython-313.pyc": {
+        "sha256": "6be486063d8f089729badb86ac14273329152289e6c0770cc11e45799dca8fe9",
+        "size": 45550,
+        "mode": "0o644"
+      }
+    },
+    "same_boot_id_in_all_snapshots": true
+  },
+  "publication": {
+    "result": {
+      "accepted_revision": "14b039d322afde685e38b1925e91d85d4fdede48",
+      "existing_publications_preserved": true,
+      "note": "The owned publication remains selected at A",
+      "outcome": "passed",
+      "sources_preserved": true,
+      "url": "https://om1.donkey-arcturus.ts.net:8444/html-publish/issue6-20260922-44b6da0/"
+    },
+    "commands": {
+      "status-initial": {
+        "returncode": 0,
+        "elapsed_seconds": 0.0613499769824557,
+        "operation": "status",
+        "outcome": "observed",
+        "effects": {
+          "archive_advanced": false,
+          "activated": false
+        },
+        "expected_revision": null,
+        "active_revision": null,
+        "archive_commit": null,
+        "verification": "not_checked",
+        "error_code": null
+      },
+      "plan-a": {
+        "returncode": 0,
+        "elapsed_seconds": 0.07407854899065569,
+        "operation": "plan",
+        "outcome": "planned",
+        "effects": {
+          "archive_advanced": false,
+          "activated": false
+        },
+        "expected_revision": null,
+        "active_revision": null,
+        "archive_commit": null,
+        "verification": "not_checked",
+        "error_code": null
+      },
+      "publish-a": {
+        "returncode": 0,
+        "elapsed_seconds": 0.2605619070236571,
+        "operation": "publish",
+        "outcome": "published",
+        "effects": {
+          "archive_advanced": true,
+          "activated": true
+        },
+        "expected_revision": null,
+        "active_revision": "14b039d322afde685e38b1925e91d85d4fdede48",
+        "archive_commit": "dc82f1a24083a278a94d6b2f61e98c63fcd69756",
+        "verification": "passed",
+        "error_code": null
+      },
+      "status-a": {
+        "returncode": 0,
+        "elapsed_seconds": 0.06709995801793411,
+        "operation": "status",
+        "outcome": "observed",
+        "effects": {
+          "archive_advanced": false,
+          "activated": false
+        },
+        "expected_revision": null,
+        "active_revision": "14b039d322afde685e38b1925e91d85d4fdede48",
+        "archive_commit": "dc82f1a24083a278a94d6b2f61e98c63fcd69756",
+        "verification": "not_checked",
+        "error_code": null
+      },
+      "verify-a": {
+        "returncode": 0,
+        "elapsed_seconds": 0.19039117399370298,
+        "operation": "verify",
+        "outcome": "verified",
+        "effects": {
+          "archive_advanced": false,
+          "activated": false
+        },
+        "expected_revision": null,
+        "active_revision": "14b039d322afde685e38b1925e91d85d4fdede48",
+        "archive_commit": "dc82f1a24083a278a94d6b2f61e98c63fcd69756",
+        "verification": "passed",
+        "error_code": null
+      },
+      "plan-b": {
+        "returncode": 0,
+        "elapsed_seconds": 0.09351647295989096,
+        "operation": "plan",
+        "outcome": "planned",
+        "effects": {
+          "archive_advanced": false,
+          "activated": false
+        },
+        "expected_revision": "14b039d322afde685e38b1925e91d85d4fdede48",
+        "active_revision": "14b039d322afde685e38b1925e91d85d4fdede48",
+        "archive_commit": "dc82f1a24083a278a94d6b2f61e98c63fcd69756",
+        "verification": "not_checked",
+        "error_code": null
+      },
+      "publish-b": {
+        "returncode": 0,
+        "elapsed_seconds": 0.279457492986694,
+        "operation": "publish",
+        "outcome": "published",
+        "effects": {
+          "archive_advanced": true,
+          "activated": true
+        },
+        "expected_revision": "14b039d322afde685e38b1925e91d85d4fdede48",
+        "active_revision": "4b4fa214b24da0c0670cc5327237a38cf8fd8833",
+        "archive_commit": "fde729046e8666d97a9b2496e412a62c5c748de5",
+        "verification": "passed",
+        "error_code": null
+      },
+      "status-b": {
+        "returncode": 0,
+        "elapsed_seconds": 0.06821616599336267,
+        "operation": "status",
+        "outcome": "observed",
+        "effects": {
+          "archive_advanced": false,
+          "activated": false
+        },
+        "expected_revision": null,
+        "active_revision": "4b4fa214b24da0c0670cc5327237a38cf8fd8833",
+        "archive_commit": "fde729046e8666d97a9b2496e412a62c5c748de5",
+        "verification": "not_checked",
+        "error_code": null
+      },
+      "verify-b": {
+        "returncode": 0,
+        "elapsed_seconds": 0.1755662960349582,
+        "operation": "verify",
+        "outcome": "verified",
+        "effects": {
+          "archive_advanced": false,
+          "activated": false
+        },
+        "expected_revision": null,
+        "active_revision": "4b4fa214b24da0c0670cc5327237a38cf8fd8833",
+        "archive_commit": "fde729046e8666d97a9b2496e412a62c5c748de5",
+        "verification": "passed",
+        "error_code": null
+      },
+      "history": {
+        "returncode": 0,
+        "elapsed_seconds": 0.07675592601299286,
+        "operation": "history",
+        "outcome": "observed",
+        "effects": {
+          "archive_advanced": false,
+          "activated": false
+        },
+        "expected_revision": null,
+        "active_revision": null,
+        "archive_commit": null,
+        "verification": "not_checked",
+        "error_code": null
+      },
+      "stale-conflict": {
+        "returncode": 1,
+        "elapsed_seconds": 0.10103289701510221,
+        "operation": "publish",
+        "outcome": "error",
+        "effects": {
+          "archive_advanced": false,
+          "activated": false
+        },
+        "expected_revision": "14b039d322afde685e38b1925e91d85d4fdede48",
+        "active_revision": "4b4fa214b24da0c0670cc5327237a38cf8fd8833",
+        "archive_commit": "fde729046e8666d97a9b2496e412a62c5c748de5",
+        "verification": "not_checked",
+        "error_code": "revision_conflict"
+      },
+      "restore-a": {
+        "returncode": 0,
+        "elapsed_seconds": 0.2503669739817269,
+        "operation": "restore",
+        "outcome": "published",
+        "effects": {
+          "archive_advanced": true,
+          "activated": true
+        },
+        "expected_revision": "4b4fa214b24da0c0670cc5327237a38cf8fd8833",
+        "active_revision": "14b039d322afde685e38b1925e91d85d4fdede48",
+        "archive_commit": "90e39ce40f661351428f2cd2ff8ae798b86364ca",
+        "verification": "passed",
+        "error_code": null
+      },
+      "status-restored-a": {
+        "returncode": 0,
+        "elapsed_seconds": 0.07386307802516967,
+        "operation": "status",
+        "outcome": "observed",
+        "effects": {
+          "archive_advanced": false,
+          "activated": false
+        },
+        "expected_revision": null,
+        "active_revision": "14b039d322afde685e38b1925e91d85d4fdede48",
+        "archive_commit": "90e39ce40f661351428f2cd2ff8ae798b86364ca",
+        "verification": "not_checked",
+        "error_code": null
+      },
+      "verify-restored-a": {
+        "returncode": 0,
+        "elapsed_seconds": 0.18251080403570086,
+        "operation": "verify",
+        "outcome": "verified",
+        "effects": {
+          "archive_advanced": false,
+          "activated": false
+        },
+        "expected_revision": null,
+        "active_revision": "14b039d322afde685e38b1925e91d85d4fdede48",
+        "archive_commit": "90e39ce40f661351428f2cd2ff8ae798b86364ca",
+        "verification": "passed",
+        "error_code": null
+      },
+      "history-restored": {
+        "returncode": 0,
+        "elapsed_seconds": 0.0780386229744181,
+        "operation": "history",
+        "outcome": "observed",
+        "effects": {
+          "archive_advanced": false,
+          "activated": false
+        },
+        "expected_revision": null,
+        "active_revision": null,
+        "archive_commit": null,
+        "verification": "not_checked",
+        "error_code": null
+      }
+    },
+    "http_checkpoints": {
+      "http-a": {
+        "rows": 15,
+        "all_passed": true
+      },
+      "http-b": {
+        "rows": 22,
+        "all_passed": true
+      },
+      "http-restored-a": {
+        "rows": 24,
+        "all_passed": true
+      }
+    }
+  },
+  "browser_and_clients": [
+    {
+      "phase": "A",
+      "document": {
+        "background": "rgb(0, 0, 0)",
+        "color": "rgb(255, 255, 255)",
+        "cssState": "'A'",
+        "marker": "ISSUE2-A-sources",
+        "navigationType": "navigate",
+        "url": "https://om1.donkey-arcturus.ts.net:8444/html-publish/issue6-20260922-44b6da0/"
+      },
+      "screenshot": "2026-09-22-om1-installed-A.png",
+      "screenshot_sha256": "6e0f633f99346527370131b08b8b92fd93cba945e8d3a570830f68373836d37b",
+      "responses": [
+        {
+          "observer": "m4mini",
+          "path": "",
+          "if_modified_since": null,
+          "exit_code": 0,
+          "status": 200,
+          "headers": {
+            "cache-control": "no-store",
+            "content-type": "text/html",
+            "date": "Tue, 22 Sep 2026 13:43:26 GMT",
+            "last-modified": "Tue, 14 Nov 2023 22:13:20 GMT",
+            "server": "SimpleHTTP/0.6 Python/3.13.15",
+            "content-length": "104"
+          },
+          "body_size": 104,
+          "body_sha256": "eb067c4cf8c036a3e5cea6bd58a7fba42f8998a656674b94373e60cb978a9619"
+        },
+        {
+          "observer": "m4mini",
+          "path": "assets/state.css",
+          "if_modified_since": null,
+          "exit_code": 0,
+          "status": 200,
+          "headers": {
+            "cache-control": "no-store",
+            "content-type": "text/css",
+            "date": "Tue, 22 Sep 2026 13:43:26 GMT",
+            "last-modified": "Tue, 14 Nov 2023 22:13:20 GMT",
+            "server": "SimpleHTTP/0.6 Python/3.13.15",
+            "content-length": "52"
+          },
+          "body_size": 52,
+          "body_sha256": "25b310b20219a3d0ce652a3480d3f84a4d91790ab5b79796a2d5b13d00ec2540"
+        }
+      ]
+    },
+    {
+      "phase": "B",
+      "document": {
+        "cssState": "'B'",
+        "marker": "ISSUE2-B-sources",
+        "navigationType": "reload",
+        "url": "https://om1.donkey-arcturus.ts.net:8444/html-publish/issue6-20260922-44b6da0/"
+      },
+      "screenshot": "2026-09-22-om1-installed-B.png",
+      "screenshot_sha256": "cad1345bfc69477ec4b7fd2212fb9033e8ed6dab1be6f42b2d08e44e4ea624c3",
+      "responses": [
+        {
+          "observer": "m4mini",
+          "path": "",
+          "if_modified_since": null,
+          "exit_code": 0,
+          "status": 200,
+          "headers": {
+            "cache-control": "no-store",
+            "content-type": "text/html",
+            "date": "Tue, 22 Sep 2026 13:45:21 GMT",
+            "last-modified": "Tue, 14 Nov 2023 22:13:20 GMT",
+            "server": "SimpleHTTP/0.6 Python/3.13.15",
+            "content-length": "104"
+          },
+          "body_size": 104,
+          "body_sha256": "157b9ce96962d1ed8243c1243f2e54f1e4247422e22317cace95dfe978a8e2f2"
+        },
+        {
+          "observer": "om1",
+          "path": "",
+          "if_modified_since": "Tue, 14 Nov 2023 22:13:20 GMT",
+          "exit_code": 0,
+          "status": 200,
+          "headers": {
+            "cache-control": "no-store",
+            "content-type": "text/html",
+            "date": "Tue, 22 Sep 2026 13:45:21 GMT",
+            "last-modified": "Tue, 14 Nov 2023 22:13:20 GMT",
+            "server": "SimpleHTTP/0.6 Python/3.13.15",
+            "content-length": "104"
+          },
+          "body_size": 104,
+          "body_sha256": "157b9ce96962d1ed8243c1243f2e54f1e4247422e22317cace95dfe978a8e2f2"
+        },
+        {
+          "observer": "m4mini",
+          "path": "assets/state.css",
+          "if_modified_since": null,
+          "exit_code": 0,
+          "status": 200,
+          "headers": {
+            "cache-control": "no-store",
+            "content-type": "text/css",
+            "date": "Tue, 22 Sep 2026 13:45:21 GMT",
+            "last-modified": "Tue, 14 Nov 2023 22:13:20 GMT",
+            "server": "SimpleHTTP/0.6 Python/3.13.15",
+            "content-length": "52"
+          },
+          "body_size": 52,
+          "body_sha256": "60fb857645ecaba639a37b6704a06509769413398bbbee24fe3bfaee45b2433a"
+        },
+        {
+          "observer": "om1",
+          "path": "assets/state.css",
+          "if_modified_since": "Tue, 14 Nov 2023 22:13:20 GMT",
+          "exit_code": 0,
+          "status": 200,
+          "headers": {
+            "cache-control": "no-store",
+            "content-type": "text/css",
+            "date": "Tue, 22 Sep 2026 13:45:21 GMT",
+            "last-modified": "Tue, 14 Nov 2023 22:13:20 GMT",
+            "server": "SimpleHTTP/0.6 Python/3.13.15",
+            "content-length": "52"
+          },
+          "body_size": 52,
+          "body_sha256": "60fb857645ecaba639a37b6704a06509769413398bbbee24fe3bfaee45b2433a"
+        }
+      ]
+    },
+    {
+      "phase": "restored-A",
+      "document": {
+        "cssState": "'A'",
+        "marker": "ISSUE2-A-sources",
+        "navigationType": "reload",
+        "url": "https://om1.donkey-arcturus.ts.net:8444/html-publish/issue6-20260922-44b6da0/"
+      },
+      "screenshot": "2026-09-22-om1-installed-restored-A.png",
+      "screenshot_sha256": "6e0f633f99346527370131b08b8b92fd93cba945e8d3a570830f68373836d37b",
+      "responses": [
+        {
+          "observer": "m4mini",
+          "path": "",
+          "if_modified_since": null,
+          "exit_code": 0,
+          "status": 200,
+          "headers": {
+            "cache-control": "no-store",
+            "content-type": "text/html",
+            "date": "Tue, 22 Sep 2026 13:46:03 GMT",
+            "last-modified": "Tue, 14 Nov 2023 22:13:20 GMT",
+            "server": "SimpleHTTP/0.6 Python/3.13.15",
+            "content-length": "104"
+          },
+          "body_size": 104,
+          "body_sha256": "eb067c4cf8c036a3e5cea6bd58a7fba42f8998a656674b94373e60cb978a9619"
+        },
+        {
+          "observer": "om1",
+          "path": "",
+          "if_modified_since": "Tue, 14 Nov 2023 22:13:20 GMT",
+          "exit_code": 0,
+          "status": 200,
+          "headers": {
+            "cache-control": "no-store",
+            "content-type": "text/html",
+            "date": "Tue, 22 Sep 2026 13:46:03 GMT",
+            "last-modified": "Tue, 14 Nov 2023 22:13:20 GMT",
+            "server": "SimpleHTTP/0.6 Python/3.13.15",
+            "content-length": "104"
+          },
+          "body_size": 104,
+          "body_sha256": "eb067c4cf8c036a3e5cea6bd58a7fba42f8998a656674b94373e60cb978a9619"
+        },
+        {
+          "observer": "m4mini",
+          "path": "assets/state.css",
+          "if_modified_since": null,
+          "exit_code": 0,
+          "status": 200,
+          "headers": {
+            "cache-control": "no-store",
+            "content-type": "text/css",
+            "date": "Tue, 22 Sep 2026 13:46:03 GMT",
+            "last-modified": "Tue, 14 Nov 2023 22:13:20 GMT",
+            "server": "SimpleHTTP/0.6 Python/3.13.15",
+            "content-length": "52"
+          },
+          "body_size": 52,
+          "body_sha256": "25b310b20219a3d0ce652a3480d3f84a4d91790ab5b79796a2d5b13d00ec2540"
+        },
+        {
+          "observer": "om1",
+          "path": "assets/state.css",
+          "if_modified_since": "Tue, 14 Nov 2023 22:13:20 GMT",
+          "exit_code": 0,
+          "status": 200,
+          "headers": {
+            "cache-control": "no-store",
+            "content-type": "text/css",
+            "date": "Tue, 22 Sep 2026 13:46:03 GMT",
+            "last-modified": "Tue, 14 Nov 2023 22:13:20 GMT",
+            "server": "SimpleHTTP/0.6 Python/3.13.15",
+            "content-length": "52"
+          },
+          "body_size": 52,
+          "body_sha256": "25b310b20219a3d0ce652a3480d3f84a4d91790ab5b79796a2d5b13d00ec2540"
+        }
+      ]
+    }
+  ],
+  "browser_mutations": {
+    "browser-publish-b.json": {
+      "operation": "publish",
+      "request_id": "issue6-20260922-44b6da0-browser-b",
+      "outcome": "published",
+      "expected_revision": "14b039d322afde685e38b1925e91d85d4fdede48",
+      "active_revision": "4b4fa214b24da0c0670cc5327237a38cf8fd8833",
+      "archive_commit": "9e7f0978b9e38e6744ccccc3d52abedb14ac7fd2",
+      "effects": {
+        "archive_advanced": true,
+        "activated": true
+      },
+      "verification": {
+        "result": "passed",
+        "revision": "4b4fa214b24da0c0670cc5327237a38cf8fd8833",
+        "checked_at": "2026-09-22T13:44:31.386109+00:00",
+        "probe_location": "host",
+        "files_checked": 8,
+        "bytes_checked": 335,
+        "scope": [
+          "local_export",
+          "directory_url",
+          "index_html",
+          "all_files",
+          "missing_path",
+          "removed_paths"
+        ],
+        "detail": null
+      }
+    },
+    "browser-restore-a.json": {
+      "operation": "restore",
+      "request_id": "issue6-20260922-44b6da0-browser-restore",
+      "outcome": "published",
+      "expected_revision": "4b4fa214b24da0c0670cc5327237a38cf8fd8833",
+      "active_revision": "14b039d322afde685e38b1925e91d85d4fdede48",
+      "archive_commit": "2e46d81195845fb17a4897b5a2666d6d36df2382",
+      "effects": {
+        "archive_advanced": true,
+        "activated": true
+      },
+      "verification": {
+        "result": "passed",
+        "revision": "14b039d322afde685e38b1925e91d85d4fdede48",
+        "checked_at": "2026-09-22T13:45:39.762066+00:00",
+        "probe_location": "host",
+        "files_checked": 9,
+        "bytes_checked": 351,
+        "scope": [
+          "local_export",
+          "directory_url",
+          "index_html",
+          "all_files",
+          "missing_path",
+          "removed_paths"
+        ],
+        "detail": null
+      }
+    }
+  },
+  "independent_review": {
+    "verdict": "PASS for installed pre-reboot scope",
+    "reviewer": "/root/verify_deploy_cancellation",
+    "current_observation_at": "2026-09-22T14:01:36.811046+00:00",
+    "raw_root": "/home/pascal/.local/state/codex/orchestrate/html-publish-20260922",
+    "sha256": {
+      "review-installed-live.md": "965299d347dd96bd26a8a095732fe46367dea81fbd51bf0782eb0afc25a55973",
+      "review-installed-live-evidence/saved-audit.json": "3ac25a70d8a2c6d55a3d863de71b3d838b3d463408cbfa404ab1d03cfb64f48f",
+      "review-installed-live-evidence/current-audit.json": "46a00e1a01ff7d7beb18b55e09aa37097f4ffd10d9ad4bfd8129e728d4721890",
+      "review-installed-live-evidence/archive-audit.json": "181d75fcade1d8bac6c3bdd5820aa5b71f78211c2907691a9f15ad51a9ee923f",
+      "review-installed-live-evidence/nested-mount-audit.json": "08d19d4bce6832f1bfbd4860e15503dd1841be54fbe5436613345c9bd2168817"
+    },
+    "scope": "Saved-artifact and image inspection; current package and process observations; installed status, verify, and HTTPS reads. No rerun of maintenance mutations or browser/client sequence."
+  },
+  "installed_sandbox": {
+    "read_only_mounts": [
+      "/",
+      "/home"
+    ],
+    "effective_capabilities": "0000000000000000",
+    "no_new_privileges": "1",
+    "claim": "Serving-process mount and status observations plus separate live reads. No actual-service write injection."
+  },
+  "faults": {
+    "mode": "installed",
+    "result": {
+      "cases": [
+        "target_mismatch",
+        "command_timeout_after_activation",
+        "delivery_failure_then_identical_retry"
+      ],
+      "fixtures_stopped": true,
+      "live_preservation": "passed",
+      "mode": "installed",
+      "outcome": "passed"
+    },
+    "commands": {
+      "target-mismatch/evidence/publish-mismatch.json": {
+        "returncode": 1,
+        "elapsed_seconds": 0.04896502697374672,
+        "operation": "publish",
+        "outcome": "error",
+        "effects": {
+          "archive_advanced": false,
+          "activated": false
+        },
+        "expected_revision": null,
+        "active_revision": null,
+        "archive_commit": null,
+        "verification": "not_checked",
+        "error_code": "target_mismatch"
+      },
+      "trickling-timeout/evidence/publish-timeout.json": {
+        "returncode": 1,
+        "elapsed_seconds": 0.5545864410232753,
+        "operation": "publish",
+        "outcome": "error",
+        "effects": {
+          "archive_advanced": true,
+          "activated": true
+        },
+        "expected_revision": null,
+        "active_revision": null,
+        "archive_commit": null,
+        "verification": "failed",
+        "error_code": "command_timeout"
+      },
+      "delivery-retry/evidence/publish-unverified.json": {
+        "returncode": 1,
+        "elapsed_seconds": 0.1020722429966554,
+        "operation": "publish",
+        "outcome": "error",
+        "effects": {
+          "archive_advanced": true,
+          "activated": true
+        },
+        "expected_revision": null,
+        "active_revision": "da979bbddf3e6ffc746900043da5f1a25b3ae2a2",
+        "archive_commit": "be73ae43cc5633811c88d43b065a92d11ab63841",
+        "verification": "failed",
+        "error_code": "delivery_failure"
+      },
+      "delivery-retry/evidence/status-observational.json": {
+        "returncode": 0,
+        "elapsed_seconds": 0.05773909896379337,
+        "operation": "status",
+        "outcome": "observed",
+        "effects": {
+          "archive_advanced": false,
+          "activated": false
+        },
+        "expected_revision": null,
+        "active_revision": "da979bbddf3e6ffc746900043da5f1a25b3ae2a2",
+        "archive_commit": "be73ae43cc5633811c88d43b065a92d11ab63841",
+        "verification": "not_checked",
+        "error_code": null
+      },
+      "delivery-retry/evidence/retry-identical.json": {
+        "returncode": 0,
+        "elapsed_seconds": 0.09281830501277,
+        "operation": "publish",
+        "outcome": "unchanged",
+        "effects": {
+          "archive_advanced": false,
+          "activated": false
+        },
+        "expected_revision": null,
+        "active_revision": "da979bbddf3e6ffc746900043da5f1a25b3ae2a2",
+        "archive_commit": "be73ae43cc5633811c88d43b065a92d11ab63841",
+        "verification": "passed",
+        "error_code": null
+      },
+      "delivery-retry/evidence/history-after-retry.json": {
+        "returncode": 0,
+        "elapsed_seconds": 0.06046356400474906,
+        "operation": "history",
+        "outcome": "observed",
+        "effects": {
+          "archive_advanced": false,
+          "activated": false
+        },
+        "expected_revision": null,
+        "active_revision": null,
+        "archive_commit": null,
+        "verification": "not_checked",
+        "error_code": null
+      }
+    },
+    "live_fingerprints_equal": true
+  },
+  "startup": {
+    "observed_at": "2026-09-22T13:57:25.538492+00:00",
+    "command": [
+      "loginctl",
+      "enable-linger",
+      "pascal"
+    ],
+    "linger_before": "no",
+    "linger_after": "yes",
+    "scope": "Existing enabled user units can start without an interactive login; no unrelated unit configuration was changed",
+    "outside_earlier_preservation_window": true,
+    "observer_preparation": {
+      "observer_sha256": "b1cfae2f7f9a72e3d4fb6a2659a5f03875945106d92876932f12edaf1e323615",
+      "local_script": "/home/pascal/.local/state/html-publish-issue6/20260922-44b6da0/observer.py",
+      "remote_script": "/Users/assistant/.local/state/html-publish-issue6/20260922-44b6da0/observer.py",
+      "remote_python": "3.9.6",
+      "remote_script_hash_matches": true,
+      "remote_help_passed": true,
+      "prepared_unit": "/home/pascal/.local/state/html-publish-issue6/20260922-44b6da0/html-publish-issue6-20260922-44b6da0.service",
+      "unit_sha256": "c768109f83984bc0f664fb880dbc80b210bb64adb68ccfde004280c7ea4f82cb",
+      "unit_installed": false,
+      "observer_launched": false,
+      "reboot_authorized": false
+    },
+    "reboot": "not performed",
+    "installed_skill_activation": "pending"
+  },
+  "limits": [
+    "No reboot or power-loss proof",
+    "No production-readiness claim",
+    "No ETag emitted; ETag-only and combined-validator cases unavailable",
+    "Faults use the installed executable with private stores and loopback fixtures, not failed live routes",
+    "Read-only snapshots do not lock concurrent publication or installation writers",
+    "Other tailnet peers are not proven excluded; effective reader policy remains unresolved"
+  ],
+  "raw_sha256": {
+    "installed": {
+      "preinstall/manifest.json": "02133a455b14177b42a667719121dde6539cb49bc878127a7f0cdbf1e758dbc7",
+      "postinstall/manifest.json": "bcf2dbe0d3b2f7f4c5d395fd848bb81263d0530c9ee62688b926b995b99f5296",
+      "post-reinstall/manifest.json": "1b25a8c0e67701875699ef7f324f7f8ea499e4cccf746c416b349e51f995f60e",
+      "post-publication/manifest.json": "cb31dffe5aabced8c40880a9f1cb43a6a19b9751c8e0b92c2627e9b3b1523ba9",
+      "post-rollback/manifest.json": "6b6f92c5b05ae9dfa8b1528ae5090047522147f67b1a29db2082ea2006394d46",
+      "final-installed/manifest.json": "501fa551d27b834de04cff51f8576b09c49f58062b86937bff1a351ef9ca2dc8",
+      "install.json": "4b25d5509d0773409850b771049d5207c7835995c9b743e348bfd9290b3705c6",
+      "install-preservation.json": "4a61434602a7d56ab0dc82b50337ae5bb83f26bc6225c0766e7c78227ef4bd67",
+      "reinstall.json": "ad25f4af0522fb1520987fcc77bcb1dba87783a4707e276704ffa97d6fe87861",
+      "reinstall-preservation.json": "d1b536fbcefc0c2ae9f71a7629becfc41a11f4602d3f09c0c2e053bc8da45249",
+      "rollback.json": "6aa6707e250f90ac1d01d70969762f61cf114caaccd9ee09cecd6a7f0394cc7d",
+      "rollback-preservation.json": "0e67585dc96ab2fa24b22ac40fb57114fe2fa8aa97c7b2a4bc3cb3ede0ffd8a1",
+      "rollback-http.json": "00651d911317a24f4cf6003f69e201f399292bdad9bdfa7dab3cdc2bdc62ea24",
+      "return-to-reviewed.json": "4b25d5509d0773409850b771049d5207c7835995c9b743e348bfd9290b3705c6",
+      "return-preservation.json": "f2717b4cf30cd78ab6d4d535adae7e52ed5fffacfd8592beb4e2f814fd1017c9",
+      "installed-sandbox.json": "9a991b22aff4e24c22ae3f6b6c031b80d5bff907a2bca08aaadf7d5426bc2118",
+      "publication/result.json": "848f359306f82f0f7649fa3204f3960e6548191b5cda7c1376cc6767c788834a",
+      "linger-change.json": "e8266074595d69a43ede26e3c191763e20385eeed4bb84a99103cb4302549820",
+      "observer-preparation.json": "b3bae6ed7b05d81d3c51c1490137cf27ab3953a4e35f02c8621124476826c994",
+      "publication/status-initial.json": "f7c6c83f31c438de68739498c30b274049815bfd33040ab31a69ff85f63665a2",
+      "publication/plan-a.json": "a8c74846fb3fb9f25d453b560ff70ded311692cf00b59b83bb68c65fd408ca13",
+      "publication/publish-a.json": "54408fa3e2b3422af4fbbda1478487660b8aa43157c5353384a70d086a554a78",
+      "publication/status-a.json": "ffa927538ff8b3206df9a16b2a8dbb7bc3a7c28a470dec8b1fc14f0ce85dd528",
+      "publication/verify-a.json": "d013c9159eb92836bfeca624cd2aebdf8b40bab9e90f022714e63f3932781bce",
+      "publication/plan-b.json": "61c8fa6a221230f8fd8585734c1d25da029e38840fa264741a415ada7fc80503",
+      "publication/publish-b.json": "d3c706ec86bcff2e1aa6f29779a546dbdadbabcebba77497a9f24f2d5cdfbd25",
+      "publication/status-b.json": "fb4aa695e1c6da129e51881c2ae36561477bdc1a509206667b3e4a025a9f6d78",
+      "publication/verify-b.json": "2ed6819516a08ff7076579aa6b8d358dacaaa2c91a786bc81fdbea625cf36a17",
+      "publication/history.json": "651e522db2b923b76ee0d9e3eafdc8453e444431c5d850f013020942fda804d9",
+      "publication/stale-conflict.json": "56c3976c59c059803fc409498a1680b20b040d852e362a4da3c0eee8bd31d901",
+      "publication/restore-a.json": "d9040ca6d119ff5d9a30efb181bc2e700fef27a56f7b6c761ea44c67983fa19a",
+      "publication/status-restored-a.json": "b2e235c9c64109354f259b48ea4c76637a68e1d5e74665782c3998224cd7c763",
+      "publication/verify-restored-a.json": "b4699a99f3cec0b9aa92b4fbfa0166c161803b8a43820a278641a537f188c246",
+      "publication/history-restored.json": "368004caf3e6dd2831d10aa49f9815765fd7ccf8eff6752c886c79bf6de3a214",
+      "publication/http-a.json": "101fddd2c5414aa30512a31df69cbe59d9b9c2dde0249cb6b8c604d68017b48f",
+      "publication/http-b.json": "ed3ec0d1c0789135038eaa6e08ff9f7d652097095f9758c1988f685a958a9fe7",
+      "publication/http-restored-a.json": "860be5ac267e61ade43b29a39601edd2296d9b3e5be87772b08a0acfbc2ab09f",
+      "browser-publish-b.json": "c5d8554d83a65f98df069513bfdf717f6c8940152467feebdf5fc3e2ead3ff7d",
+      "browser-restore-a.json": "a545e1e2c5950143fa30d5b7d3fb677f29937dd7978725a08f8238cb3129d455",
+      "browser-client-A.json": "cd9ee8a62d87c2356f8f4c534de521ce14d64625b815880fc0755e98497c21c4",
+      "browser-client-B.json": "700fd4433da6850e795cead91449a3bf2115d0da04cd03d978b85687ab3b77b4",
+      "browser-client-restored-A.json": "651d5342c8d1973acad4c8da70437adce1e37d7b9f3f1015a0b5733e0659b007"
+    },
+    "faults": {
+      "inputs.json": "afcd4ac25d90202e739d33878c3628c013ca7fc2fe9b1da5f64edcac759f1d97",
+      "result.json": "9b31984d371bff4ade037c224f7eb5341a51e85ca691dd7b3664eb772a576dc1",
+      "live-before.json": "a3c812a256f9544703eed7d331a0985a421d0e6b593f9c9bec56bc6bff9eeefd",
+      "live-after.json": "a3c812a256f9544703eed7d331a0985a421d0e6b593f9c9bec56bc6bff9eeefd",
+      "target-mismatch/evidence/publish-mismatch.json": "c1efc5a0b158cc1d3ca74f643bf59808bf83210c16c7f10432e841efdcf2834c",
+      "trickling-timeout/evidence/publish-timeout.json": "25f2635ee7eba33da5a9b968341ab6fbd76ba48f4694d85fd9e90bde05afd370",
+      "delivery-retry/evidence/publish-unverified.json": "569a9643d72b1b0de89c2b165247e6f59f124330e53503ae4a47d1e5a112a925",
+      "delivery-retry/evidence/status-observational.json": "572a666f2114482587022aebe242b6b10e2c952684e0822af79d9385ecb27263",
+      "delivery-retry/evidence/retry-identical.json": "a76f6e64f6a8dbe9cbf0ed34f6ea090fe8aabf9c308c46b4728a48e9f6a5cbd3",
+      "delivery-retry/evidence/history-after-retry.json": "70d4886cf7525aac3daeed99110ff2beea7f8b51087b12c8fbbe7a10e87dfd5c"
+    }
+  }
+}
