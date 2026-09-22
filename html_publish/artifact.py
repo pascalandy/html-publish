@@ -55,7 +55,7 @@ def _iter_source(source: Path) -> Iterator[tuple[Path, PurePosixPath]]:
 
     def walk(directory: Path, relative: PurePosixPath) -> Iterator[tuple[Path, PurePosixPath]]:
         with os.scandir(directory) as scan:
-            entries = sorted(scan, key=lambda entry: entry.name.encode("utf-8"))
+            entries = sorted(scan, key=lambda entry: os.fsencode(entry.name))
         for entry in entries:
             if not _valid_component(entry.name):
                 raise PublishError(
