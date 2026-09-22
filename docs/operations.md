@@ -8,6 +8,61 @@ The working machine needs this checkout, `uv`, Git, `ssh`, and `scp`. SSH must r
 
 `om1` needs a clean checkout of this repository, the reviewed dotfiles `html-publish-install` command, `uv`, Git, Python, Tailscale, and a user systemd instance. The [installed verification record](evidence/deployment/2026-09-22-om1-installed.md) names the exact source, installer, wheel, and proof limits. The [installed skills and authoring record](evidence/skills/2026-09-22-installed-skills-and-authoring.md) owns the managed skill identity, receipt workflow, authoring cutover, and their proof limits. The [earlier deployment record](evidence/deployment/2026-09-21-om1-controlled-mvp.md) retains its original scope
 
+## Candidate checks and stable promotion
+
+`main` is the candidate line. There is no stable branch and no scheduled build. GitHub Actions starts only from a manual dispatch. A pull request update, a branch push, a schedule, or a stable tag starts nothing. Routine iteration relies on the local `just check` gate. The Checks workflow runs the same Linux and macOS jobs on demand from `main`
+
+Add the Installed Linux host workflow to `main` only when its workflow file and the `scripts/verify-host-systemd.sh` implementation from #44 are both present on `main`. Until then the workflow stays on its pull request branch, keeps only its manual trigger, and cannot be dispatched
+
+### Check a candidate
+
+Run the manual Checks workflow when a commit needs independent platform evidence, for example before a controlled `om1` install or a stable promotion.
+
+1. Choose the candidate on `main` and record its full lowercase commit SHA. Commit the intended package version in `pyproject.toml` and any lockfile change before the run. If source or version changes afterward, repeat this gate for the new commit
+2. Dispatch Checks against `main`:
+
+```sh
+gh workflow run check.yml --ref main
+```
+
+3. Wait for the run to finish, then record its conclusion and head SHA:
+
+```sh
+gh run list --workflow check.yml --limit 1
+gh run view '<run id>' --json headSha,conclusion,jobs
+```
+
+4. Compare the run's `head_sha` with the candidate SHA. If they differ because `main` advanced, stop. Do not install or promote the candidate with that run. Select and review a new candidate explicitly, then repeat this procedure
+5. The workflow checks out the event commit itself. Do not add a source-ref override
+
+A check result covers only the commit named in its `head_sha`.
+
+### Install the checked candidate
+
+Install the candidate on `om1` with [the install procedure](#install-or-upgrade), passing the same SHA as `--revision`. Use the installation before promoting it.
+
+### Promote with a stable tag
+
+Promotion marks a commit as stable. Promote only a commit that a successful manual Checks run covers and that `om1` has exercised. Promotion creates one annotated `vX.Y.Z` tag on that exact commit. The tag version matches that commit's packaged `pyproject.toml` version. Promotion changes no source and no version file, and starts no build or deployment
+
+```sh
+git tag -a 'vX.Y.Z' '<promoted full commit SHA>' -m 'html-publish vX.Y.Z'
+git push origin 'vX.Y.Z'
+```
+
+Never move or delete an existing stable tag. A newer promotion adds a new tag on its own commit. The tag records the stable source. Reinstalling a stable version later uses the install procedure with that tag's commit as `--revision`
+
+### Record a promotion
+
+Record the tag, the promoted full source SHA, the check run and its `head_sha`, and the installed wheel release identity in the deployment evidence record. The [installed verification record](evidence/deployment/2026-09-22-om1-installed.md) shows the provenance format
+
+### Roll back after promotion
+
+Two faults have different paths:
+
+- A bad application release on `om1` uses the [application rollback](#application-rollback) command. It returns to the previously installed release. Reinstall the reviewed source afterwards with the install procedure
+- A regretted stable promotion identifies the previous stable tag. Reinstall that tag's commit with the install procedure. The application rollback command remains the fast path to the previously installed release
+
 ## Install or upgrade
 
 Run the dotfiles entrypoint as `pascal` on `om1`. Supply the absolute root of a clean checkout and its independently reviewed full commit
