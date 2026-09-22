@@ -2710,8 +2710,9 @@ class PublisherCliTest(unittest.TestCase):
 
         corrupted = self.run_cli("status", "--name", "report", "--host-check")
 
-        self.assertEqual(corrupted.returncode, 0, corrupted.stderr)
+        self.assertEqual(corrupted.returncode, 1, corrupted.stderr)
         corrupted_payload = self.payload(corrupted)
+        self.assertEqual(corrupted_payload["error"]["code"], "export_corruption")
         self.assertEqual(corrupted_payload["verification"]["result"], "failed")
         self.assertEqual(corrupted_payload["verification"]["revision"], active_revision)
         self.assertEqual(corrupted_payload["verification"]["probe_location"], "local")

@@ -898,6 +898,9 @@ class PublicationStore:
             )
 
     def verify_page(self, name: Name) -> Report:
+        state: LocalState | None = None
+        verification = Verification()
+        delivery_attempted = False
         try:
             with self._lock(create=False):
                 state = self._state(name, full=True)
@@ -928,6 +931,7 @@ class PublicationStore:
                         "publish",
                     )
                 site = self._site(str(selection.revision))
+                delivery_attempted = True
                 verification = self._verify(name, selection.revision, selection.release, site)
                 return Report(
                     "verify",
@@ -944,12 +948,24 @@ class PublicationStore:
                 if isinstance(error, PublishError)
                 else Failure("observation_failure", "verify", str(error), "inspect")
             )
+            if state is None:
+                state = self._observe_after_error(name)
+            if delivery_attempted:
+                verification = Verification(
+                    "failed",
+                    state.selection.revision,
+                    probe_location="host",
+                    scope=("local_export",),
+                    detail=failure.message,
+                )
             return Report(
                 "verify",
                 "error",
                 self.config.base_url,
                 name,
                 publication_url(self.config.base_url, name),
+                state=state,
+                verification=verification,
                 error=failure,
             )
 
@@ -1043,12 +1059,16 @@ class PublicationStore:
                     ["diff", "--no-color", "--unified=3", diff_revision, latest],
                     self.deadline,
                 )
-                truncated_diff = len(raw) > _DIFF_CAP_BYTES
+                text = raw.decode("utf-8", "replace")
+                encoded_text = text.encode("utf-8")
+                truncated_diff = len(encoded_text) > _DIFF_CAP_BYTES
+                if truncated_diff:
+                    text = encoded_text[:_DIFF_CAP_BYTES].decode("utf-8", "ignore")
                 details["diff"] = {
                     "from": diff_revision,
                     "to": latest,
                     "truncated": truncated_diff,
-                    "text": raw[:_DIFF_CAP_BYTES].decode("utf-8", "replace"),
+                    "text": text,
                 }
             return Report(
                 "history",
@@ -1183,13 +1203,13 @@ class PublicationStore:
         self,
         name: Name | None,
         state: LocalState | None,
-    ) -> tuple[dict[str, object], Verification]:
+    ) -> tuple[dict[str, object], Verification, Failure | None]:
         checks: dict[str, object] = resolve_host(self.config.base_url)
         verification = Verification()
-        if "dns_error" in checks:
-            checks["route"] = "unreachable"
-            return checks, verification
         if name is None:
+            if "dns_error" in checks:
+                checks["route"] = "unreachable"
+                return checks, verification, None
             checks.update(
                 reachability_probe(
                     self.config.base_url,
@@ -1198,12 +1218,27 @@ class PublicationStore:
                 )
             )
             checks["route"] = "ok" if "http_status" in checks else "unreachable"
-            return checks, verification
+            return checks, verification, None
         selection = state.selection if state is not None else Selection("absent")
         if selection.kind != "selected" or selection.release is None or selection.revision is None:
             checks["route"] = "not_checked"
-            return checks, verification
+            return checks, verification, None
         site = self._site(str(selection.revision))
+        try:
+            self._validate_release(selection.release, site)
+        except PublishError as error:
+            verification = Verification(
+                "failed",
+                selection.revision,
+                probe_location="local",
+                scope=("local_export",),
+                detail=error.failure.message,
+            )
+            checks["route"] = "not_checked"
+            return checks, verification, error.failure
+        if "dns_error" in checks:
+            checks["route"] = "unreachable"
+            return checks, verification, None
         try:
             verification = self._verify(name, selection.revision, selection.release, site)
             checks["route"] = "ok"
@@ -1212,10 +1247,11 @@ class PublicationStore:
                 "failed",
                 selection.revision,
                 probe_location="host",
+                scope=("local_export",),
                 detail=error.failure.message,
             )
             checks["route"] = "drift"
-        return checks, verification
+        return checks, verification, None
 
     def status(
         self,
@@ -1248,8 +1284,9 @@ class PublicationStore:
                             "inspect",
                         )
                     if host_check:
-                        checks, verification = self._host_checks(name, state)
+                        checks, verification, host_failure = self._host_checks(name, state)
                         details["host_checks"] = checks
+                        status_error = status_error or host_failure
                     if staging is not None:
                         details["staging"] = staging
                     return Report(
@@ -1294,7 +1331,7 @@ class PublicationStore:
                 }
                 verification = Verification()
                 if host_check:
-                    checks, verification = self._host_checks(None, None)
+                    checks, verification, _ = self._host_checks(None, None)
                     details["host_checks"] = checks
                 return Report(
                     "status",
