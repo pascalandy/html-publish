@@ -126,11 +126,15 @@ The [dated audit](../audit/2026-09-21-issues-2-3-4.md) retains its earlier parti
 
 All install, rollback, and return snapshots recorded `Linger=no`. At 13:57:25 UTC the coordinator separately ran `loginctl enable-linger pascal` and observed `Linger=yes`. Existing enabled user units can now start without interactive login. Their configurations were not changed. This deliberate startup change is outside the preceding preservation-equality claims
 
-The reviewed observer script was copied into the owned run directory on `om1` and `m4mini`. Its SHA-256 is `b1cfae2f7f9a72e3d4fb6a2659a5f03875945106d92876932f12edaf1e323615`. The remote hash matched and native Python `3.9.6` passed `--help`. A prepared local unit exists. The unit is not installed or enabled, and the observer has not launched
+The reviewed observer script and frozen manifest were copied byte-identically to `om1` and `m4mini`. The script SHA-256 is `b1cfae2f7f9a72e3d4fb6a2659a5f03875945106d92876932f12edaf1e323615`. The manifest SHA-256 is `3a62a4768adb29f8c722eab2e44b9bfc3c62821b5d79ed5eb2f6a2ea59c5d9ec`. Native Python `3.9.6` passed the remote help check. The coordinator installed and enabled the temporary user unit `html-publish-issue6-20260922-44b6da0.service`. Its recorded state was loaded, enabled, inactive, and `MainPID=0`
+
+The external observer reported ready at `2026-09-22T14:09:47.579818+00:00`. All six baseline targets matched and its state was `waiting_for_outage`. A new SSH session confirmed observer PID `316`, PPID `1`, and the exact reviewed script/manifest/output arguments after the launching SSH session disconnected. Its owned `caffeinate` PID `317` held `PreventUserIdleSystemSleep` and `PreventSystemSleep` for that observer, with 1,125 seconds remaining at inspection. Unrelated power assertions are omitted from the machine record
+
+The observer has a 1,200-second lifetime. This ready timestamp is a bounded observation, not a promise that it remains running. The host preboot check correctly reported `unchanged_boot`, `success=false`, `boot_verified=false`, and `agent_continuation=false`. No reboot was authorized or performed, and the setup does not resume an agent unattended. The prior preparation record remains unchanged and describes the earlier uninstalled state
 
 Remaining gates are explicit
 
-- Install and enable the reviewed observer unit, then launch the observer when authorized
+- Recheck the observer's remaining lifetime and readiness before an approved reboot
 - Obtain explicit reboot authorization and record a changed boot ID, service startup, preserved publication state, browser refresh, and second-device access
 - Complete installed skill activation separately
 - Resolve effective reader-policy scope. Successful access from `m4mini` does not prove exclusion of other tailnet peers

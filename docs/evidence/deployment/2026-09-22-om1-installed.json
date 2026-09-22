@@ -927,6 +927,70 @@
     "reboot": "not performed",
     "installed_skill_activation": "pending"
   },
+  "observer_setup": {
+    "ready_at": "2026-09-22T14:09:47.579818+00:00",
+    "manifest_sha256": "3a62a4768adb29f8c722eab2e44b9bfc3c62821b5d79ed5eb2f6a2ea59c5d9ec",
+    "script_sha256": "b1cfae2f7f9a72e3d4fb6a2659a5f03875945106d92876932f12edaf1e323615",
+    "copies_match_on_both_hosts": true,
+    "copy_and_unit_state_provenance": "Coordinator-recorded copy identity; external-ready.json corroborates remote manifest hash; boot-recorder-unit-state.json records actual systemctl output",
+    "host_unit": {
+      "name": "html-publish-issue6-20260922-44b6da0.service",
+      "loaded": true,
+      "installed": true,
+      "enabled": true,
+      "active": false,
+      "main_pid": 0,
+      "argv": [
+        "/usr/bin/python3",
+        "/home/pascal/.local/state/html-publish-issue6/20260922-44b6da0/observer.py",
+        "boot",
+        "--manifest",
+        "/home/pascal/.local/state/html-publish-issue6/20260922-44b6da0/manifest.json",
+        "--output",
+        "/home/pascal/.local/state/html-publish-issue6/20260922-44b6da0/boot-result"
+      ]
+    },
+    "external": {
+      "host": "m4mini",
+      "python_version": "3.9.6",
+      "pid": 316,
+      "ppid": 1,
+      "survived_ssh_disconnect": true,
+      "argv": [
+        "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python",
+        "/Users/assistant/.local/state/html-publish-issue6/20260922-44b6da0/observer.py",
+        "external",
+        "--manifest",
+        "/Users/assistant/.local/state/html-publish-issue6/20260922-44b6da0/manifest.json",
+        "--output",
+        "/Users/assistant/.local/state/html-publish-issue6/20260922-44b6da0/external-result"
+      ],
+      "lifetime_seconds": 1200,
+      "state_at_ready": "waiting_for_outage",
+      "baseline_targets": 6,
+      "baseline_targets_match": true,
+      "sleep_prevention": {
+        "pid": 317,
+        "on_behalf_of_pid": 316,
+        "assertions": [
+          "PreventUserIdleSystemSleep",
+          "PreventSystemSleep"
+        ],
+        "remaining_seconds_at_observation": 1125,
+        "action_at_timeout": "TimeoutActionRelease"
+      }
+    },
+    "preboot_check": {
+      "finished_at": "2026-09-22T14:09:17.187917+00:00",
+      "outcome": "unchanged_boot",
+      "success": false,
+      "boot_verified": false,
+      "agent_continuation": false
+    },
+    "reboot_authorized": false,
+    "agent_resume_promised": false,
+    "limitation": "Frozen readiness observation with a finite observer lifetime; it does not prove a reboot or unattended agent continuation."
+  },
   "limits": [
     "No reboot or power-loss proof",
     "No production-readiness claim",
@@ -976,6 +1040,12 @@
       "publication/http-restored-a.json": "860be5ac267e61ade43b29a39601edd2296d9b3e5be87772b08a0acfbc2ab09f",
       "browser-publish-b.json": "c5d8554d83a65f98df069513bfdf717f6c8940152467feebdf5fc3e2ead3ff7d",
       "browser-restore-a.json": "a545e1e2c5950143fa30d5b7d3fb677f29937dd7978725a08f8238cb3129d455",
+      "manifest.json": "3a62a4768adb29f8c722eab2e44b9bfc3c62821b5d79ed5eb2f6a2ea59c5d9ec",
+      "observer-baseline.json": "7e9d4361cb3a1d4c1a8e51bca5240ce2be08f6e5a9a303e44efe69340b02d7da",
+      "observer-detachment.json": "c1d086e639f13c753699c81adac6b957b76b4664eed297ed87688dc78b5a733e",
+      "external-ready.json": "84576ac24f343754485251ae0a72828ad25005c91cb7fbfa72fee8ebb864b2df",
+      "boot-precheck/result.json": "88c804782712e765bd3f9fc097e5f2fa74cacc3fff5954ffafae4e0815e991e3",
+      "boot-recorder-unit-state.json": "7dde834e6f41b6eb33b75ed8ce3285a9b1d935c413702e4cadf275fd40eaa118",
       "browser-client-A.json": "cd9ee8a62d87c2356f8f4c534de521ce14d64625b815880fc0755e98497c21c4",
       "browser-client-B.json": "700fd4433da6850e795cead91449a3bf2115d0da04cd03d978b85687ab3b77b4",
       "browser-client-restored-A.json": "651d5342c8d1973acad4c8da70437adce1e37d7b9f3f1015a0b5733e0659b007"
