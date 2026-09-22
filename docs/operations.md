@@ -80,17 +80,17 @@ uv run html-publish-remote publish \
   --request-id release-notes-a
 ```
 
-Read its stable URL and active revision
+Inspect its stable URL and active revision without changing the accepted revision
 
 ```sh
 uv run html-publish-remote status \
   --name release-notes
 ```
 
-Save the `active_revision` from status. After changing the local source to B, preview and publish the guarded update with that revision
+Save the `active_revision` from the successful page A publish response as the accepted revision. After changing the local source to B, preview and publish the guarded update with that revision. A later `status` result is read-only evidence and does not replace this value
 
 ```sh
-revision_a="<active_revision from status>"
+revision_a="<active_revision from the successful page A publish>"
 
 uv run html-publish-remote plan \
   --name release-notes \
@@ -106,7 +106,7 @@ uv run html-publish-remote publish \
 
 The URL remains `https://om1.donkey-arcturus.ts.net:8444/html-publish/release-notes/`. A competing different update that still expects revision A exits with a conflict. An identical retry of B remains safe
 
-If SSH fails before the remote invocation, the client reports that publication did not start. If SSH loses the result after a publish invocation starts, run `status` before retrying because the outcome is unknown
+If SSH fails before the remote invocation, the client reports that publication did not start. If SSH loses the result after a publish invocation starts, retain the original expected revision and run `status` to inspect the outcome. Do not adopt the observed revision as a new write baseline. Retry only the same intended bytes
 
 ## Publication recovery and cleanup
 
@@ -140,7 +140,7 @@ uv run html-publish --config publisher.json --json restore \
   --name release-notes \
   --archive-commit "$commit" \
   --target https://om1.donkey-arcturus.ts.net:8444/html-publish/ \
-  --expected-revision "<active_revision from status>"
+  --expected-revision "<accepted active_revision from the last successful mutation>"
 ```
 
 ### Interrupted publications

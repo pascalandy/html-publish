@@ -5,35 +5,36 @@
 The executable is the public interface. A caller supplies a finished artifact, a stable name, and the configured target.
 
 ```sh
-active_revision="$(
-  html-publish --config publisher.json --json status \
-    --name release-notes | jq -r .active_revision
-)"
+accepted_revision="<active_revision from the last successful publish or restore>"
 
 html-publish --config publisher.json --json plan \
   --name release-notes --source ./notes.html \
   --target https://om1.example.ts.net/pages/ \
-  --expected-revision "$active_revision"
+  --expected-revision "$accepted_revision"
 
-html-publish --config publisher.json --json publish \
-  --name release-notes --source ./notes.html \
-  --target https://om1.example.ts.net/pages/ \
-  --expected-revision "$active_revision" \
-  --request-id attempt-001
+accepted_revision="$(
+  html-publish --config publisher.json --json publish \
+    --name release-notes --source ./notes.html \
+    --target https://om1.example.ts.net/pages/ \
+    --expected-revision "$accepted_revision" \
+    --request-id attempt-001 | jq -er .active_revision
+)"
 
 html-publish --config publisher.json --json verify \
   --name release-notes
 
+earlier_revision="<archived_revision from an earlier history entry>"
 html-publish --config publisher.json --json history \
-  --name release-notes --limit 20 --diff "$saved_revision"
+  --name release-notes --limit 20 --diff "$earlier_revision"
 
+commit="<archive_commit from the history entry to restore>"
 html-publish --config publisher.json --json restore \
   --name release-notes --archive-commit "$commit" \
   --target https://om1.example.ts.net/pages/ \
-  --expected-revision "$active_revision"
+  --expected-revision "$accepted_revision"
 ```
 
-The publisher supports creation, guarded replacement, identical retries, read-only observation, explicit verification, bounded history, and guarded restore. A caller reads `active_revision` from `status`, then supplies it as `--expected-revision` when planning, publishing, or restoring changed content. The active revision acts as a compare-and-swap guard, while the publication URL stays stable. Durable receipts and production installation remain later work.
+The publisher supports creation, guarded replacement, identical retries, read-only observation, explicit verification, bounded history, and guarded restore. A caller keeps the `active_revision` from its last successful publish or restore, then supplies it as `--expected-revision` when planning, publishing, or restoring changed content. A `status` result is an observation and does not replace that accepted revision. The accepted revision acts as a compare-and-swap guard, while the publication URL stays stable. Durable receipts and production installation remain later work.
 
 ## Data shape
 

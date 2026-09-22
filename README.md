@@ -66,14 +66,16 @@ uv run html-publish --config publisher.json --json plan \
   --target http://127.0.0.1:8000/
 ```
 
-Publish and verify the page
+Publish and verify the page. Keep the accepted revision from the successful response
 
 ```sh
-uv run html-publish --config publisher.json --json publish \
-  --name release-notes \
-  --source ./release-notes.html \
-  --target http://127.0.0.1:8000/ \
-  --request-id attempt-001
+revision_a="$(
+  uv run html-publish --config publisher.json --json publish \
+    --name release-notes \
+    --source ./release-notes.html \
+    --target http://127.0.0.1:8000/ \
+    --request-id attempt-001 | jq -er .active_revision
+)"
 ```
 
 Inspect local saved and selected state without an HTTP request
@@ -87,14 +89,7 @@ The stable test URL is `http://127.0.0.1:8000/release-notes/`
 
 ## Update a page
 
-Read the active revision for page A
-
-```sh
-revision_a="$(
-  uv run html-publish --config publisher.json --json status \
-    --name release-notes | jq -r .active_revision
-)"
-```
+Use `revision_a` from the successful page A publish. A later `status` result is an observation. It does not replace the accepted revision or authorize an update
 
 After editing the source into page B, preview the guarded replacement
 
@@ -109,12 +104,14 @@ uv run html-publish --config publisher.json --json plan \
 The plan predicts `update` only while revision A remains active. Publish page B with the same expectation
 
 ```sh
-uv run html-publish --config publisher.json --json publish \
-  --name release-notes \
-  --source ./release-notes.html \
-  --target http://127.0.0.1:8000/ \
-  --expected-revision "$revision_a" \
-  --request-id attempt-002
+revision_b="$(
+  uv run html-publish --config publisher.json --json publish \
+    --name release-notes \
+    --source ./release-notes.html \
+    --target http://127.0.0.1:8000/ \
+    --expected-revision "$revision_a" \
+    --request-id attempt-002 | jq -er .active_revision
+)"
 ```
 
 The update keeps the stable URL. A competing update based on revision A returns a conflict. Retrying the same page B is `unchanged`, even with revision A as the expectation
@@ -138,12 +135,12 @@ uv run html-publish --config publisher.json --json history \
 Review what differs between an earlier revision and the latest saved content
 
 ```sh
-saved_revision="$(
+earlier_revision="$(
   uv run html-publish --config publisher.json --json history \
-    --name release-notes | jq -r .archived_revision
+    --name release-notes | jq -er '.entries[1].archived_revision'
 )"
 uv run html-publish --config publisher.json --json history \
-  --name release-notes --diff "$saved_revision"
+  --name release-notes --diff "$earlier_revision"
 ```
 
 Restore the page to an earlier archive commit. Restore shares the guarded workflow, expects the currently active revision, and appends history rather than rewinding it
@@ -151,13 +148,13 @@ Restore the page to an earlier archive commit. Restore shares the guarded workfl
 ```sh
 commit="$(
   uv run html-publish --config publisher.json --json history \
-    --name release-notes | jq -r '.entries[-1].archive_commit'
+    --name release-notes | jq -er '.entries[-1].archive_commit'
 )"
 uv run html-publish --config publisher.json --json restore \
   --name release-notes \
   --archive-commit "$commit" \
   --target http://127.0.0.1:8000/ \
-  --expected-revision "$revision_a" \
+  --expected-revision "$revision_b" \
   --request-id attempt-restore
 ```
 
