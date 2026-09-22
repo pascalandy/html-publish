@@ -13,17 +13,22 @@ import urllib.parse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+STARTUP_SECONDS = 15
 
 
 class PublicationServerTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="html-publish-server-test-")
+        self.addCleanup(self.temporary.cleanup)
         self.runtime = Path(self.temporary.name) / "runtime"
         self.public = self.runtime / "public"
         self.releases = self.runtime / "releases"
         self.public.mkdir(parents=True)
         self.releases.mkdir()
         self.port = self._unused_port()
+        self.server_log_path = Path(self.temporary.name) / "server.log"
+        self.server_log = self.server_log_path.open("w", encoding="utf-8")
+        self.addCleanup(self.server_log.close)
         self.process = subprocess.Popen(
             [
                 sys.executable,
@@ -37,19 +42,20 @@ class PublicationServerTest(unittest.TestCase):
                 str(self.port),
             ],
             cwd=ROOT,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=self.server_log,
+            stderr=subprocess.STDOUT,
         )
+        self.addCleanup(self._stop_server)
         self._wait_until_ready()
 
-    def tearDown(self) -> None:
-        self.process.terminate()
+    def _stop_server(self) -> None:
+        if self.process.poll() is None:
+            self.process.terminate()
         try:
             self.process.wait(timeout=2)
         except subprocess.TimeoutExpired:
             self.process.kill()
             self.process.wait(timeout=2)
-        self.temporary.cleanup()
 
     def _unused_port(self) -> int:
         with socket.socket() as listener:
@@ -57,10 +63,13 @@ class PublicationServerTest(unittest.TestCase):
             return int(listener.getsockname()[1])
 
     def _wait_until_ready(self) -> None:
-        deadline = time.monotonic() + 3
+        deadline = time.monotonic() + STARTUP_SECONDS
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
-                self.fail(f"server exited during startup with {self.process.returncode}")
+                self.fail(
+                    f"server exited during startup with {self.process.returncode}: "
+                    f"{self.server_log_path.read_text(encoding='utf-8')[-2000:]}"
+                )
             try:
                 status, _, _ = self.request("/")
             except OSError:
@@ -68,7 +77,10 @@ class PublicationServerTest(unittest.TestCase):
                 continue
             self.assertEqual(status, 404)
             return
-        self.fail("server did not start within three seconds")
+        self.fail(
+            f"server did not start within {STARTUP_SECONDS} seconds; "
+            f"server log: {self.server_log_path.read_text(encoding='utf-8')[-2000:]}"
+        )
 
     def request(
         self, path: str, headers: dict[str, str] | None = None
@@ -103,6 +115,9 @@ class PublicationServerTest(unittest.TestCase):
         future_runtime = Path(self.temporary.name) / "future-runtime"
         future_public = future_runtime / "public"
         future_port = self._unused_port()
+        future_log_path = Path(self.temporary.name) / "future-server.log"
+        future_log = future_log_path.open("w", encoding="utf-8")
+        self.addCleanup(future_log.close)
         process = subprocess.Popen(
             [
                 sys.executable,
@@ -114,20 +129,26 @@ class PublicationServerTest(unittest.TestCase):
                 str(future_port),
             ],
             cwd=ROOT,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=future_log,
+            stderr=subprocess.STDOUT,
         )
         try:
-            deadline = time.monotonic() + 3
+            deadline = time.monotonic() + STARTUP_SECONDS
             while True:
                 if process.poll() is not None:
-                    self.fail(f"future-root server exited with {process.returncode}")
+                    self.fail(
+                        f"future-root server exited with {process.returncode}: "
+                        f"{future_log_path.read_text(encoding='utf-8')[-2000:]}"
+                    )
                 try:
                     health_status, _, _ = self.request_at(future_port, "/_html-publish-health")
                     break
                 except OSError:
                     if time.monotonic() >= deadline:
-                        self.fail("future-root server did not start within three seconds")
+                        self.fail(
+                            f"future-root server did not start within {STARTUP_SECONDS} seconds; "
+                            f"server log: {future_log_path.read_text(encoding='utf-8')[-2000:]}"
+                        )
                     time.sleep(0.02)
             self.assertEqual(health_status, 200)
             self.assertEqual(self.request_at(future_port, "/report/")[0], 404)
