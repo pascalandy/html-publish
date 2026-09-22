@@ -5,7 +5,8 @@ import contextlib
 import hashlib
 import json
 import os
-import shutil
+import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -15,7 +16,7 @@ import urllib.request
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Protocol, cast
+from typing import NoReturn, Protocol, cast
 from urllib.parse import urlparse
 
 DEFAULT_STATE_ROOT = Path("/home/pascal/.local/share/html-publish")
@@ -25,6 +26,8 @@ DEFAULT_BASE_URL = "https://om1.donkey-arcturus.ts.net:8444/html-publish/"
 DEFAULT_LISTEN_URL = "http://127.0.0.1:4177"
 SERVE_PATH = "/html-publish"
 UNIT_NAME = "html-publish.service"
+COMMAND_TIMEOUT_SECONDS = 120.0
+COMMAND_TERMINATE_SECONDS = 2.0
 
 
 class DeployError(Exception):
@@ -84,20 +87,69 @@ class Check:
     detail: str
 
 
-def _run(argv: Sequence[str]) -> CommandResult:
-    try:
-        result = subprocess.run(
-            list(argv),
-            text=True,
-            capture_output=True,
-            check=False,
+@dataclass(frozen=True)
+class FileState:
+    content: bytes | None
+    mode: int | None
+
+
+@dataclass(frozen=True)
+class PointerPair:
+    current: str | None
+    previous: str | None
+
+
+@dataclass(frozen=True)
+class InstallationSnapshot:
+    config: FileState
+    unit: FileState
+    pointers: PointerPair
+    unit_file_state: str
+
+
+def _run(
+    argv: Sequence[str],
+    *,
+    timeout_seconds: float = COMMAND_TIMEOUT_SECONDS,
+) -> CommandResult:
+    with tempfile.TemporaryFile(mode="w+") as output, tempfile.TemporaryFile(mode="w+") as errors:
+        try:
+            process = subprocess.Popen(
+                list(argv),
+                text=True,
+                stdout=output,
+                stderr=errors,
+                start_new_session=True,
+            )
+        except OSError as error:
+            raise DeployError(f"Could not run {argv[0]}: {error}") from error
+        timed_out = False
+        try:
+            process.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGTERM)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=COMMAND_TERMINATE_SECONDS)
+        finally:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            try:
+                process.wait(timeout=COMMAND_TERMINATE_SECONDS)
+            except subprocess.TimeoutExpired as error:
+                raise DeployError(f"Could not reap command: {' '.join(argv)}") from error
+        output.seek(0)
+        errors.seek(0)
+        stdout, stderr = output.read(), errors.read()
+    detail = stderr.strip() or stdout.strip() or "no diagnostic output"
+    if timed_out:
+        raise DeployError(
+            f"Command timed out after {timeout_seconds:g} seconds: {' '.join(argv)}: {detail}"
         )
-    except OSError as error:
-        raise DeployError(f"Could not run {argv[0]}: {error}") from error
-    if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
-        raise DeployError(f"Command failed ({result.returncode}): {' '.join(argv)}: {detail}")
-    return CommandResult(result.stdout, result.stderr)
+    if process.returncode != 0:
+        raise DeployError(f"Command failed ({process.returncode}): {' '.join(argv)}: {detail}")
+    return CommandResult(stdout, stderr)
 
 
 def _probe(url: str) -> tuple[bool, str]:
@@ -131,12 +183,12 @@ def _probe(url: str) -> tuple[bool, str]:
         time.sleep(min(0.2, remaining))
 
 
-def _atomic_write(path: Path, content: str, mode: int) -> None:
+def _atomic_write_bytes(path: Path, content: bytes, mode: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary = Path(temporary_name)
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        with os.fdopen(descriptor, "wb") as stream:
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
@@ -146,7 +198,11 @@ def _atomic_write(path: Path, content: str, mode: int) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _atomic_symlink(path: Path, target: Path) -> None:
+def _atomic_write(path: Path, content: str, mode: int) -> None:
+    _atomic_write_bytes(path, content.encode(), mode)
+
+
+def _atomic_symlink(path: Path, target: Path | str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.parent / f".{path.name}.{os.getpid()}.tmp"
     temporary.unlink(missing_ok=True)
@@ -159,6 +215,58 @@ def _symlink_target(path: Path) -> Path | None:
         return None
     target = Path(os.readlink(path))
     return target if target.is_absolute() else path.parent / target
+
+
+def _file_state(path: Path) -> FileState:
+    if path.is_symlink():
+        raise DeployError(f"Expected a regular file: {path}")
+    if not path.exists():
+        return FileState(None, None)
+    if not path.is_file():
+        raise DeployError(f"Expected a regular file: {path}")
+    try:
+        return FileState(path.read_bytes(), stat.S_IMODE(path.stat().st_mode))
+    except OSError as error:
+        raise DeployError(f"Could not snapshot {path}: {error}") from error
+
+
+def _pointer_pair(layout: Layout) -> PointerPair:
+    targets: list[str | None] = []
+    for pointer in (layout.current, layout.previous):
+        if pointer.is_symlink():
+            targets.append(os.readlink(pointer))
+        elif pointer.exists():
+            raise DeployError(f"Expected an application symlink: {pointer}")
+        else:
+            targets.append(None)
+    return PointerPair(*targets)
+
+
+def _unit_file_state(runner: Runner) -> str:
+    state = runner(
+        (
+            "systemctl",
+            "--user",
+            "show",
+            UNIT_NAME,
+            "--property=UnitFileState",
+            "--value",
+        )
+    ).stdout.strip()
+    if state == "":
+        return "not-found"
+    if state not in {"enabled", "disabled", "not-found"}:
+        raise DeployError(f"Unsupported {UNIT_NAME} unit file state: {state}")
+    return state
+
+
+def _installation_snapshot(layout: Layout, runner: Runner) -> InstallationSnapshot:
+    return InstallationSnapshot(
+        config=_file_state(layout.config),
+        unit=_file_state(layout.unit),
+        pointers=_pointer_pair(layout),
+        unit_file_state=_unit_file_state(runner),
+    )
 
 
 def _publisher_config(layout: Layout) -> str:
@@ -177,21 +285,26 @@ def _publisher_config(layout: Layout) -> str:
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
 
-def _ensure_config(layout: Layout) -> None:
+def _preflight_config(layout: Layout) -> bool:
     expected = json.loads(_publisher_config(layout))
     if layout.config.exists():
         try:
             current = json.loads(layout.config.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as error:
             raise DeployError(f"Existing publisher config is unreadable: {error}") from error
+        if not isinstance(current, dict):
+            raise DeployError("Existing publisher config must be a JSON object")
+        current = cast(dict[str, object], current)
         required = ("archive", "runtime", "base_url")
         conflicts = [name for name in required if current.get(name) != expected[name]]
         if conflicts:
             raise DeployError(
                 "Existing publisher config conflicts with this deployment: " + ", ".join(conflicts)
             )
-        return
-    _atomic_write(layout.config, _publisher_config(layout), 0o600)
+        return False
+    if layout.config.is_symlink():
+        raise DeployError(f"Expected a regular file: {layout.config}")
+    return True
 
 
 def _unit_content(layout: Layout) -> str:
@@ -208,7 +321,9 @@ def _unit_content(layout: Layout) -> str:
         "Restart=on-failure\n"
         "RestartSec=2\n"
         "NoNewPrivileges=true\n"
-        "PrivateTmp=true\n\n"
+        "PrivateTmp=true\n"
+        "ProtectSystem=strict\n"
+        "ProtectHome=read-only\n\n"
         "[Install]\n"
         "WantedBy=default.target\n"
     )
@@ -238,7 +353,7 @@ def _install_release(layout: Layout, wheel: Path, runner: Runner) -> Path:
     if marker.is_file():
         return release
     if release.exists():
-        shutil.rmtree(release)
+        raise DeployError(f"Incomplete release already exists; inspect before retrying: {release}")
     release.mkdir(parents=True)
     python = release / ".venv" / "bin" / "python"
     try:
@@ -257,9 +372,8 @@ def _install_release(layout: Layout, wheel: Path, runner: Runner) -> Path:
         runner((str(python), "-m", "html_publish", "--help"))
         runner((str(python), "-m", "html_publish.deploy", "--help"))
         _atomic_write(marker, _release_name(wheel) + "\n", 0o644)
-    except Exception:
-        shutil.rmtree(release, ignore_errors=True)
-        raise
+    except Exception as error:
+        raise DeployError(f"Release preparation failed; retained {release}: {error}") from error
     return release
 
 
@@ -308,19 +422,21 @@ def _route_state(layout: Layout, payload: dict[str, object]) -> str:
         return "absent"
     if isinstance(handler, dict):
         handler_config = cast(dict[str, object], handler)
-        if handler_config.get("Proxy") == layout.listen_url:
+        if handler_config == {"Proxy": layout.listen_url}:
             return "exact"
     return "collision"
 
 
-def _ensure_route(layout: Layout, runner: Runner) -> None:
+def _preflight_route(layout: Layout, runner: Runner) -> str:
     state = _route_state(layout, _serve_payload(runner))
     if state == "collision":
         raise DeployError(
             f"Tailscale Serve route {SERVE_PATH} on port 8444 is owned by another target"
         )
-    if state == "exact":
-        return
+    return state
+
+
+def _create_route(layout: Layout, runner: Runner) -> None:
     runner(
         (
             "tailscale",
@@ -332,8 +448,27 @@ def _ensure_route(layout: Layout, runner: Runner) -> None:
             layout.listen_url,
         )
     )
-    if _route_state(layout, _serve_payload(runner)) != "exact":
-        raise DeployError("Tailscale Serve did not install the requested route")
+
+
+def _remove_owned_route(layout: Layout, runner: Runner) -> None:
+    state = _route_state(layout, _serve_payload(runner))
+    if state == "absent":
+        return
+    if state != "exact":
+        raise DeployError("Tailscale Serve route changed before recovery")
+    runner(
+        (
+            "tailscale",
+            "serve",
+            "--bg",
+            "--yes",
+            "--https=8444",
+            f"--set-path={SERVE_PATH}",
+            "off",
+        )
+    )
+    if _route_state(layout, _serve_payload(runner)) != "absent":
+        raise DeployError("Tailscale Serve route remained after recovery")
 
 
 def _release_id(path: Path | None, releases: Path) -> str | None:
@@ -380,24 +515,135 @@ def health(layout: Layout, runner: Runner = _run, probe: Probe = _probe) -> dict
     }
 
 
-def _restore_pointers(layout: Layout, current: Path | None, previous: Path | None) -> None:
-    for pointer, target in ((layout.current, current), (layout.previous, previous)):
-        if target is None:
+def _restore_owned_file(path: Path, expected: FileState, original: FileState) -> None:
+    actual = _file_state(path)
+    if actual == original:
+        return
+    if actual != expected:
+        raise DeployError(f"Refusing to restore changed file: {path}")
+    if original.content is None:
+        path.unlink(missing_ok=True)
+        return
+    if original.mode is None:
+        raise DeployError(f"Snapshot mode is missing for {path}")
+    _atomic_write_bytes(path, original.content, original.mode)
+
+
+def _restore_owned_pointers(
+    layout: Layout,
+    expected: PointerPair,
+    original: PointerPair,
+) -> None:
+    actual = _pointer_pair(layout)
+    errors: list[str] = []
+    for pointer, found, written, before in (
+        (layout.current, actual.current, expected.current, original.current),
+        (layout.previous, actual.previous, expected.previous, original.previous),
+    ):
+        if found == before:
+            continue
+        if found != written:
+            errors.append(f"Refusing to restore changed application pointer: {pointer}")
+        elif before is None:
             pointer.unlink(missing_ok=True)
         else:
-            _atomic_symlink(pointer, target)
+            _atomic_symlink(pointer, before)
+    if errors:
+        raise DeployError("; ".join(errors))
 
 
-def _recover_release(
-    layout: Layout,
-    current: Path,
-    previous: Path | None,
-    runner: Runner,
+def _record_recovery(
+    errors: list[str],
+    name: str,
+    action: Callable[[], object],
 ) -> None:
-    with contextlib.suppress(Exception):
-        _restore_pointers(layout, current, previous)
-    with contextlib.suppress(Exception):
+    try:
+        action()
+    except Exception as error:
+        errors.append(f"{name}: {error}")
+
+
+def _recover_install(
+    layout: Layout,
+    snapshot: InstallationSnapshot,
+    runner: Runner,
+    *,
+    config_written: bool,
+    unit_written: bool,
+    expected_pointers: PointerPair | None,
+    route_created: bool,
+) -> list[str]:
+    errors: list[str] = []
+    if route_created:
+        _record_recovery(errors, "route", lambda: _remove_owned_route(layout, runner))
+    if expected_pointers is not None:
+        _record_recovery(
+            errors,
+            "pointers",
+            lambda: _restore_owned_pointers(layout, expected_pointers, snapshot.pointers),
+        )
+    if config_written:
+        expected_config = FileState(_publisher_config(layout).encode(), 0o600)
+        _record_recovery(
+            errors,
+            "config",
+            lambda: _restore_owned_file(layout.config, expected_config, snapshot.config),
+        )
+    if unit_written:
+        expected_unit = FileState(_unit_content(layout).encode(), 0o644)
+        if snapshot.unit_file_state != "enabled":
+            _record_recovery(
+                errors,
+                "disable service",
+                lambda: _disable_owned_service(layout, expected_unit, snapshot, runner),
+            )
+        _record_recovery(
+            errors,
+            "unit",
+            lambda: _restore_owned_file(layout.unit, expected_unit, snapshot.unit),
+        )
+        _record_recovery(
+            errors,
+            "daemon reload",
+            lambda: runner(("systemctl", "--user", "daemon-reload")),
+        )
+        if not errors and snapshot.unit_file_state == "enabled":
+            _record_recovery(
+                errors,
+                "service state",
+                lambda: _restore_service(snapshot, runner),
+            )
+        elif errors:
+            errors.append("service recovery skipped because owned state was not fully restored")
+    return errors
+
+
+def _restore_service(snapshot: InstallationSnapshot, runner: Runner) -> None:
+    state = _unit_file_state(runner)
+    if state not in {"enabled", snapshot.unit_file_state}:
+        raise DeployError(f"Refusing to restore changed service enabled state: {state}")
+    if snapshot.unit_file_state == "enabled":
+        runner(("systemctl", "--user", "enable", "--now", UNIT_NAME))
         runner(("systemctl", "--user", "restart", UNIT_NAME))
+
+
+def _disable_owned_service(
+    layout: Layout, expected: FileState, snapshot: InstallationSnapshot, runner: Runner
+) -> None:
+    if _file_state(layout.unit) not in {expected, snapshot.unit}:
+        raise DeployError("Refusing to disable a changed service unit")
+    state = _unit_file_state(runner)
+    if state not in {"enabled", snapshot.unit_file_state}:
+        raise DeployError(f"Refusing to restore changed service enabled state: {state}")
+    runner(("systemctl", "--user", "disable", "--now", UNIT_NAME))
+
+
+def _raise_after_recovery(error: Exception, recovery_errors: Sequence[str]) -> NoReturn:
+    if recovery_errors:
+        raise DeployError(f"{error}; recovery errors: {'; '.join(recovery_errors)}") from error
+    if isinstance(error, DeployError):
+        raise error
+    raise DeployError(str(error)) from error
 
 
 def install(
@@ -406,38 +652,67 @@ def install(
     runner: Runner = _run,
     probe: Probe = _probe,
 ) -> dict[str, object]:
+    config_needed = _preflight_config(layout)
+    original_route = _preflight_route(layout, runner)
+    snapshot = _installation_snapshot(layout, runner)
     layout.state_root.mkdir(parents=True, exist_ok=True)
     layout.incoming.mkdir(exist_ok=True)
     layout.releases.mkdir(exist_ok=True)
-    _ensure_config(layout)
 
     with tempfile.TemporaryDirectory(prefix="html-publish-wheel-") as directory:
         wheel = _build_wheel(source.resolve(), runner, Path(directory))
         release = _install_release(layout, wheel, runner)
 
-    original_current = _symlink_target(layout.current)
-    original_previous = _symlink_target(layout.previous)
-    changed = original_current is None or original_current.resolve() != release.resolve()
-    if changed:
-        _atomic_symlink(layout.previous, original_current or release)
-        _atomic_symlink(layout.current, release)
-    elif original_previous is None:
-        _atomic_symlink(layout.previous, release)
+    if _installation_snapshot(layout, runner) != snapshot:
+        raise DeployError("Installation state changed during release preparation")
+    route_state = _preflight_route(layout, runner)
+    if original_route == "exact" and route_state != "exact":
+        raise DeployError("Existing Tailscale Serve route changed during release preparation")
+    current = _symlink_target(layout.current)
+    changed = current is None or current.resolve() != release.resolve()
+    config_written = False
+    unit_written = False
+    expected_pointers: PointerPair | None = None
+    route_created = False
     try:
+        config_written = config_needed
+        if config_needed:
+            _atomic_write(layout.config, _publisher_config(layout), 0o600)
+        if changed:
+            expected_pointers = PointerPair(str(release), snapshot.pointers.current or str(release))
+            _atomic_symlink(layout.previous, expected_pointers.previous or release)
+            _atomic_symlink(layout.current, release)
+        elif snapshot.pointers.previous is None:
+            expected_pointers = PointerPair(snapshot.pointers.current, str(release))
+            _atomic_symlink(layout.previous, release)
+        unit_written = True
         _atomic_write(layout.unit, _unit_content(layout), 0o644)
         runner(("systemctl", "--user", "daemon-reload"))
         runner(("systemctl", "--user", "enable", "--now", UNIT_NAME))
         runner(("systemctl", "--user", "restart", UNIT_NAME))
-        _ensure_route(layout, runner)
+        if route_state == "absent":
+            refreshed_route_state = _preflight_route(layout, runner)
+            if refreshed_route_state == "absent":
+                route_created = True
+                _create_route(layout, runner)
+                if _route_state(layout, _serve_payload(runner)) != "exact":
+                    raise DeployError("Tailscale Serve did not install the requested route")
         report = health(layout, runner, probe)
         if not report["healthy"]:
             raise DeployError(
                 "Post-install health check failed: " + json.dumps(report, sort_keys=True)
             )
-    except Exception:
-        if changed and original_current is not None:
-            _recover_release(layout, original_current, original_previous, runner)
-        raise
+    except Exception as error:
+        recovery_errors = _recover_install(
+            layout,
+            snapshot,
+            runner,
+            config_written=config_written,
+            unit_written=unit_written,
+            expected_pointers=expected_pointers,
+            route_created=route_created,
+        )
+        _raise_after_recovery(error, recovery_errors)
     return {
         "operation": "install",
         "outcome": "updated" if changed else "unchanged",
@@ -454,6 +729,7 @@ def rollback(
     runner: Runner = _run,
     probe: Probe = _probe,
 ) -> dict[str, object]:
+    original = _pointer_pair(layout)
     original_current = _symlink_target(layout.current)
     original_previous = _symlink_target(layout.previous)
     if original_current is None:
@@ -463,19 +739,34 @@ def rollback(
         raise DeployError("No previous release is installed")
     if target.parent.resolve() != layout.releases.resolve() or not (target / ".ready").is_file():
         raise DeployError(f"Release is not installed: {release_id or target.name}")
-    if target.resolve() != original_current.resolve():
-        _atomic_symlink(layout.previous, original_current)
-        _atomic_symlink(layout.current, target)
+    pointers_changed = target.resolve() != original_current.resolve()
+    expected_pointers: PointerPair | None = None
     try:
+        if pointers_changed:
+            expected_pointers = PointerPair(str(target), str(original_current))
+            _atomic_symlink(layout.previous, original_current)
+            _atomic_symlink(layout.current, target)
         runner(("systemctl", "--user", "restart", UNIT_NAME))
         report = health(layout, runner, probe)
         if not report["healthy"]:
             raise DeployError(
                 "Post-rollback health check failed: " + json.dumps(report, sort_keys=True)
             )
-    except Exception:
-        _recover_release(layout, original_current, original_previous, runner)
-        raise
+    except Exception as error:
+        recovery_errors: list[str] = []
+        if expected_pointers is not None:
+            _record_recovery(
+                recovery_errors,
+                "pointers",
+                lambda: _restore_owned_pointers(layout, expected_pointers, original),
+            )
+        if not recovery_errors:
+            _record_recovery(
+                recovery_errors,
+                "restart service",
+                lambda: runner(("systemctl", "--user", "restart", UNIT_NAME)),
+            )
+        _raise_after_recovery(error, recovery_errors)
     return {
         "operation": "rollback",
         "outcome": "rolled_back",
