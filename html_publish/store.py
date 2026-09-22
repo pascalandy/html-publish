@@ -644,6 +644,19 @@ class PublicationStore:
                     and state.selection.revision is not None
                 ):
                     previous_paths = set(self._tree_paths(str(state.selection.revision)))
+                elif (
+                    decision == "unchanged"
+                    and expected_revision is not None
+                    and expected_revision != captured.revision
+                    and self._reachable(name, expected_revision)
+                ):
+                    previous_paths = set(self._tree_paths(str(expected_revision)))
+                active_paths = {str(entry.path) for entry in captured.entries}
+                removed = tuple(
+                    path
+                    for path in sorted(previous_paths - active_paths)
+                    if not any(new_path.startswith(f"{path}/") for new_path in active_paths)
+                )
                 if decision == "unchanged":
                     assert state.selection.kind == "selected"
                     assert state.selection.release is not None
@@ -653,6 +666,7 @@ class PublicationStore:
                         captured.revision,
                         state.selection.release,
                         site,
+                        removed=removed,
                     )
                     return Report(
                         operation,
@@ -698,12 +712,6 @@ class PublicationStore:
                         "inspect",
                     ) from error
                 selected = self._state(name, full=True)
-                active_paths = {str(entry.path) for entry in saved.site.entries}
-                removed = tuple(
-                    path
-                    for path in sorted(previous_paths - active_paths)
-                    if not any(new_path.startswith(f"{path}/") for new_path in active_paths)
-                )
                 verification = self._verify(
                     name,
                     saved.site.revision,

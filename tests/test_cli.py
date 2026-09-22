@@ -1890,7 +1890,11 @@ class PublisherCliTest(unittest.TestCase):
         self.assertEqual(
             repaired_payload["effects"], {"archive_advanced": False, "activated": False}
         )
+        self.assertEqual(repaired_payload["verification"]["result"], "passed")
         self.assertIn("removed_paths", repaired_payload["verification"]["scope"])
+        with self.assertRaises(urllib.error.HTTPError) as removed:
+            urllib.request.urlopen(f"{self.base_url}report/old.txt", timeout=2)
+        self.assertEqual(removed.exception.code, 404)
         history = self.run_cli("history", "--name", "report")
         self.assertEqual(history.returncode, 0, history.stdout)
         self.assertEqual(len(self.payload(history)["entries"]), 2)

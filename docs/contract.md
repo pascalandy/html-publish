@@ -210,8 +210,11 @@ delivery attempt reports `not_checked`; local corruption does not claim successf
 
 Check a deliberately missing URL to reject SPA fallback. During revision, check removed paths
 known from the previous active tree; paths now legitimately used as directories are not required
-to return 404. A standalone verify must not claim it checked an unknown previous revision's
-paths.
+to return 404. An identical retry recovers these deletion checks from a different supplied
+expected revision when it is reachable in the same publication's history. An absent, current,
+unrecognized, or other-publication expectation adds no deletion baseline and does not reject a
+healthy identical no-op. A standalone verify must not claim it checked an unknown previous
+revision's paths.
 
 #2 must prove ordinary browser navigation/reload for HTML **and assets**, including same-size,
 same-timestamp revisions, replayed old conditional validators, deletion, and A -> B -> A restore.
