@@ -66,16 +66,36 @@ uv run html-publish --config publisher.json --json plan \
   --target http://127.0.0.1:8000/
 ```
 
-Publish and verify the page. Keep the accepted revision from the successful response
+Use one helper for every publish that can change the accepted revision. It preserves the current value unless both the command and the successful outcome provide a revision
 
 ```sh
-revision_a="$(
-  uv run html-publish --config publisher.json --json publish \
-    --name release-notes \
-    --source ./release-notes.html \
-    --target http://127.0.0.1:8000/ \
-    --request-id attempt-001 | jq -er .active_revision
-)"
+accept_publish() {
+  local result candidate
+  if ! result="$(
+    uv run html-publish --config publisher.json --json publish "$@"
+  )"; then
+    printf '%s\n' "$result" >&2
+    return 1
+  fi
+  if ! candidate="$(
+    jq -er '
+      select(.outcome == "published" or .outcome == "unchanged")
+      | .active_revision
+    ' <<<"$result"
+  )"; then
+    printf '%s\n' "$result" >&2
+    return 1
+  fi
+  accepted_revision="$candidate"
+}
+
+accepted_revision=""
+accept_publish \
+  --name release-notes \
+  --source ./release-notes.html \
+  --target http://127.0.0.1:8000/ \
+  --request-id attempt-001 || exit 1
+revision_a="$accepted_revision"
 ```
 
 Inspect local saved and selected state without an HTTP request
@@ -104,14 +124,13 @@ uv run html-publish --config publisher.json --json plan \
 The plan predicts `update` only while revision A remains active. Publish page B with the same expectation
 
 ```sh
-revision_b="$(
-  uv run html-publish --config publisher.json --json publish \
-    --name release-notes \
-    --source ./release-notes.html \
-    --target http://127.0.0.1:8000/ \
-    --expected-revision "$revision_a" \
-    --request-id attempt-002 | jq -er .active_revision
-)"
+accept_publish \
+  --name release-notes \
+  --source ./release-notes.html \
+  --target http://127.0.0.1:8000/ \
+  --expected-revision "$revision_a" \
+  --request-id attempt-002 || exit 1
+revision_b="$accepted_revision"
 ```
 
 The update keeps the stable URL. A competing update based on revision A returns a conflict. Retrying the same page B is `unchanged`, even with revision A as the expectation

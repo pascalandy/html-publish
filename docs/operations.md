@@ -87,20 +87,18 @@ uv run html-publish-remote status \
   --name release-notes
 ```
 
-Save the `active_revision` from the successful page A publish response as the accepted revision. After changing the local source to B, preview and publish the guarded update with that revision. A later `status` result is read-only evidence and does not replace this value
+Save the `active_revision` only after the page A publish exits successfully and reports a successful outcome. The [README publish example](../README.md#publish-one-page) owns the canonical shell pattern. After changing the local source to B, preview and publish the guarded update with that accepted revision. A later `status` result is read-only evidence and does not replace this value
 
 ```sh
-revision_a="<active_revision from the successful page A publish>"
-
 uv run html-publish-remote plan \
   --name release-notes \
   --source ./release-notes.html \
-  --expected-revision "$revision_a"
+  --expected-revision "<accepted revision from page A>"
 
 uv run html-publish-remote publish \
   --name release-notes \
   --source ./release-notes.html \
-  --expected-revision "$revision_a" \
+  --expected-revision "<accepted revision from page A>" \
   --request-id release-notes-b
 ```
 

@@ -2,23 +2,19 @@
 
 ## Caller usage
 
-The executable is the public interface. A caller supplies a finished artifact, a stable name, and the configured target.
+The executable is the public interface. A caller supplies a finished artifact, a stable name, and the configured target. The [README publish example](../README.md#publish-one-page) owns the canonical shell pattern for updating an accepted revision. The reference calls below do not assign mutation output
 
 ```sh
-accepted_revision="<active_revision from the last successful publish or restore>"
-
 html-publish --config publisher.json --json plan \
   --name release-notes --source ./notes.html \
   --target https://om1.example.ts.net/pages/ \
-  --expected-revision "$accepted_revision"
+  --expected-revision "<accepted revision>"
 
-accepted_revision="$(
-  html-publish --config publisher.json --json publish \
-    --name release-notes --source ./notes.html \
-    --target https://om1.example.ts.net/pages/ \
-    --expected-revision "$accepted_revision" \
-    --request-id attempt-001 | jq -er .active_revision
-)"
+html-publish --config publisher.json --json publish \
+  --name release-notes --source ./notes.html \
+  --target https://om1.example.ts.net/pages/ \
+  --expected-revision "<accepted revision>" \
+  --request-id attempt-001
 
 html-publish --config publisher.json --json verify \
   --name release-notes
@@ -31,10 +27,10 @@ commit="<archive_commit from the history entry to restore>"
 html-publish --config publisher.json --json restore \
   --name release-notes --archive-commit "$commit" \
   --target https://om1.example.ts.net/pages/ \
-  --expected-revision "$accepted_revision"
+  --expected-revision "<accepted revision>"
 ```
 
-The publisher supports creation, guarded replacement, identical retries, read-only observation, explicit verification, bounded history, and guarded restore. A caller keeps the `active_revision` from its last successful publish or restore, then supplies it as `--expected-revision` when planning, publishing, or restoring changed content. A `status` result is an observation and does not replace that accepted revision. The accepted revision acts as a compare-and-swap guard, while the publication URL stays stable. Durable receipts and production installation remain later work.
+The publisher supports creation, guarded replacement, identical retries, read-only observation, explicit verification, bounded history, and guarded restore. A caller updates its accepted revision only after the mutation command exits successfully and its JSON reports an appropriate successful outcome. It then supplies that revision as `--expected-revision` when planning, publishing, or restoring changed content. A `status` result is an observation and does not replace that accepted revision. The accepted revision acts as a compare-and-swap guard, while the publication URL stays stable. Durable receipts and production installation remain later work.
 
 ## Data shape
 
