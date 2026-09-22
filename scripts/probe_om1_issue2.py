@@ -19,8 +19,10 @@ import subprocess
 import sys
 import time
 import uuid
+from collections.abc import Iterator
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from types import FrameType
 from typing import NoReturn, cast
 from urllib.parse import quote, urlsplit
 
@@ -39,6 +41,40 @@ PHASES = frozenset({"preflight", "prepared", "b-active", "a-restored", "cleaned"
 
 class ProbeFailure(Exception):
     pass
+
+
+@dataclass
+class Cancellation:
+    signal_number: int | None = None
+
+    def record(self, signal_number: int, frame: FrameType | None) -> None:
+        self.signal_number = signal_number
+
+    def check(self) -> None:
+        if self.signal_number is not None:
+            raise ProbeFailure(f"probe cancelled by {signal.Signals(self.signal_number).name}")
+
+
+_cancellation: Cancellation | None = None
+
+
+@contextlib.contextmanager
+def _cancellation_scope() -> Iterator[Cancellation]:
+    global _cancellation
+    if _cancellation is not None:
+        yield _cancellation
+        return
+    cancellation = Cancellation()
+    previous = {number: signal.getsignal(number) for number in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        _cancellation = cancellation
+        for number in previous:
+            signal.signal(number, cancellation.record)
+        yield cancellation
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+        _cancellation = None
 
 
 class Parser(argparse.ArgumentParser):
@@ -205,53 +241,60 @@ def _host_guard(expected: str = EXPECTED_HOST) -> str:
 def _run(
     argv: tuple[str, ...], *, timeout: int = COMMAND_TIMEOUT
 ) -> subprocess.CompletedProcess[str]:
-    try:
-        process = subprocess.Popen(
-            argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True
+    with _cancellation_scope() as cancellation:
+        cancellation.check()
+        try:
+            process = subprocess.Popen(
+                argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True
+            )
+        except OSError as error:
+            raise ProbeFailure(f"could not run {argv[0]}: {error}") from error
+        buffers = {"stdout": bytearray(), "stderr": bytearray()}
+        deadline = time.monotonic() + timeout
+        try:
+            with selectors.DefaultSelector() as selector:
+                for name, pipe in (("stdout", process.stdout), ("stderr", process.stderr)):
+                    assert pipe is not None
+                    selector.register(pipe, selectors.EVENT_READ, name)
+                while selector.get_map():
+                    cancellation.check()
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise ProbeFailure(f"command exceeded {timeout} seconds: {argv[0]}")
+                    for key, _ in selector.select(min(remaining, 0.1)):
+                        chunk = os.read(key.fd, 8192)
+                        if not chunk:
+                            selector.unregister(key.fileobj)
+                            continue
+                        buffer = buffers[cast(str, key.data)]
+                        if len(buffer) + len(chunk) > MAX_OUTPUT:
+                            raise ProbeFailure(
+                                f"command output exceeded {MAX_OUTPUT} bytes: {argv[0]}"
+                            )
+                        buffer.extend(chunk)
+                while process.poll() is None:
+                    cancellation.check()
+                    if time.monotonic() >= deadline:
+                        raise ProbeFailure(f"command exceeded {timeout} seconds: {argv[0]}")
+                    time.sleep(0.05)
+                cancellation.check()
+        finally:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=5)
+            for pipe in (process.stdout, process.stderr):
+                if pipe is not None:
+                    pipe.close()
+        result = subprocess.CompletedProcess(
+            argv,
+            process.returncode,
+            buffers["stdout"].decode(errors="replace"),
+            buffers["stderr"].decode(errors="replace"),
         )
-    except OSError as error:
-        raise ProbeFailure(f"could not run {argv[0]}: {error}") from error
-    buffers = {"stdout": bytearray(), "stderr": bytearray()}
-    deadline = time.monotonic() + timeout
-    try:
-        with selectors.DefaultSelector() as selector:
-            for name, pipe in (("stdout", process.stdout), ("stderr", process.stderr)):
-                assert pipe is not None
-                selector.register(pipe, selectors.EVENT_READ, name)
-            while selector.get_map():
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise ProbeFailure(f"command exceeded {timeout} seconds: {argv[0]}")
-                for key, _ in selector.select(min(remaining, 0.1)):
-                    chunk = os.read(key.fd, 8192)
-                    if not chunk:
-                        selector.unregister(key.fileobj)
-                        continue
-                    buffer = buffers[cast(str, key.data)]
-                    if len(buffer) + len(chunk) > MAX_OUTPUT:
-                        raise ProbeFailure(f"command output exceeded {MAX_OUTPUT} bytes: {argv[0]}")
-                    buffer.extend(chunk)
-            try:
-                process.wait(timeout=max(0.001, deadline - time.monotonic()))
-            except subprocess.TimeoutExpired as error:
-                raise ProbeFailure(f"command exceeded {timeout} seconds: {argv[0]}") from error
-    finally:
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(process.pid, signal.SIGKILL)
-        process.wait(timeout=5)
-        for pipe in (process.stdout, process.stderr):
-            if pipe is not None:
-                pipe.close()
-    result = subprocess.CompletedProcess(
-        argv,
-        process.returncode,
-        buffers["stdout"].decode(errors="replace"),
-        buffers["stderr"].decode(errors="replace"),
-    )
-    if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
-        raise ProbeFailure(f"command failed with exit {result.returncode}: {argv[0]}: {detail}")
-    return result
+        if result.returncode != 0:
+            detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
+            raise ProbeFailure(f"command failed with exit {result.returncode}: {argv[0]}: {detail}")
+        return result
 
 
 BOOTSTRAP = r"""import json,os,runpy,sys
@@ -807,150 +850,167 @@ def _assert_owned_live(state: ProbeState) -> None:
 
 
 def _prepare(state: ProbeState) -> tuple[ProbeState, dict[str, object]]:
-    if state.phase != "preflight":
-        raise ProbeFailure("prepare requires preflight state")
-    _host_guard(state.expected_host)
-    _private_directory(state.evidence_path, create=False)
-    _assert_source(state)
-    _assert_baseline_unchanged(state)
-    state.root_path.mkdir(parents=True, mode=0o700)
-    os.chmod(state.root_path, 0o700)
-    _owner_file(state).write_text(state.owner_token + "\n", encoding="ascii")
-    os.chmod(_owner_file(state), 0o600)
-    fixtures_root = state.root_path / "fixtures"
-    fixtures = {
-        "A": _fixture_tree(fixtures_root / "a", "A"),
-        "B": _fixture_tree(fixtures_root / "b", "B"),
-    }
-    sentinel = f"private-{state.owner_token}\n".encode()
-    _write_fixture_file(state.root_path / "private-sentinel.txt", sentinel)
-    fixtures["private_sentinel_sha256"] = hashlib.sha256(sentinel).hexdigest()
-    _assert_equal_freshness_shape(fixtures)
-    _atomic_json(state.config_path, _publisher_config(state))
-    public = state.root_path / "runtime/public"
-    server_cmd = _module_command(
-        state,
-        "html_publish.server",
-        "--bind",
-        "127.0.0.1",
-        "--port",
-        str(state.listen_port),
-        "--directory",
-        str(public),
-    )
-    state = replace(
-        state,
-        fixtures=fixtures,
-        process_cmd=server_cmd,
-        route_fingerprint=_fingerprint({"Proxy": state.route_target}),
-    )
-    _write_state(state)
-    environment = dict(os.environ)
-    environment["HTML_PUBLISH_PROBE_OWNER"] = state.owner_token
-    environment["HTML_PUBLISH_PROBE_IDENTITY"] = str(state.root_path / "server.identity.json")
-    process = subprocess.Popen(
-        server_cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        env=environment,
-        start_new_session=True,
-    )
-    try:
-        deadline = time.monotonic() + 5
-        while not (state.root_path / "server.identity.json").exists():
-            if process.poll() is not None or time.monotonic() >= deadline:
-                raise ProbeFailure("server exited before recording its identity")
-            time.sleep(0.02)
-        state = _recover_process(state)
-        _assert_process(state)
+    with _cancellation_scope() as cancellation:
+        if state.phase != "preflight":
+            raise ProbeFailure("prepare requires preflight state")
+        _host_guard(state.expected_host)
+        _private_directory(state.evidence_path, create=False)
+        _assert_source(state)
+        _assert_baseline_unchanged(state)
+        state.root_path.mkdir(parents=True, mode=0o700)
+        os.chmod(state.root_path, 0o700)
+        _owner_file(state).write_text(state.owner_token + "\n", encoding="ascii")
+        os.chmod(_owner_file(state), 0o600)
+        fixtures_root = state.root_path / "fixtures"
+        fixtures = {
+            "A": _fixture_tree(fixtures_root / "a", "A"),
+            "B": _fixture_tree(fixtures_root / "b", "B"),
+        }
+        sentinel = f"private-{state.owner_token}\n".encode()
+        _write_fixture_file(state.root_path / "private-sentinel.txt", sentinel)
+        fixtures["private_sentinel_sha256"] = hashlib.sha256(sentinel).hexdigest()
+        _assert_equal_freshness_shape(fixtures)
+        _atomic_json(state.config_path, _publisher_config(state))
+        public = state.root_path / "runtime/public"
+        server_cmd = _module_command(
+            state,
+            "html_publish.server",
+            "--bind",
+            "127.0.0.1",
+            "--port",
+            str(state.listen_port),
+            "--directory",
+            str(public),
+        )
+        state = replace(
+            state,
+            fixtures=fixtures,
+            process_cmd=server_cmd,
+            route_fingerprint=_fingerprint({"Proxy": state.route_target}),
+        )
+        process: subprocess.Popen[bytes] | None = None
+        try:
+            _write_state(state)
+            environment = dict(os.environ)
+            environment["HTML_PUBLISH_PROBE_OWNER"] = state.owner_token
+            environment["HTML_PUBLISH_PROBE_IDENTITY"] = str(
+                state.root_path / "server.identity.json"
+            )
+            cancellation.check()
+            process = subprocess.Popen(
+                server_cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=environment,
+                start_new_session=True,
+            )
+            start_ticks, _, _ = _process_identity(process.pid)
+            state = replace(state, pid=process.pid, process_start_ticks=start_ticks)
+            _assert_process(state)
+            _write_state(state)
+            deadline = time.monotonic() + 5
+            while not (state.root_path / "server.identity.json").exists():
+                if process.poll() is not None or time.monotonic() >= deadline:
+                    raise ProbeFailure("server exited before recording its identity")
+                time.sleep(0.02)
+            state = _recover_process(state)
+            _assert_process(state)
+            _write_state(state)
+            cancellation.check()
+            (state.root_path / "server.identity.json.start").touch()
+        except BaseException:
+            if process is not None:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=5)
+                state = replace(state, pid=process.pid)
+            else:
+                state = replace(state, process_cmd=())
+            _write_state(replace(state, failed=True))
+            raise
+        try:
+            _wait_health(state)
+        except BaseException:
+            _stop_process(state)
+            raise
+        if _https_port(_serve_status(), _listener_snapshot()) != state.https_port:
+            raise ProbeFailure("selected HTTPS port became occupied before route installation")
+        _run(
+            (
+                "tailscale",
+                "serve",
+                "--bg",
+                "--yes",
+                f"--https={state.https_port}",
+                f"--set-path={state.route_path}",
+                state.route_target,
+            ),
+            timeout=20,
+        )
+        current = _serve_status()
+        route, fingerprint = _route_state(state, current)
+        if route != "exact" or fingerprint != state.route_fingerprint:
+            raise ProbeFailure("Tailscale did not install the exact probe route")
+        if _fingerprint(_strip_owned_route(state, current)) != state.baseline_serve_fingerprint:
+            raise ProbeFailure("route installation changed unrelated Tailscale Serve state")
+        initial = _cli(state, "status", "--name", state.name)
+        if initial.get("active_revision") is not None:
+            raise ProbeFailure("random probe name already has an active revision")
+        plan = _cli(
+            state,
+            "plan",
+            "--name",
+            state.name,
+            "--source",
+            str(fixtures_root / "a"),
+            "--target",
+            state.base_url,
+        )
+        if plan.get("prediction") != "create":
+            raise ProbeFailure("plan A did not predict create")
+        published = _cli(
+            state,
+            "publish",
+            "--name",
+            state.name,
+            "--source",
+            str(fixtures_root / "a"),
+            "--target",
+            state.base_url,
+            "--request-id",
+            f"{state.run_id}-a",
+        )
+        revision_a = _required_string(published, "active_revision", "publish")
+        archive_commit_a = _required_string(published, "archive_commit", "publish")
+        status = _cli(state, "status", "--name", state.name)
+        if status.get("active_revision") != revision_a:
+            raise ProbeFailure("status did not observe revision A")
+        state = replace(
+            state,
+            phase="prepared",
+            revision_a=revision_a,
+            archive_commit_a=archive_commit_a,
+        )
+        (public / "uncontrolled").symlink_to(state.root_path / "private-sentinel.txt")
+        _equalize_release(state, revision_a)
         _write_state(state)
-        (state.root_path / "server.identity.json.start").touch()
-    except BaseException:
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(process.pid, signal.SIGKILL)
-        process.wait(timeout=5)
-        raise
-    try:
-        _wait_health(state)
-    except BaseException:
-        _stop_process(state)
-        raise
-    if _https_port(_serve_status(), _listener_snapshot()) != state.https_port:
-        raise ProbeFailure("selected HTTPS port became occupied before route installation")
-    _run(
-        (
-            "tailscale",
-            "serve",
-            "--bg",
-            "--yes",
-            f"--https={state.https_port}",
-            f"--set-path={state.route_path}",
-            state.route_target,
-        ),
-        timeout=20,
-    )
-    current = _serve_status()
-    route, fingerprint = _route_state(state, current)
-    if route != "exact" or fingerprint != state.route_fingerprint:
-        raise ProbeFailure("Tailscale did not install the exact probe route")
-    if _fingerprint(_strip_owned_route(state, current)) != state.baseline_serve_fingerprint:
-        raise ProbeFailure("route installation changed unrelated Tailscale Serve state")
-    initial = _cli(state, "status", "--name", state.name)
-    if initial.get("active_revision") is not None:
-        raise ProbeFailure("random probe name already has an active revision")
-    plan = _cli(
-        state,
-        "plan",
-        "--name",
-        state.name,
-        "--source",
-        str(fixtures_root / "a"),
-        "--target",
-        state.base_url,
-    )
-    if plan.get("prediction") != "create":
-        raise ProbeFailure("plan A did not predict create")
-    published = _cli(
-        state,
-        "publish",
-        "--name",
-        state.name,
-        "--source",
-        str(fixtures_root / "a"),
-        "--target",
-        state.base_url,
-        "--request-id",
-        f"{state.run_id}-a",
-    )
-    revision_a = _required_string(published, "active_revision", "publish")
-    archive_commit_a = _required_string(published, "archive_commit", "publish")
-    status = _cli(state, "status", "--name", state.name)
-    if status.get("active_revision") != revision_a:
-        raise ProbeFailure("status did not observe revision A")
-    state = replace(
-        state,
-        phase="prepared",
-        revision_a=revision_a,
-        archive_commit_a=archive_commit_a,
-    )
-    (public / "uncontrolled").symlink_to(state.root_path / "private-sentinel.txt")
-    _equalize_release(state, revision_a)
-    _write_state(state)
-    payload = {
-        "operation": "prepare",
-        "phase": state.phase,
-        "base_url": state.base_url,
-        "stable_url": f"{state.base_url}{state.name}/",
-        "revision_a": revision_a,
-        "route_fingerprint": fingerprint,
-        "cleanup_arguments": ["cleanup", "--state", state.state_path],
-        "owned_paths": [state.root, state.evidence_root, state.state_path],
-    }
-    payload["evidence"] = str(_write_evidence(state, "prepare", payload))
-    return state, payload
+        payload = {
+            "operation": "prepare",
+            "phase": state.phase,
+            "base_url": state.base_url,
+            "stable_url": f"{state.base_url}{state.name}/",
+            "revision_a": revision_a,
+            "route_fingerprint": fingerprint,
+            "cleanup_arguments": ["cleanup", "--state", state.state_path],
+            "owned_paths": [state.root, state.evidence_root, state.state_path],
+        }
+        payload["evidence"] = str(_write_evidence(state, "prepare", payload))
+        return state, payload
 
 
 def _raw_get(url: str, headers: dict[str, str] | None = None) -> dict[str, object]:
+    if _cancellation is not None:
+        _cancellation.check()
     parsed = urlsplit(url)
     if parsed.scheme not in {"http", "https"} or parsed.hostname is None:
         raise ProbeFailure(f"unsupported HTTP URL: {url}")
@@ -1415,51 +1475,53 @@ def _cleanup(state: ProbeState) -> tuple[ProbeState, dict[str, object]]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    state: ProbeState | None = None
-    try:
-        parsed = _parser().parse_args(argv)
-        operation = cast(str, parsed.operation)
-        if operation == "preflight":
-            payload = _preflight(
-                cast(Path, parsed.output),
-                cast(Path, parsed.source),
-                cast(str, parsed.commit),
-                cast(Path, parsed.python),
-            )
-        else:
-            state = _load_state(cast(Path, parsed.state))
-            if operation == "prepare":
-                _, payload = _prepare(state)
-            elif operation == "checkpoint":
-                _, payload = _checkpoint(state, cast(str, parsed.expect))
-            elif operation == "activate-b":
-                _, payload = _activate_b(state)
-            elif operation == "restore-a":
-                _, payload = _restore_a(state)
+    with _cancellation_scope() as cancellation:
+        state: ProbeState | None = None
+        try:
+            parsed = _parser().parse_args(argv)
+            operation = cast(str, parsed.operation)
+            if operation == "preflight":
+                payload = _preflight(
+                    cast(Path, parsed.output),
+                    cast(Path, parsed.source),
+                    cast(str, parsed.commit),
+                    cast(Path, parsed.python),
+                )
             else:
-                try:
-                    _, payload = _cleanup(state)
-                except ProbeFailure as error:
-                    evidence = _write_evidence(
-                        state,
-                        "cleanup-refused",
-                        {"operation": "cleanup", "outcome": "error", "message": str(error)},
-                    )
-                    raise ProbeFailure(f"{error}; evidence: {evidence}") from error
-        print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
-        return 0
-    except (ProbeFailure, OSError, KeyboardInterrupt) as error:
-        if state is not None:
-            latest = _load_state(Path(state.state_path))
-            _write_state(replace(latest, failed=True))
-            _write_evidence(
-                latest, "operation-failed", {"operation": operation, "message": str(error)}
+                state = _load_state(cast(Path, parsed.state))
+                if operation == "prepare":
+                    _, payload = _prepare(state)
+                elif operation == "checkpoint":
+                    _, payload = _checkpoint(state, cast(str, parsed.expect))
+                elif operation == "activate-b":
+                    _, payload = _activate_b(state)
+                elif operation == "restore-a":
+                    _, payload = _restore_a(state)
+                else:
+                    try:
+                        _, payload = _cleanup(state)
+                    except ProbeFailure as error:
+                        evidence = _write_evidence(
+                            state,
+                            "cleanup-refused",
+                            {"operation": "cleanup", "outcome": "error", "message": str(error)},
+                        )
+                        raise ProbeFailure(f"{error}; evidence: {evidence}") from error
+            cancellation.check()
+            print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+            return 0
+        except (ProbeFailure, OSError, KeyboardInterrupt) as error:
+            if state is not None:
+                latest = _load_state(Path(state.state_path))
+                _write_state(replace(latest, failed=True))
+                _write_evidence(
+                    latest, "operation-failed", {"operation": operation, "message": str(error)}
+                )
+            print(
+                json.dumps({"outcome": "error", "message": str(error)}, separators=(",", ":")),
+                file=sys.stderr,
             )
-        print(
-            json.dumps({"outcome": "error", "message": str(error)}, separators=(",", ":")),
-            file=sys.stderr,
-        )
-        return 1
+            return 1
 
 
 if __name__ == "__main__":

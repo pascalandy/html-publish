@@ -570,3 +570,202 @@ class ProbeRepairTest(unittest.TestCase):
             self.assertRaisesRegex(ProbeFailure, "HTTPS port"),
         ):
             probe._assert_baseline_unchanged(probe_state(baseline))
+
+
+class ProbeCancellationTest(unittest.TestCase):
+    def test_real_signals_at_owned_creation_boundaries(self) -> None:
+        for mode in ("before-spawn", "before-identity", "after-identity", "checkpoint"):
+            with self.subTest(mode=mode):
+                result = subprocess.run(
+                    (
+                        sys.executable,
+                        "-B",
+                        "-c",
+                        "from tests.test_probe_om1_issue2 import cancellation_case;"
+                        f"cancellation_case({mode!r})",
+                    ),
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("cancelled by SIGTERM", result.stderr)
+
+    def test_bounded_command_sigterm_stops_descendants_and_restores_handlers(self) -> None:
+        result = subprocess.run(
+            (
+                sys.executable,
+                "-B",
+                "-c",
+                "from tests.test_probe_om1_issue2 import cancelled_command;cancelled_command()",
+            ),
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+def cancelled_command() -> None:
+    import signal
+    import time
+
+    from scripts import probe_om1_issue2 as probe
+
+    previous = {number: signal.getsignal(number) for number in (signal.SIGTERM, signal.SIGINT)}
+    with tempfile.TemporaryDirectory() as temporary:
+        marker = Path(temporary) / "escaped"
+        child = (
+            f"import time;from pathlib import Path;time.sleep(0.8);Path({str(marker)!r}).touch()"
+        )
+        command = (
+            "import subprocess,sys,os,signal,time;"
+            f"subprocess.Popen([sys.executable,'-c',{child!r}]);"
+            "os.kill(os.getppid(),signal.SIGTERM);time.sleep(30)"
+        )
+        try:
+            probe._run((sys.executable, "-B", "-c", command))
+        except ProbeFailure as error:
+            assert str(error) == "probe cancelled by SIGTERM"
+        else:
+            raise AssertionError("cancelled command returned success")
+        time.sleep(1)
+        assert not marker.exists(), "descendant escaped cancellation"
+    assert {number: signal.getsignal(number) for number in previous} == previous
+
+
+def cancellation_case(mode: str) -> None:
+    import json
+    import signal
+    import time
+
+    from scripts import probe_om1_issue2 as probe
+
+    previous = {number: signal.getsignal(number) for number in (signal.SIGTERM, signal.SIGINT)}
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        evidence = root / "evidence"
+        evidence.mkdir(mode=0o700)
+        state = replace(
+            probe_state({"TCP": {}, "Web": {}}),
+            phase="preflight",
+            root=str(root / "owned"),
+            evidence_root=str(evidence),
+            state_path=str(evidence / "probe.json"),
+            source_root=str(Path(__file__).parents[1]),
+        )
+        probe._write_state(state)
+        popen = subprocess.Popen
+        write_state = probe._write_state
+        children: list[subprocess.Popen[bytes]] = []
+        signalled = False
+
+        def read_state(path: Path) -> ProbeState:
+            values = json.loads(path.read_text())
+            values["process_cmd"] = tuple(values["process_cmd"])
+            return ProbeState(**values)
+
+        def write(current: ProbeState) -> None:
+            nonlocal signalled
+            write_state(current)
+            if mode == "before-spawn" and current.process_cmd and not signalled:
+                signalled = True
+                os.kill(os.getpid(), signal.SIGTERM)
+
+        def start(
+            argv: tuple[str, ...],
+            *,
+            stdout: int,
+            stderr: int,
+            env: dict[str, str],
+            start_new_session: bool,
+        ) -> subprocess.Popen[bytes]:
+            child = popen(
+                argv, stdout=stdout, stderr=stderr, env=env, start_new_session=start_new_session
+            )
+            children.append(child)
+            identity = state.root_path / "server.identity.json"
+            if mode == "after-identity":
+                deadline = time.monotonic() + 3
+                while not identity.exists():
+                    assert time.monotonic() < deadline, "missing child identity"
+                    time.sleep(0.01)
+            else:
+                assert not identity.exists(), "signal did not precede child identity"
+            os.kill(os.getpid(), signal.SIGTERM)
+            return child
+
+        try:
+            with (
+                mock.patch.object(probe, "_load_state", side_effect=read_state),
+                mock.patch.object(probe, "_host_guard"),
+                mock.patch.object(probe, "_assert_source"),
+                mock.patch.object(probe, "_assert_baseline_unchanged"),
+                mock.patch.object(probe, "_serve_status", return_value={"TCP": {}, "Web": {}}),
+                mock.patch.object(probe, "_observations", return_value={}),
+            ):
+                if mode == "checkpoint":
+                    state.root_path.mkdir(mode=0o700)
+                    probe._owner_file(state).write_text(state.owner_token)
+                    child = popen(
+                        (sys.executable, "-c", "import time;time.sleep(30)"),
+                        env={**os.environ, "HTML_PUBLISH_PROBE_OWNER": state.owner_token},
+                        start_new_session=True,
+                    )
+                    children.append(child)
+                    ticks, command, _ = probe._process_identity(child.pid)
+                    state = replace(
+                        state,
+                        phase="prepared",
+                        pid=child.pid,
+                        process_start_ticks=ticks,
+                        process_cmd=command,
+                    )
+                    write_state(state)
+
+                    def checkpoint(current: ProbeState, expected: str) -> None:
+                        probe._run(
+                            (
+                                sys.executable,
+                                "-c",
+                                "import os,signal,time;os.kill(os.getppid(),signal.SIGTERM);"
+                                "time.sleep(30)",
+                            )
+                        )
+
+                    with mock.patch.object(probe, "_checkpoint", side_effect=checkpoint):
+                        result = probe.main(
+                            ["checkpoint", "--state", state.state_path, "--expect", "A"]
+                        )
+                    assert child.poll() is None, "checkpoint killed persistent server"
+                    probe._assert_process(state)
+                else:
+                    with (
+                        mock.patch.object(probe, "_write_state", side_effect=write),
+                        mock.patch.object(probe.subprocess, "Popen", side_effect=start),
+                        mock.patch.object(
+                            probe, "BOOTSTRAP", "import time;time.sleep(0.15)\n" + probe.BOOTSTRAP
+                        ),
+                    ):
+                        result = probe.main(["prepare", "--state", state.state_path])
+                    assert len(children) == (0 if mode == "before-spawn" else 1)
+                    assert all(child.poll() is not None for child in children)
+                assert result == 1
+                latest = read_state(Path(state.state_path))
+                assert latest.failed
+                assert list(evidence.glob("operation-failed-*.json"))
+                if mode == "before-spawn":
+                    assert not latest.process_cmd and latest.pid is None
+                else:
+                    assert latest.pid == children[0].pid and latest.process_start_ticks
+                cleaned, payload = probe._cleanup(latest)
+                assert payload["phase"] == "cleaned" and payload["root_retained"]
+                assert probe._cleanup(cleaned)[1]["unchanged"]
+        finally:
+            for child in children:
+                if child.poll() is None:
+                    child.kill()
+                child.wait(timeout=3)
+    assert {number: signal.getsignal(number) for number in previous} == previous
