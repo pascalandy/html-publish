@@ -377,7 +377,7 @@ def _serve_status() -> dict[str, object]:
 
 
 def _dns_name() -> str:
-    payload = _json_command(("tailscale", "status", "--json"), timeout=15)
+    payload = _json_command(("tailscale", "status", "--json", "--peers=false"), timeout=15)
     self_state = payload.get("Self")
     if not isinstance(self_state, dict):
         raise ProbeFailure("tailscale status returned no Self object")
