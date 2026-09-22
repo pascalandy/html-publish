@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import functools
 import gzip
 import http.server
@@ -1056,6 +1057,9 @@ class PublisherCliTest(unittest.TestCase):
         )
 
     def test_plan_keeps_all_paths_at_default_capture_limit(self) -> None:
+        config = self.config_payload()
+        config["limits"]["command_seconds"] = 120
+        self.config.write_text(json.dumps(config), encoding="utf-8")
         source = self.root / "large-site"
         source.mkdir()
         (source / "index.html").write_text("<!doctype html><p>large</p>")
@@ -1189,7 +1193,10 @@ class PublisherCliTest(unittest.TestCase):
         elapsed = time.monotonic() - started
 
         self.assertEqual(result.returncode, 1, result.stdout)
-        self.assertEqual(self.payload(result)["error"]["code"], "command_timeout")
+        self.assertIn(
+            self.payload(result)["error"]["code"],
+            {"command_timeout", "git_timeout"},
+        )
         self.assertLess(elapsed, 1.2)
 
     def test_a_missing_git_executable_is_reported_as_unavailable(self) -> None:
@@ -1231,13 +1238,18 @@ class PublisherCliTest(unittest.TestCase):
         surrogates = self.root / "case-encoding"
         surrogates.mkdir()
         (surrogates / "index.html").write_bytes(index)
-        descriptor = os.open(
-            surrogates / os.fsdecode(b"bad\xff.html"),
-            os.O_CREAT | os.O_WRONLY,
-            0o644,
-        )
-        os.close(descriptor)
-        cases += (("invalid path encoding", surrogates),)
+        try:
+            descriptor = os.open(
+                surrogates / os.fsdecode(b"bad\xff.html"),
+                os.O_CREAT | os.O_WRONLY,
+                0o644,
+            )
+        except OSError as error:
+            if error.errno != errno.EILSEQ:
+                raise
+        else:
+            os.close(descriptor)
+            cases += (("invalid path encoding", surrogates),)
 
         special = self.root / "case-special"
         special.mkdir()

@@ -8,6 +8,7 @@ import os
 import socket
 import socketserver
 import stat
+import sys
 import urllib.parse
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -145,6 +146,11 @@ def _port(value: str) -> int:
 
 def _directory(value: str) -> Path:
     directory = Path(os.path.abspath(value))
+    if sys.platform == "darwin" and len(directory.parts) > 1:
+        alias = Path(directory.anchor) / directory.parts[1]
+        expected = {Path("/tmp"): Path("/private/tmp"), Path("/var"): Path("/private/var")}
+        if alias in expected and alias.is_symlink() and alias.resolve() == expected[alias]:
+            directory = expected[alias].joinpath(*directory.parts[2:])
     current = Path(directory.anchor)
     for component in (None, *directory.parts[1:]):
         if component is not None:
