@@ -24,7 +24,7 @@ Preconditions:
 - **Status after a publish.** Publish `release-notes` with page A, then run `HP status --name release-notes`. `observation.selection.state` is `selected`, `observation.selection.revision` equals the publish's `active_revision`, and `observation.saved` carries the same revision plus its `archive_commit`. `active_revision` at the top level equals the selected revision.
 - **Publish a second page and list.** Publish `other-page` with page A, then run `HP status`. Exit 0, `outcome` is `observed`, and `entries` holds one record per name in ascending name order. Each record carries `name`, an absolute `url` ending in `/<name>/`, and `observation.selection.state` `selected`.
 - **Page the list.** Run `HP status --limit 1`. `entries` has exactly one record. Run `HP status --after other-page`. `entries` holds only the names strictly after `other-page`, which is `release-notes` for the two-page instance.
-- **Confirm it is offline.** Stop nothing, but note that status touches no URL. It succeeds identically whether or not the server answers, because it reads bounded local state only.
+- **Confirm it is offline.** Run `scripts/instance.sh offline "$RUN_ID"`. Then run `if curl --connect-timeout 1 --max-time 2 -fsS "$URL/_html-publish-health"; then exit 1; else echo offline; fi`. It prints `offline`. Run `HP status --name release-notes` and require exit 0 with `outcome` `observed` and `observation.selection.state` `selected`.
 - **Proof.** Save the transcript under `$ARTIFACTS/status-observation-<run_id>.txt`.
 
 ## Gotchas

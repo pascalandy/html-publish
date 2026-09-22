@@ -21,10 +21,10 @@ Pick a fresh `<run_id>` per proof, for example `first-pub-20260921`. On success 
 
 ```sh
 .../instance.sh start <run_id>
-export REPO_ROOT=... RUN_ID=... CONFIG=... URL=... PORT=... ARTIFACTS=...
+export REPO_ROOT=... RUN_ID=... INSTANCE=... CONFIG=... URL=... PORT=... ARTIFACTS=...
 ```
 
-The keys are `REPO_ROOT`, `RUN_ID`, `CONFIG`, `URL`, `PORT`, and `ARTIFACTS`. Readiness is the health endpoint answering `ok` at `$URL/_html-publish-health`, which the script waits for before it prints. On failure it prints the server log, cleans up, and exits 1. Completion criterion is a passing doctor.
+The keys are `REPO_ROOT`, `RUN_ID`, `INSTANCE`, `CONFIG`, `URL`, `PORT`, and `ARTIFACTS`. Readiness is the health endpoint answering `ok` at `$URL/_html-publish-health`, which the script waits for before it prints. Each health request has a one-second connection timeout and a two-second total timeout. On failure the script prints the server log and removes the instance only after it verifies and stops the server it started. Completion criterion is a passing doctor.
 
 Write the standard source fixtures into the instance. It prints `PAGE_A=` and `PAGE_B=` paths and prints the same values on every call for one run. Export those two names as well.
 
@@ -32,6 +32,8 @@ Write the standard source fixtures into the instance. It prints `PAGE_A=` and `P
 .../instance.sh sources <run_id>
 export PAGE_A=... PAGE_B=...
 ```
+
+`sources` rewrites the same two paths with the same bytes on every call. A retry recipe reuses the fixture path without changing its bytes between the first publish and the retry.
 
 ## Doctor
 
@@ -83,11 +85,19 @@ There are no mocks in this app. The loopback server is the real delivery surface
 
 ## Cleanup
 
+To prove read-only behavior while delivery is unavailable, stop the owned server and keep the config, archive, runtime, fixtures, and artifacts.
+
+```sh
+.../instance.sh offline <run_id>
+```
+
+`offline` and `stop` signal a process only when its recorded PID, process group, kernel start time, server command, instance directory, and port still match. A missing, malformed, or stale identity makes cleanup fail and leaves the instance metadata in place.
+
 ```sh
 .../instance.sh stop <run_id>
 ```
 
-It stops only the server this run started, by killing the process group recorded in its pid file, verifies the port stopped answering, removes the instance directory, and keeps `$ARTIFACTS`. Completion criterion is a second `stop` reporting a clean no-op while the artifacts still exist. Run `stop` after failed iterations too, so broken attempts never strand processes or ports.
+It stops the verified process group, verifies that the bounded health request fails, removes the instance directory, and keeps `$ARTIFACTS`. Completion criterion is a second `stop` reporting a clean no-op while the artifacts still exist. Run `stop` after failed iterations too. If cleanup refuses a stale identity, keep the metadata for diagnosis and choose a fresh run ID.
 
 ## Feature map
 

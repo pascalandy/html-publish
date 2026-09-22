@@ -22,8 +22,9 @@ Preconditions:
 - **Plan on an empty store.** Run `HP plan --name release-notes --source "$PAGE_A" --target "$URL/"`. Exit 0, `outcome` is `planned`, `prediction` is `create`, `observation.selection.state` is `absent`, and `archived_revision` is null.
 - **Prove no writes.** Run `test ! -e "$(dirname "$CONFIG")/archive.git" && test ! -e "$(dirname "$CONFIG")/runtime" && echo clean`. It prints `clean`. No release exists to fetch over HTTP.
 - **Publish, then plan a change.** Publish page A as in first-publication, noting the active revision `$R1`. Then run `HP plan --name release-notes --source "$PAGE_B" --target "$URL/" --expected-revision "$R1"`. Exit 0, `prediction` is `update`, and `differences` is `{"added":[],"changed":["index.html"],"deleted":[]}` for a one-file source with changed bytes.
-- **Plan a stale expectation.** Run `HP plan --name release-notes --source "$PAGE_A" --target "$URL/" --expected-revision "$R1"` after page B is active. Exit 0, `outcome` is `planned`, `prediction` is `conflict`, and `error` is null. A plan predicts the conflict instead of failing.
-- **Confirm nothing changed.** Run `HP status --name release-notes`. The state matches the last real publish, and the served page is unchanged.
+- **Make the expectation stale.** Run `HP publish --name release-notes --source "$PAGE_B" --target "$URL/" --expected-revision "$R1" --request-id attempt-plan-002`. Exit 0 with `outcome` `published`. Note the new active revision `$R2`.
+- **Plan a stale expectation.** Run `HP plan --name release-notes --source "$PAGE_A" --target "$URL/" --expected-revision "$R1"`. Exit 0, `outcome` is `planned`, `prediction` is `conflict`, `active_revision` is `$R2`, and `error` is null. A plan predicts the conflict instead of failing.
+- **Confirm nothing changed.** Run `HP status --name release-notes` and require `active_revision` `$R2`. Run `curl -fsS "$URL/release-notes/" | cmp - "$PAGE_B"`. The comparison exits 0.
 - **Proof.** Save the transcript under `$ARTIFACTS/advisory-planning-<run_id>.txt`.
 
 ## Gotchas

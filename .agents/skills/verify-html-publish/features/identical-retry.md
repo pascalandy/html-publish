@@ -19,6 +19,7 @@ Preconditions:
 
 - The instance is healthy per doctor.
 - `release-notes` went through first-publication (page A active at revision `$R1`) and then the guarded update to page B (active revision `$R2`), all in this instance.
+- `$PAGE_B` still contains the exact bytes used for the guarded update. Rerunning `sources` is safe because it writes the same bytes, but editing the fixture changes the request from a retry to an update.
 
 - **Retry with no expectation.** Run `HP publish --name release-notes --source "$PAGE_B" --target "$URL/" --request-id attempt-006`. Exit 0, `outcome` is `unchanged`, `effects.archive_advanced` and `effects.activated` are both false, `verification.result` is `passed`, and `active_revision` and `archive_commit` equal the page B values.
 - **Retry with a stale expectation.** Run `HP publish --name release-notes --source "$PAGE_B" --target "$URL/" --expected-revision "$R1" --request-id attempt-007`, where `$R1` is the pre-update revision of page A. Exit 0, `outcome` is `unchanged`, `error` is null, and the active revision is still the page B revision. The identical-content rule wins over the stale guard.
@@ -30,4 +31,5 @@ Preconditions:
 - `unchanged` is a success with exit 0. Only `outcome` distinguishes it from `published`.
 - `unchanged` still verifies over HTTP. With the server down, the retry fails instead of silently reporting success.
 - Effects stay false for `unchanged`. Nothing was archived or activated.
+- Retry identity comes from the captured source bytes. A reused request ID does not make changed fixture bytes identical.
 - If the content differs by one byte, the command is a guarded update or a conflict, not a retry.

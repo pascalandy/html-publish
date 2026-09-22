@@ -5,11 +5,12 @@ This directory is the maintained source for verifying the user-facing behavior o
 ## Baseline preconditions
 
 - Start an isolated instance with `scripts/instance.sh start <run_id>` from the skill directory. See SKILL.md Launch.
-- Export `REPO_ROOT`, `RUN_ID`, `CONFIG`, `URL`, `PORT`, `ARTIFACTS` from the start output, and `PAGE_A`, `PAGE_B` from the sources output.
+- Export `REPO_ROOT`, `RUN_ID`, `INSTANCE`, `CONFIG`, `URL`, `PORT`, and `ARTIFACTS` from the start output. Export `PAGE_A` and `PAGE_B` from the sources output.
 - Create the shell helper `HP() { uv run --project "$REPO_ROOT" html-publish --config "$CONFIG" --json "$@"; }` used by every recipe.
 - Run `scripts/instance.sh doctor <run_id>` and require exit 0 before driving.
 - Never drive an instance that this verification run did not start. `allow_http` in the generated config is valid only for the loopback target `127.0.0.1`.
 - One instance may host several page names. Use a fresh page name when a recipe needs untouched state instead of a new instance.
+- `sources` recreates the same fixture bytes at the same paths. Keep those bytes unchanged when a recipe verifies an identical retry.
 
 ## Driving conventions
 
