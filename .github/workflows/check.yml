@@ -1,0 +1,35 @@
+name: Checks
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: '3.11'
+          - os: macos-latest
+            python: '3.13'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3
+      - run: uv sync --frozen
+      - run: just check
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: evidence-${{ matrix.os }}-${{ matrix.python }}
+          path: /tmp/html-publish-verify/*/artifacts/
+          if-no-files-found: error
