@@ -336,6 +336,10 @@ Its positive `--command-seconds` defaults to 120 and bounds local capture, SSH, 
 with one deadline. Up to five seconds inside that budget are reserved for cleanup.
 Timeout and cancellation terminate the owned local transport process group. They do not prove
 that an already-started remote publisher stopped.
+Where non-reaping wait is available, the client keeps the direct process waitable while it
+checks live group members and stops the group, so its ID cannot be reused during escalation.
+It does not signal a group after reaping its leader. If group ownership or cleanup cannot be
+proved, the caller keeps the attempt unresolved and reports the cleanup state as unknown.
 
 Before invocation, transport failure reports false mutation effects. A lost publish or restore
 result reports unknown effects and preserves request ID and expectation. Retain incoming source

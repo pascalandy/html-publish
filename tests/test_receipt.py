@@ -556,6 +556,76 @@ class HelperCliTest(ReceiptFixture):
         self.assertIsNotNone(state["pending"])
         self.assertFalse(marker.exists())
 
+    def test_term_ignoring_descendant_is_killed_before_receipt_unlock(self) -> None:
+        ready = self.root / "child-ready"
+        marker = self.root / "child-survived"
+        child_code = (
+            "import signal, time; from pathlib import Path; "
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+            f"Path({str(ready)!r}).write_text('ready'); "
+            "time.sleep(0.7); "
+            f"Path({str(marker)!r}).write_text('survived')"
+        )
+        self.fake.write_text(
+            FAKE_PUBLISHER.replace(
+                "print(json.dumps(payload))\nraise SystemExit(exit_code)",
+                "import subprocess\n"
+                f"child_code = {child_code!r}\n"
+                "subprocess.Popen([sys.executable, '-c', child_code], "
+                "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+                f"ready = Path({str(ready)!r})\n"
+                "until = time.monotonic() + 2\n"
+                "while not ready.exists() and time.monotonic() < until: time.sleep(0.01)\n"
+                "assert ready.exists()\n"
+                "print(json.dumps(payload))\nraise SystemExit(0)",
+            )
+        )
+        source = self.root / "ignores-term.html"
+        source.write_text("ignores term")
+
+        result = self.run_helper("publish", str(source), "--new", "ignores-term")
+        time.sleep(0.85)
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        payload = self.payload(result)
+        self.assertEqual(payload["outcome"], "delivery_failed")
+        self.assertEqual(
+            cast(dict[str, object], payload["error"])["code"], "publisher_process_group"
+        )
+        self.assertTrue(cast(dict[str, object], payload["publisher"])["group_stopped"])
+        self.assertFalse(marker.exists())
+
+    def test_uninspectable_process_group_keeps_attempt_unresolved(self) -> None:
+        source = self.root / "uninspectable.html"
+        source.write_text("uninspectable")
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--config",
+                str(self.config),
+                "publish",
+                str(source),
+                "--new",
+                "uninspectable",
+            ],
+            env={**os.environ, "PATH": str(self.root / "no-system-tools")},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        payload = self.payload(result)
+        self.assertEqual(payload["outcome"], "delivery_failed")
+        self.assertEqual(
+            cast(dict[str, object], payload["error"])["code"],
+            "publisher_process_group_unknown",
+        )
+        self.assertIsNone(cast(dict[str, object], payload["publisher"])["group_stopped"])
+        self.assertIsNotNone(self.receipt(Path(str(source) + ".publish"))["pending"])
+
     def test_timeout_terminates_descendant_process_group(self) -> None:
         marker = self.root / "child-finished"
         pid_file = self.root / "child.pid"

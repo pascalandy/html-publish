@@ -168,7 +168,7 @@ class SavedResult:
     stdout: str
     stderr: str
     payload: Mapping[str, object] | None
-    group_stopped: bool = False
+    group_stopped: bool | None = False
     cancelled: bool = False
 
 
@@ -193,7 +193,7 @@ class ProcessResult:
     output_limited: bool
     stdout: bytes
     stderr: bytes
-    group_stopped: bool = False
+    group_stopped: bool | None = False
     cancelled: bool = False
 
 
@@ -977,28 +977,67 @@ def _executor_command(
     return command
 
 
-def _stop_process_group(process: subprocess.Popen[bytes]) -> bool:
+def _live_group_members(pgid: int) -> bool | None:
+    try:
+        observed = subprocess.run(
+            ["ps", "-axo", "pid=,pgid=,stat="],
+            capture_output=True,
+            text=True,
+            timeout=1,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if observed.returncode != 0 or len(observed.stdout) > 1024 * 1024:
+        return None
+    for line in observed.stdout.splitlines():
+        fields = line.split()
+        if len(fields) != 3:
+            return None
+        try:
+            group = int(fields[1])
+        except ValueError:
+            return None
+        if group == pgid and not fields[2].startswith(("Z", "X")):
+            return True
+    return False
+
+
+def _stop_process_group(process: subprocess.Popen[bytes]) -> bool | None:
+    if process.returncode is not None:
+        return False if _live_group_members(process.pid) is False else None
+    live = _live_group_members(process.pid)
+    if live is not True:
+        process.wait(timeout=1)
+        return live
     try:
         os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return False
-    try:
-        process.wait(timeout=0.2)
-    except subprocess.TimeoutExpired:
-        try:
-            if os.getpgid(process.pid) == process.pid:
-                os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+    except (ProcessLookupError, PermissionError):
+        live = _live_group_members(process.pid)
         process.wait(timeout=1)
+        return False if live is False else None
     deadline = time.monotonic() + 0.2
     while time.monotonic() < deadline:
-        try:
-            os.killpg(process.pid, 0)
-        except (ProcessLookupError, PermissionError):
-            break
+        live = _live_group_members(process.pid)
+        if live is not True:
+            process.wait(timeout=1)
+            return True if live is False else None
         time.sleep(0.01)
-    return True
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        live = _live_group_members(process.pid)
+        process.wait(timeout=1)
+        return True if live is False else None
+    deadline = time.monotonic() + 0.2
+    while time.monotonic() < deadline:
+        live = _live_group_members(process.pid)
+        if live is not True:
+            process.wait(timeout=1)
+            return True if live is False else None
+        time.sleep(0.01)
+    process.wait(timeout=1)
+    return None
 
 
 def _run_process(command: Sequence[str], seconds: float, output_bytes: int) -> ProcessResult:
@@ -1063,11 +1102,19 @@ def _run_process(command: Sequence[str], seconds: float, output_bytes: int) -> P
                 if remaining_time <= 0:
                     timed_out = True
                 else:
-                    try:
-                        process.wait(timeout=min(remaining_time, 0.1))
-                        break
-                    except subprocess.TimeoutExpired:
-                        continue
+                    if hasattr(os, "waitid") and hasattr(os, "WNOWAIT"):
+                        exited = os.waitid(
+                            os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT
+                        )
+                        if exited is not None:
+                            break
+                        time.sleep(min(remaining_time, 0.01))
+                    else:
+                        try:
+                            process.wait(timeout=min(remaining_time, 0.1))
+                            break
+                        except subprocess.TimeoutExpired:
+                            continue
         finally:
             try:
                 group_stopped = _stop_process_group(process)
@@ -1178,7 +1225,7 @@ def parse_saved_result(value: object) -> SavedResult:
         or not isinstance(stderr, str)
         or not isinstance(raw.get("timed_out"), bool)
         or not isinstance(raw.get("output_limited"), bool)
-        or not isinstance(raw.get("group_stopped"), bool)
+        or (raw.get("group_stopped") is not None and not isinstance(raw.get("group_stopped"), bool))
         or not isinstance(raw.get("cancelled"), bool)
     ):
         raise ReceiptFailure("invalid_state", "saved result fields are invalid", "inspect")
@@ -1198,7 +1245,7 @@ def parse_saved_result(value: object) -> SavedResult:
         stdout,
         stderr,
         payload,
-        cast(bool, raw.get("group_stopped")),
+        cast(bool | None, raw.get("group_stopped")),
         cast(bool, raw.get("cancelled")),
     )
 
@@ -1333,7 +1380,7 @@ def reduce_result(receipt: Receipt, result: SavedResult) -> Classification:
     process_finished = (
         not result.timed_out
         and not result.output_limited
-        and not result.group_stopped
+        and result.group_stopped is False
         and not result.cancelled
     )
     verification_payload = payload.get("verification")
@@ -1443,7 +1490,12 @@ def _status_payload(
         else config.limits.command_seconds,
         config.limits.output_bytes,
     )
-    if process.timed_out or process.output_limited or process.group_stopped or process.cancelled:
+    if (
+        process.timed_out
+        or process.output_limited
+        or process.group_stopped is not False
+        or process.cancelled
+    ):
         return process, None
     stdout = process.stdout.decode("utf-8", "replace")
     try:
@@ -1714,6 +1766,8 @@ def _finish_dispatch(
         error_code = "publisher_timeout"
     elif dispatch.saved_result.output_limited:
         error_code = "publisher_output_limit"
+    elif dispatch.saved_result.group_stopped is None:
+        error_code = "publisher_process_group_unknown"
     elif dispatch.saved_result.group_stopped:
         error_code = "publisher_process_group"
     elif result_observation is not None and result_observation.error_code is not None:
