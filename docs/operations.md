@@ -32,10 +32,10 @@ gh run list --workflow check.yml --limit 1
 gh run view '<run id>' --json headSha,conclusion,jobs
 ```
 
-4. Compare the run's `head_sha` with the candidate SHA. If they differ because `main` advanced, stop. Do not install or promote the candidate with that run. Select and review a new candidate explicitly, then repeat this procedure
+4. Compare the run's recorded head SHA, the `headSha` field, with the candidate SHA. If they differ because `main` advanced, stop. Do not install or promote the candidate with that run. Select and review a new candidate explicitly, then repeat this procedure
 5. The workflow checks out the event commit itself. Do not add a source-ref override
 
-A check result covers only the commit named in its `head_sha`.
+A check result covers only the commit named in its head SHA.
 
 ### Install the checked candidate
 
@@ -54,7 +54,7 @@ Never move or delete an existing stable tag. A newer promotion adds a new tag on
 
 ### Record a promotion
 
-Record the tag, the promoted full source SHA, the check run and its `head_sha`, and the installed wheel release identity in the deployment evidence record. The [installed verification record](evidence/deployment/2026-09-22-om1-installed.md) shows the provenance format
+Record the tag, the promoted full source SHA, the check run and its head SHA, and the installed wheel release identity in the deployment evidence record. The [installed verification record](evidence/deployment/2026-09-22-om1-installed.md) shows the provenance format
 
 ### Roll back after promotion
 
