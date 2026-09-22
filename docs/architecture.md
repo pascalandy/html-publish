@@ -101,10 +101,18 @@ class Verification:
 | `artifact.py` | Source capture, accepted paths, exact bytes, Git tree identity, and HTML warnings |
 | `store.py` | Git history, runtime layout, the process lock, mutation order, state observation, history, restore, and partial effects |
 | `delivery.py` | URL construction, redirect boundaries, HTTP body comparison, delivery evidence, and host diagnostics |
+| `remote.py` | Private source upload, bounded SSH execution, host-result correlation, and attempt staging cleanup |
+| `server.py` | Read-only HTTP delivery of selected files, without publication mutations |
 
 `_git.py` is a private mechanism shared by capture and storage. It owns the one sanitized Git invocation policy and exposes no publication decisions
 
 `PublicationStore` is the only mutation owner. The caller cannot archive without selection checks or activate before archive persistence. `restore` rebuilds the captured site from committed blobs and enters the same guarded transaction as `publish`, so both share the decision rules, the lock, and the verification.
+
+The remote helper uses the same six-command JSON contract and the CLI's serializer. Typed requests
+carry command intent separately from invocation effects. A validated host result permits incoming
+staging cleanup. Lost mutation responses retain that staging and report unknown effects. One client
+deadline bounds capture, upload, execution, and cleanup. It does not bound an already-running host
+transaction. The read-only server never enters the store's mutation path.
 
 `plan` and `publish` share one decision over the requested revision, expected revision, saved page, and active selection. The result is `create`, `update`, `unchanged`, or `conflict`. `plan` observes the full local state and computes the exact requested revision and file differences under the process lock, but it writes only to temporary storage.
 

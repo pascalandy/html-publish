@@ -32,8 +32,10 @@ artifact + caller binding -> captured revision -> archived commit -> active expo
 - **Publisher:** one Python/stdlib executable plus Git owns validation, planning, archive,
   activation, status, verification, and restore. Use small internal modules, not services or
   plugins.
-- **Host:** native Tailscale Serve, or one verified loopback Caddy alternative. The publisher is
-  never in the HTTP request path. Installation and skills belong in dotfiles; implementation and
+- **Host:** native Tailscale Serve, the read-only loopback delivery helper, or one verified loopback
+  Caddy alternative. Publication transactions stay outside HTTP handling. The delivery helper
+  only serves selected files and never archives, repairs, or activates content.
+  Installation and skills belong in dotfiles; implementation and
   tests belong here; published content lives in a separate local archive.
 
 The archive branch answers **what is saved**; the controlled symlink answers **what is selected**;
@@ -137,10 +139,15 @@ and `error`.
   inputs. Distinguish validation, target mismatch, revision conflict, lock timeout, archive
   conflict/failure, export corruption, activation/persistence failure, route drift, and delivery
   failure. Report an orphaned Git lock explicitly; do not remove lock files based only on age.
-- Missing or unobserved facts are null, never guessed. Bound default lists to 100 entries and
-  history to 20; return totals, truncation, and continuation information rather than silent
-  omissions. Text differences default off and cap the final UTF-8 encoded text at 64 KiB when
-  requested.
+- Missing or unobserved facts are null, never guessed. Publication lists default to 100 entries
+  and history to 20. Both return totals, truncation, and an opaque continuation for the next
+  `--after` on the same operation and name. `status.total` counts all names. `history.total`
+  counts entries remaining after its cursor. Empty pages explicitly return `entries: []`.
+  Nested path arrays remain complete. Capture defaults to 2,000 files, so a two-site delta
+  normally contains at most 4,000 paths and 20 history entries at most 80,000 path mentions.
+  Configured limits and historical captures can be larger. This is an artifact-derived bound,
+  not a fixed response-byte cap. Text differences default off and cap the final UTF-8 encoded
+  text at 64 KiB when requested.
 - Publish/restore outcomes are `published|unchanged|error`; plan is `planned|error`, status and
   history are `observed|error`, and verify is `verified|error`. Exit 0 means success, 1
   operational failure, 2 invalid usage. Degraded status exits 1; saved-versus-active divergence
@@ -254,7 +261,19 @@ deferred.
 The canonical `html-publish` skill selects local execution or the established SSH
 upload/invocation route, then calls the same host executable. Remote upload stages are
 caller-owned; the host still captures and validates them. Keep SSH host-key checks and quoting
-intact. No remote adapter or daemon.
+intact. A thin SSH execution helper forwards all six commands to the same executable and JSON
+contract. Only plan and publish upload source. It does not own publication decisions or receipts.
+Its positive `--command-seconds` defaults to 120 and bounds local capture, SSH, SCP, and cleanup
+with one deadline. Up to five seconds inside that budget are reserved for cleanup.
+Timeout and cancellation terminate the owned local transport process group. They do not prove
+that an already-started remote publisher stopped.
+
+Before invocation, transport failure reports false mutation effects. A lost publish or restore
+result reports unknown effects and preserves request ID and expectation. Retain incoming source
+after uncertain invocation because the remote process may still read it. A cleanup failure after
+a validated result adds a warning and staging path without changing known publication effects.
+Malformed or mismatched host reports fail the protocol check. Legitimate additive fields survive.
+Both local and remote execution use exit 0 for success, 1 for operational failure, and 2 for usage.
 
 Provide a small tested receipt helper alongside the skill; do not ask agents to reconstruct
 atomic file persistence from prose. It owns only caller association, not publication or recovery
@@ -317,7 +336,8 @@ Do not reboot without explicit approval or call an unverified installation produ
 
 No Docker, database, mutable shared checkout, persistent publisher, event store, distributed
 locks, web upload UI, public Funnel, per-page ACLs, untrusted-HTML isolation, automatic tab
-refresh, automatic rollback/pruning/backup/activation, or dedicated remote adapter. No
+refresh, automatic rollback/pruning/backup/activation, or separate publication service or remote
+publication protocol. The read-only delivery helper and thin SSH execution helper are allowed. No
 requirement to preserve Postplan-owned URLs: replacement produces new private URLs. Markdown is
 #9, after HTML cutover.
 

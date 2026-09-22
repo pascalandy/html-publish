@@ -23,6 +23,7 @@ from html_publish.model import (
     Limits,
     LocalState,
     Name,
+    Operation,
     PublishError,
     Report,
     Revision,
@@ -113,9 +114,16 @@ def _parser() -> Parser:
     publish.add_argument("--request-id")
     publish.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
 
-    status = commands.add_parser("status", help="observe bounded local state")
+    status = commands.add_parser(
+        "status",
+        help="observe bounded local state",
+        epilog="Next page: html-publish --config publisher.json --json status "
+        "--after '<continuation>' --limit 20",
+    )
     status.add_argument("--name", type=_name)
-    status.add_argument("--after", type=_name)
+    status.add_argument(
+        "--after", type=_name, help="opaque continuation from the prior status page"
+    )
     status.add_argument("--limit", type=_positive_int, default=100)
     status.add_argument("--host-check", action="store_true", default=argparse.SUPPRESS)
     status.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
@@ -124,10 +132,15 @@ def _parser() -> Parser:
     verify.add_argument("--name", required=True, type=_name)
     verify.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
 
-    history = commands.add_parser("history", help="list bounded publication history for a name")
+    history = commands.add_parser(
+        "history",
+        help="list bounded publication history for a name",
+        epilog="Next page: html-publish --config publisher.json --json history "
+        "--name release-notes --after '<continuation>' --limit 5",
+    )
     history.add_argument("--name", required=True, type=_name)
     history.add_argument("--limit", type=_positive_int, default=20)
-    history.add_argument("--after")
+    history.add_argument("--after", help="opaque continuation from history for the same name")
     history.add_argument("--diff", dest="diff_revision")
     history.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
 
@@ -455,7 +468,7 @@ def report_dict(report: Report) -> dict[str, object]:
         "observation": _state_dict(state) if state else None,
     }
     payload.update(_details_dict(report.details))
-    if report.status_entries:
+    if report.status_entries or (report.operation == "status" and report.name is None):
         payload["entries"] = [
             {
                 "name": entry.name,
@@ -467,11 +480,31 @@ def report_dict(report: Report) -> dict[str, object]:
     return payload
 
 
-def _usage_report(operation: str | None, failure: Failure) -> dict[str, object]:
-    selected_operation = operation if operation in OPERATIONS else "usage"
+def usage_report(
+    operation: str | None,
+    failure: Failure,
+    *,
+    target: str | None = None,
+    name: Name | None = None,
+    expected_revision: Revision | None = None,
+    request_id: str | None = None,
+) -> dict[str, object]:
+    if operation in OPERATIONS:
+        return report_dict(
+            Report(
+                cast(Operation, operation),
+                "error",
+                target,
+                name,
+                publication_url(target, name) if target is not None and name is not None else None,
+                request_id=request_id,
+                expected_revision=expected_revision,
+                error=failure,
+            )
+        )
     return {
         "schema_version": 1,
-        "operation": selected_operation,
+        "operation": "usage",
         "request_id": None,
         "outcome": "error",
         "target": None,
@@ -490,10 +523,15 @@ def _usage_report(operation: str | None, failure: Failure) -> dict[str, object]:
     }
 
 
+def emit_json(payload: Mapping[str, object], exit_code: Literal[0, 1, 2]) -> int:
+    print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+    return exit_code
+
+
 def _print_report(report: Report, json_output: bool) -> int:
     payload = report_dict(report)
     if json_output:
-        print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+        return emit_json(payload, 1 if report.error else 0)
     elif report.error:
         print(f"html-publish: {report.error.message}", file=sys.stderr)
     elif report.operation in {"publish", "restore"}:
@@ -508,6 +546,8 @@ def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     json_output = "--json" in arguments
     operation = next((value for value in arguments if value in OPERATIONS), None)
+    parsed: argparse.Namespace | None = None
+    config: Config | None = None
     try:
         parsed = _parser().parse_args(arguments)
         if parsed.config is None:
@@ -557,22 +597,36 @@ def main(argv: list[str] | None = None) -> int:
     except UsageFailure as error:
         failure = Failure("invalid_usage", "usage", str(error), "fix_arguments")
         if json_output:
-            print(json.dumps(_usage_report(operation, failure), separators=(",", ":")))
+            return emit_json(
+                usage_report(
+                    operation,
+                    failure,
+                    target=getattr(parsed, "target", None),
+                    name=getattr(parsed, "name", None),
+                    expected_revision=getattr(parsed, "expected_revision", None),
+                    request_id=getattr(parsed, "request_id", None),
+                ),
+                2,
+            )
         else:
             print(f"html-publish: {error}", file=sys.stderr)
         return 2
     except PublishError as error:
-        error_operation: Literal["plan", "publish", "status", "verify", "history", "restore"]
+        error_operation: Operation
         error_operation = cast(
-            Literal["plan", "publish", "status", "verify", "history", "restore"],
+            Operation,
             operation if operation in OPERATIONS else "status",
         )
+        target = getattr(parsed, "target", config.base_url if config else None)
+        name = getattr(parsed, "name", None)
         report = Report(
             error_operation,
             "error",
-            None,
-            None,
-            None,
+            target,
+            name,
+            publication_url(target, name) if target is not None and name is not None else None,
+            request_id=getattr(parsed, "request_id", None),
+            expected_revision=getattr(parsed, "expected_revision", None),
             error=error.failure,
         )
         return _print_report(report, json_output)

@@ -965,6 +965,115 @@ class PublisherCliTest(unittest.TestCase):
         self.assertEqual(payload["error"]["code"], "invalid_usage")
         self.assertEqual(result.stderr, "")
 
+    def test_empty_status_has_explicit_entries_and_common_envelope(self) -> None:
+        result = self.run_cli("status")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.payload(result),
+            {
+                "schema_version": 1,
+                "operation": "status",
+                "request_id": None,
+                "outcome": "observed",
+                "target": self.base_url,
+                "name": None,
+                "url": None,
+                "expected_revision": None,
+                "requested_revision": None,
+                "archived_revision": None,
+                "archive_commit": None,
+                "active_revision": None,
+                "effects": {"archive_advanced": False, "activated": False},
+                "verification": {
+                    "result": "not_checked",
+                    "revision": None,
+                    "checked_at": None,
+                    "probe_location": None,
+                    "files_checked": 0,
+                    "bytes_checked": 0,
+                    "scope": [],
+                    "detail": None,
+                },
+                "warnings": [],
+                "error": None,
+                "observation": None,
+                "entries": [],
+                "total": 0,
+                "truncated": False,
+                "continuation": None,
+                "staging": None,
+            },
+        )
+
+    def test_config_failure_preserves_mutation_identity(self) -> None:
+        self.config.write_text("{}")
+        result = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            "unused.html",
+            "--target",
+            self.base_url,
+            "--request-id",
+            "attempt-1",
+            "--expected-revision",
+            "rev-a",
+        )
+        self.assertEqual(result.returncode, 1)
+        payload = self.payload(result)
+        self.assertEqual(payload["request_id"], "attempt-1")
+        self.assertEqual(payload["expected_revision"], "rev-a")
+        self.assertEqual(payload["url"], self.base_url + "report/")
+        self.assertEqual(payload["effects"], {"archive_advanced": False, "activated": False})
+
+    def test_archive_modes_release_modes_and_parentless_first_commit(self) -> None:
+        source = self.root / "site"
+        source.mkdir()
+        for filename, mode in (("index.html", 0o755), ("private.css", 0o600), ("script.js", 0o744)):
+            path = source / filename
+            path.write_text(
+                "<!doctype html><p>normalized</p>" if filename == "index.html" else "body {}"
+            )
+            path.chmod(mode)
+        result = self.run_cli(
+            "publish", "--name", "report", "--source", str(source), "--target", self.base_url
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        payload = self.payload(result)
+        commit = payload["archive_commit"]
+        self.assertEqual(self.git("rev-list", "--parents", "-n1", commit).split(), [commit])
+        tree = self.git("ls-tree", "-r", commit).splitlines()
+        self.assertEqual([line.split()[0] for line in tree], ["100644"] * 3)
+        self.assertEqual(
+            [line.split("\t")[1] for line in tree],
+            ["report/site/index.html", "report/site/private.css", "report/site/script.js"],
+        )
+        release = self.runtime / "releases" / payload["active_revision"]
+        self.assertEqual(
+            {path.name: path.stat().st_mode & 0o777 for path in release.iterdir()},
+            {"index.html": 0o644, "private.css": 0o644, "script.js": 0o644},
+        )
+
+    def test_plan_keeps_all_paths_at_default_capture_limit(self) -> None:
+        source = self.root / "large-site"
+        source.mkdir()
+        (source / "index.html").write_text("<!doctype html><p>large</p>")
+        for index in range(1999):
+            (source / f"asset-{index:04}.txt").write_text("asset")
+        result = self.run_cli(
+            "plan", "--name", "report", "--source", str(source), "--target", self.base_url
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        payload = self.payload(result)
+        self.assertEqual(payload["file_count"], 2000)
+        self.assertEqual(
+            payload["differences"]["added"],
+            [*(f"asset-{index:04}.txt" for index in range(1999)), "index.html"],
+        )
+        self.assertEqual(payload["differences"]["changed"], [])
+        self.assertEqual(payload["differences"]["deleted"], [])
+
     def test_plan_reports_configured_capture_limits(self) -> None:
         payload = self.config_payload()
         payload["limits"]["max_bytes"] = 2_000
@@ -1428,6 +1537,16 @@ class PublisherCliTest(unittest.TestCase):
         self.assertEqual(observed_payload["error"]["code"], "state_degraded")
         self.assertEqual(observed_payload["observation"]["selection"]["state"], "degraded")
         self.assertEqual(observed_payload["archived_revision"], revision)
+
+        listing = self.run_cli("status")
+        self.assertEqual(listing.returncode, 1)
+        listing_payload = self.payload(listing)
+        self.assertEqual(listing_payload["error"]["code"], "state_degraded")
+        self.assertEqual(listing_payload["entries"][0]["name"], "report")
+        self.assertEqual(
+            listing_payload["entries"][0]["observation"]["selection"]["state"],
+            "degraded",
+        )
 
         source.write_bytes(b"<!doctype html><h1>B</h1>\n")
         still_blocked = self.run_cli(
@@ -2428,6 +2547,8 @@ class PublisherCliTest(unittest.TestCase):
         self.assertEqual(deeper.returncode, 0, deeper.stderr)
         deeper_payload = self.payload(deeper)
         self.assertEqual(len(deeper_payload["entries"]), 1)
+        self.assertEqual(deeper_payload["total"], 1)
+        self.assertEqual(deeper_payload["entries"], full_payload["entries"][2:])
         self.assertFalse(deeper_payload["truncated"])
 
     def test_history_diff_text_is_utf8_capped_after_replacement(self) -> None:

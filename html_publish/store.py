@@ -1323,6 +1323,18 @@ class PublicationStore:
                     StatusEntry(Name(candidate), self._state(Name(candidate), full=False))
                     for candidate in selected_names
                 )
+                status_error: Failure | None = None
+                for entry in entries:
+                    selection = entry.state.selection
+                    if selection.kind in {"degraded", "unobserved"}:
+                        status_error = Failure(
+                            f"state_{selection.kind}",
+                            "status",
+                            f"{entry.name}: "
+                            + (selection.detail or "Selected state could not be observed"),
+                            "inspect",
+                        )
+                        break
                 details = {
                     "total": len(names),
                     "truncated": len(ordered) > limit,
@@ -1342,6 +1354,7 @@ class PublicationStore:
                     details=details,
                     status_entries=entries,
                     verification=verification,
+                    error=status_error,
                 )
         except (OSError, PublishError) as error:
             failure = (
