@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import contextlib
 import functools
 import gzip
 import http.server
+import io
 import json
 import os
 import subprocess
@@ -13,8 +15,13 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
+from unittest import mock
+
+from html_publish import _git, cli
+from html_publish.model import Deadline
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -1622,6 +1629,411 @@ class PublisherCliTest(unittest.TestCase):
         self.assertEqual(source.read_bytes(), body)
         self.assertEqual(source.stat().st_mtime_ns, before_mtime)
         self.assertEqual(list(self.root.glob("report*")), [source])
+
+    def test_help_documents_the_commands(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "html_publish", "--help"],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0)
+        for command in ("plan", "publish", "status"):
+            self.assertIn(command, result.stdout)
+        self.assertIn("--config", result.stdout)
+
+    def test_absent_active_content_follows_the_saved_and_expectation_rules(self) -> None:
+        source = self.root / "report.html"
+        source.write_bytes(b"<!doctype html><h1>A</h1>\n")
+        published = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+        )
+        self.assertEqual(published.returncode, 0, published.stderr)
+        revision_a = self.payload(published)["active_revision"]
+        head_commit = self.git("rev-parse", "refs/heads/published")
+        public_link = self.runtime / "public" / "report"
+
+        source_b = self.root / "report-b.html"
+        source_b.write_bytes(b"<!doctype html><h1>B</h1>\n")
+        public_link.unlink()
+
+        resumed = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+        )
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        resumed_payload = self.payload(resumed)
+        self.assertEqual(resumed_payload["outcome"], "published")
+        self.assertEqual(resumed_payload["effects"], {"archive_advanced": False, "activated": True})
+        self.assertEqual(self.git("rev-parse", "refs/heads/published"), head_commit)
+        self.assertEqual(
+            (public_link / "index.html").read_bytes(),
+            b"<!doctype html><h1>A</h1>\n",
+        )
+        self.assertEqual(len(list((self.runtime / "releases").iterdir())), 1)
+
+        public_link.unlink()
+        saved_conflict = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source_b),
+            "--target",
+            self.base_url,
+        )
+        self.assertEqual(saved_conflict.returncode, 1)
+        saved_payload = self.payload(saved_conflict)
+        self.assertEqual(saved_payload["error"]["code"], "revision_conflict")
+        self.assertEqual(
+            saved_payload["error"]["next_action"]["required_inputs"],
+            ["archived_revision", "requested_revision"],
+        )
+        self.assertEqual(saved_payload["effects"], {"archive_advanced": False, "activated": False})
+
+        expectation_conflict = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source_b),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            revision_a,
+        )
+        self.assertEqual(expectation_conflict.returncode, 1)
+        expectation_payload = self.payload(expectation_conflict)
+        self.assertEqual(expectation_payload["error"]["code"], "revision_conflict")
+        self.assertEqual(
+            expectation_payload["error"]["next_action"]["required_inputs"],
+            ["active_revision"],
+        )
+        self.assertEqual(self.git("rev-list", "--count", "refs/heads/published"), "1")
+
+    def test_noop_with_a_stale_expectation_reports_the_pending_archive(self) -> None:
+        source = self.root / "report.html"
+        source.write_bytes(b"<!doctype html><h1>A</h1>\n")
+        published = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+        )
+        self.assertEqual(published.returncode, 0, published.stderr)
+        revision_a = self.payload(published)["active_revision"]
+
+        source.write_bytes(b"<!doctype html><h1>B</h1>\n")
+        planned = self.run_cli(
+            "plan",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            revision_a,
+        )
+        self.assertEqual(planned.returncode, 0, planned.stderr)
+        revision_b = self.payload(planned)["requested_revision"]
+        (self.runtime / "releases" / revision_b).write_text("not a release", encoding="utf-8")
+        failed = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            revision_a,
+        )
+        self.assertEqual(failed.returncode, 1)
+        self.assertEqual(self.payload(failed)["error"]["code"], "export_corruption")
+        pending_commit = self.git("rev-parse", "refs/heads/published")
+
+        source.write_bytes(b"<!doctype html><h1>A</h1>\n")
+        noop = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            revision_b,
+        )
+        self.assertEqual(noop.returncode, 0, noop.stderr)
+        noop_payload = self.payload(noop)
+        self.assertEqual(noop_payload["outcome"], "unchanged")
+        self.assertEqual(noop_payload["effects"], {"archive_advanced": False, "activated": False})
+        self.assertEqual(noop_payload["archived_revision"], revision_b)
+        self.assertEqual(noop_payload["active_revision"], revision_a)
+        self.assertEqual(self.git("rev-parse", "refs/heads/published"), pending_commit)
+
+    def test_content_identity_permits_returning_to_an_earlier_revision(self) -> None:
+        stable_url = f"{self.base_url}report/"
+        source_a = self.root / "report-a.html"
+        source_b = self.root / "report-b.html"
+        source_a.write_bytes(b"<!doctype html><h1>A</h1>\n")
+        source_b.write_bytes(b"<!doctype html><h1>B</h1>\n")
+
+        published_a = self.run_cli(
+            "publish", "--name", "report", "--source", str(source_a), "--target", self.base_url
+        )
+        self.assertEqual(published_a.returncode, 0, published_a.stderr)
+        revision_a = self.payload(published_a)["active_revision"]
+
+        published_b = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source_b),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            revision_a,
+        )
+        self.assertEqual(published_b.returncode, 0, published_b.stderr)
+        revision_b = self.payload(published_b)["active_revision"]
+        self.assertEqual(self.payload(published_b)["url"], stable_url)
+
+        restored_a = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source_a),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            revision_b,
+        )
+        self.assertEqual(restored_a.returncode, 0, restored_a.stderr)
+        self.assertEqual(self.payload(restored_a)["active_revision"], revision_a)
+
+        republished_b = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source_b),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            revision_a,
+        )
+        self.assertEqual(republished_b.returncode, 0, republished_b.stderr)
+        self.assertEqual(self.payload(republished_b)["active_revision"], revision_b)
+        self.assertEqual(self.git("rev-list", "--count", "refs/heads/published"), "4")
+        self.assertEqual(
+            (self.runtime / "public" / "report" / "index.html").read_bytes(),
+            b"<!doctype html><h1>B</h1>\n",
+        )
+
+    def test_conditional_ref_failure_leaves_the_proposed_commit_unreferenced(self) -> None:
+        source = self.root / "report.html"
+        source.write_bytes(b"<!doctype html><h1>A</h1>\n")
+        published = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+        )
+        self.assertEqual(published.returncode, 0, published.stderr)
+        revision_a = self.payload(published)["active_revision"]
+
+        source.write_bytes(b"<!doctype html><h1>B</h1>\n")
+        original_command = _git.command
+        proposed: list[str] = []
+        rival: list[str] = []
+
+        def racing_command(
+            git_dir: Path | None,
+            args: Sequence[str],
+            deadline: Deadline,
+            **kwargs: Any,
+        ) -> bytes:
+            if args and args[0] == "update-ref":
+                head = (
+                    original_command(git_dir, ["rev-parse", "refs/heads/published"], deadline)
+                    .decode()
+                    .strip()
+                )
+                tree = (
+                    original_command(git_dir, ["rev-parse", f"{head}^{{tree}}"], deadline)
+                    .decode()
+                    .strip()
+                )
+                rival_commit = (
+                    original_command(
+                        git_dir, ["commit-tree", tree, "-p", head, "-m", "rival"], deadline
+                    )
+                    .decode()
+                    .strip()
+                )
+                original_command(
+                    git_dir, ["update-ref", "refs/heads/published", rival_commit, head], deadline
+                )
+                rival.append(rival_commit)
+                proposed.append(str(args[2]))
+            return original_command(git_dir, args, deadline, **kwargs)
+
+        report = io.StringIO()
+        arguments = [
+            "--config",
+            str(self.config),
+            "--json",
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            revision_a,
+        ]
+        with (
+            mock.patch.object(_git, "command", racing_command),
+            contextlib.redirect_stdout(report),
+        ):
+            exit_code = cli.main(arguments)
+
+        self.assertEqual(exit_code, 1)
+        payload = json.loads(report.getvalue())
+        self.assertEqual(payload["error"]["code"], "archive_failure")
+        self.assertEqual(payload["error"]["phase"], "archive")
+        self.assertEqual(payload["effects"], {"archive_advanced": False, "activated": False})
+        self.assertEqual(payload["archived_revision"], revision_a)
+        self.assertEqual(self.git("rev-parse", "refs/heads/published"), rival[0])
+        proposed_commit = proposed[0]
+        self.assertNotEqual(proposed_commit, rival[0])
+        subprocess.run(
+            ["git", f"--git-dir={self.archive}", "cat-file", "-e", f"{proposed_commit}^{{commit}}"],
+            capture_output=True,
+            check=True,
+        )
+        reachable = self.git("rev-list", "refs/heads/published")
+        self.assertNotIn(proposed_commit, reachable.splitlines())
+        self.assertEqual(self.git("rev-list", "--count", "refs/heads/published"), "2")
+
+    def test_concurrent_identical_publications_converge(self) -> None:
+        source = self.root / "report.html"
+        source.write_bytes(b"<!doctype html><h1>same</h1>\n")
+
+        def command() -> list[str]:
+            return [
+                sys.executable,
+                "-m",
+                "html_publish",
+                "--config",
+                str(self.config),
+                "--json",
+                "publish",
+                "--name",
+                "report",
+                "--source",
+                str(source),
+                "--target",
+                self.base_url,
+            ]
+
+        processes = [
+            subprocess.Popen(
+                command(),
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            for _ in range(2)
+        ]
+        results = [process.communicate(timeout=10) for process in processes]
+        payloads = [json.loads(stdout) for stdout, _stderr in results]
+
+        for process in processes:
+            self.assertEqual(process.returncode, 0)
+        self.assertEqual(
+            sorted(payload["outcome"] for payload in payloads),
+            ["published", "unchanged"],
+        )
+        self.assertEqual(self.git("rev-list", "--count", "refs/heads/published"), "1")
+        self.assertEqual(
+            (self.runtime / "public" / "report" / "index.html").read_bytes(),
+            b"<!doctype html><h1>same</h1>\n",
+        )
+
+    def test_concurrent_publications_of_different_names_both_succeed(self) -> None:
+        first = self.root / "alpha.html"
+        second = self.root / "beta.html"
+        first.write_bytes(b"<!doctype html><h1>alpha</h1>\n")
+        second.write_bytes(b"<!doctype html><h1>beta</h1>\n")
+
+        def command(name: str, source: Path) -> list[str]:
+            return [
+                sys.executable,
+                "-m",
+                "html_publish",
+                "--config",
+                str(self.config),
+                "--json",
+                "publish",
+                "--name",
+                name,
+                "--source",
+                str(source),
+                "--target",
+                self.base_url,
+            ]
+
+        processes = [
+            subprocess.Popen(
+                command(name, source),
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            for name, source in (("alpha", first), ("beta", second))
+        ]
+        results = [process.communicate(timeout=10) for process in processes]
+        payloads = [json.loads(stdout) for stdout, _stderr in results]
+
+        for process in processes:
+            self.assertEqual(process.returncode, 0)
+        self.assertEqual([payload["outcome"] for payload in payloads], ["published", "published"])
+        self.assertEqual(self.git("rev-list", "--count", "refs/heads/published"), "2")
+        self.assertEqual(
+            (self.runtime / "public" / "alpha" / "index.html").read_bytes(),
+            b"<!doctype html><h1>alpha</h1>\n",
+        )
+        self.assertEqual(
+            (self.runtime / "public" / "beta" / "index.html").read_bytes(),
+            b"<!doctype html><h1>beta</h1>\n",
+        )
 
 
 if __name__ == "__main__":
