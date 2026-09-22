@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -9,6 +10,8 @@ from typing import BinaryIO, cast
 
 from html_publish.model import Deadline, PublishError
 
+MINIMUM_GIT_VERSION = (2, 36)
+
 
 @dataclass(frozen=True)
 class TreeEntry:
@@ -16,6 +19,27 @@ class TreeEntry:
     kind: str
     object_id: str
     name: str
+
+
+def check_supported_version(deadline: Deadline) -> None:
+    output = command(None, ["--version"], deadline, phase="version").decode("ascii", "replace")
+    match = re.match(r"git version (\d+)\.(\d+)", output.strip())
+    if match is None:
+        raise PublishError(
+            "git_unavailable",
+            "version",
+            f"Git reported an unrecognized version: {output.strip()}",
+            "fix_host",
+        )
+    version = (int(match.group(1)), int(match.group(2)))
+    if version < MINIMUM_GIT_VERSION:
+        minimum = f"{MINIMUM_GIT_VERSION[0]}.{MINIMUM_GIT_VERSION[1]}"
+        raise PublishError(
+            "git_unsupported",
+            "version",
+            f"Git {version[0]}.{version[1]} is older than the supported minimum {minimum}",
+            "fix_host",
+        )
 
 
 def _environment(extra: Mapping[str, str] | None = None) -> dict[str, str]:

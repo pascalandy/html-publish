@@ -621,6 +621,10 @@ class PublicationStore:
                     "file_count": len(captured.entries),
                     "byte_count": captured.total_bytes,
                     "differences": self._diff(selected_site, captured),
+                    "limits": {
+                        "max_bytes": self.config.limits.max_bytes,
+                        "max_files": self.config.limits.max_files,
+                    },
                 }
                 return Report(
                     "plan",

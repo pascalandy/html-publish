@@ -13,7 +13,7 @@ from types import FrameType
 from typing import Literal, NoReturn, cast
 from urllib.parse import urlparse
 
-from html_publish import __version__
+from html_publish import __version__, _git
 from html_publish.delivery import publication_url
 from html_publish.model import (
     Config,
@@ -491,8 +491,9 @@ def main(argv: list[str] | None = None) -> int:
             raise UsageFailure("--config is required")
         config = load_config(parsed.config)
         deadline = Deadline.start(config.limits.command_seconds)
-        store = PublicationStore(config, deadline)
         with _command_alarm(config.limits.command_seconds):
+            _git.check_supported_version(deadline)
+            store = PublicationStore(config, deadline)
             if parsed.operation == "plan":
                 report = store.plan(
                     parsed.name,

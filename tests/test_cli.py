@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import contextlib
 import functools
+import gzip
 import http.server
+import io
 import json
 import os
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -12,8 +17,13 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
+from unittest import mock
+
+from html_publish import _git, cli
+from html_publish.model import Deadline
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -24,6 +34,8 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
 
 
 class QuietServer(http.server.ThreadingHTTPServer):
+    redirect_location: str | None
+
     def handle_error(self, request: object, client_address: object) -> None:
         pass
 
@@ -49,6 +61,39 @@ class SlowHandler(http.server.BaseHTTPRequestHandler):
                 time.sleep(0.1)
         except (BrokenPipeError, ConnectionResetError):
             pass
+
+
+class RedirectHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, format: str, *args: object) -> None:
+        pass
+
+    def do_GET(self) -> None:
+        location = getattr(self.server, "redirect_location", None)
+        if location is not None and self.path.startswith("/report/"):
+            self.send_response(302)
+            self.send_header("Location", location)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self.send_error(404)
+
+
+class GzipHandler(http.server.BaseHTTPRequestHandler):
+    body = gzip.compress(b"<!doctype html><h1>gzipped</h1>\n")
+
+    def log_message(self, format: str, *args: object) -> None:
+        pass
+
+    def do_GET(self) -> None:
+        if self.path not in {"/report/", "/report/index.html"}:
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Encoding", "gzip")
+        self.send_header("Content-Length", str(len(self.body)))
+        self.end_headers()
+        self.wfile.write(self.body)
 
 
 class PublisherCliTest(unittest.TestCase):
@@ -94,7 +139,10 @@ class PublisherCliTest(unittest.TestCase):
             self.server_thread.join(timeout=2)
 
     def run_cli(
-        self, *arguments: str, json_output: bool = True
+        self,
+        *arguments: str,
+        json_output: bool = True,
+        env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         command = [
             sys.executable,
@@ -112,6 +160,7 @@ class PublisherCliTest(unittest.TestCase):
             text=True,
             capture_output=True,
             check=False,
+            env={**os.environ, **env} if env else None,
         )
 
     def payload(self, result: subprocess.CompletedProcess[str]) -> dict[str, Any]:
@@ -911,9 +960,1245 @@ class PublisherCliTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 2)
         payload = self.payload(result)
+        self.assertEqual(payload["schema_version"], 1)
         self.assertEqual(payload["outcome"], "error")
         self.assertEqual(payload["error"]["code"], "invalid_usage")
         self.assertEqual(result.stderr, "")
+
+    def test_plan_reports_configured_capture_limits(self) -> None:
+        payload = self.config_payload()
+        payload["limits"]["max_bytes"] = 2_000
+        payload["limits"]["max_files"] = 7
+        self.config.write_text(json.dumps(payload), encoding="utf-8")
+        source = self.root / "report.html"
+        source.write_bytes(b"<!doctype html><h1>limits</h1>\n")
+
+        result = self.run_cli(
+            "plan",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.payload(result)["limits"],
+            {"max_bytes": 2_000, "max_files": 7},
+        )
+
+    def test_git_older_than_the_supported_minimum_is_rejected(self) -> None:
+        stub = self.root / "stub-bin"
+        stub.mkdir()
+        (stub / "git").write_text("#!/bin/sh\necho 'git version 2.35.0'\n", encoding="utf-8")
+        (stub / "git").chmod(0o755)
+
+        result = self.run_cli("status", env={"PATH": f"{stub}:{os.environ['PATH']}"})
+
+        self.assertEqual(result.returncode, 1)
+        payload = self.payload(result)
+        self.assertEqual(payload["error"]["code"], "git_unsupported")
+        self.assertEqual(payload["error"]["phase"], "version")
+        self.assertIn("2.36", payload["error"]["message"])
+
+    def test_git_at_the_supported_minimum_can_publish(self) -> None:
+        real_git = shutil.which("git")
+        assert real_git is not None
+        stub = self.root / "stub-bin"
+        stub.mkdir()
+        (stub / "git").write_text(
+            "#!/bin/sh\n"
+            'for argument in "$@"; do\n'
+            '  if [ "$argument" = "--version" ]; then\n'
+            "    echo 'git version 2.36.0'\n"
+            "    exit 0\n"
+            "  fi\n"
+            "done\n"
+            f'exec {shlex.quote(real_git)} "$@"\n',
+            encoding="utf-8",
+        )
+        (stub / "git").chmod(0o755)
+        source = self.root / "report.html"
+        body = b"<!doctype html><h1>minimum git</h1>\n"
+        source.write_bytes(body)
+
+        result = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+            env={"PATH": f"{stub}:{os.environ['PATH']}"},
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.payload(result)["outcome"], "published")
+        with urllib.request.urlopen(self.payload(result)["url"], timeout=2) as response:
+            self.assertEqual(response.read(), body)
+
+    def test_git_preflight_uses_the_total_command_deadline(self) -> None:
+        real_git = shutil.which("git")
+        assert real_git is not None
+        stub = self.root / "stub-bin"
+        stub.mkdir()
+        (stub / "git").write_text(
+            "#!/bin/sh\n"
+            'for argument in "$@"; do\n'
+            '  if [ "$argument" = "--version" ]; then\n'
+            "    sleep 0.45\n"
+            "  else\n"
+            "    continue\n"
+            "  fi\n"
+            f'  exec {shlex.quote(real_git)} "$@"\n'
+            "done\n"
+            "sleep 0.10\n"
+            f'exec {shlex.quote(real_git)} "$@"\n',
+            encoding="utf-8",
+        )
+        (stub / "git").chmod(0o755)
+        payload = self.config_payload()
+        payload["limits"]["command_seconds"] = 0.6
+        self.config.write_text(json.dumps(payload), encoding="utf-8")
+        source = self.root / "report.html"
+        source.write_bytes(b"<!doctype html><h1>deadline</h1>\n")
+
+        started = time.monotonic()
+        result = self.run_cli(
+            "plan",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+            env={"PATH": f"{stub}:{os.environ['PATH']}"},
+        )
+        elapsed = time.monotonic() - started
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertEqual(self.payload(result)["error"]["code"], "command_timeout")
+        self.assertLess(elapsed, 1.2)
+
+    def test_a_missing_git_executable_is_reported_as_unavailable(self) -> None:
+        result = self.run_cli("status", env={"PATH": "/nonexistent-html-publish-bin"})
+
+        self.assertEqual(result.returncode, 1)
+        payload = self.payload(result)
+        self.assertEqual(payload["error"]["code"], "git_unavailable")
+        self.assertEqual(payload["error"]["phase"], "version")
+
+    def test_capture_rejects_unsafe_inputs_without_persistent_state(self) -> None:
+        index = b"<!doctype html><h1>unsafe</h1>\n"
+        cases: tuple[tuple[str, Path], ...] = ()
+
+        dotfile = self.root / "case-dotfile"
+        dotfile.mkdir()
+        (dotfile / "index.html").write_bytes(index)
+        (dotfile / ".hidden.css").write_bytes(b"body{}\n")
+        cases += (("dot-prefixed component", dotfile),)
+
+        backslash = self.root / "case-backslash"
+        backslash.mkdir()
+        (backslash / "index.html").write_bytes(index)
+        (backslash / "bad\\name.html").write_bytes(index)
+        cases += (("backslash component", backslash),)
+
+        control = self.root / "case-control"
+        control.mkdir()
+        (control / "index.html").write_bytes(index)
+        (control / "bad\nline.html").write_bytes(index)
+        cases += (("control character", control),)
+
+        delete = self.root / "case-delete"
+        delete.mkdir()
+        (delete / "index.html").write_bytes(index)
+        (delete / "bad\x7fname.html").write_bytes(index)
+        cases += (("delete character", delete),)
+
+        surrogates = self.root / "case-encoding"
+        surrogates.mkdir()
+        (surrogates / "index.html").write_bytes(index)
+        descriptor = os.open(
+            surrogates / os.fsdecode(b"bad\xff.html"),
+            os.O_CREAT | os.O_WRONLY,
+            0o644,
+        )
+        os.close(descriptor)
+        cases += (("invalid path encoding", surrogates),)
+
+        special = self.root / "case-special"
+        special.mkdir()
+        (special / "index.html").write_bytes(index)
+        os.mkfifo(special / "pipe")
+        cases += (("special file", special),)
+
+        no_index = self.root / "case-no-index"
+        no_index.mkdir()
+        (no_index / "style.css").write_bytes(b"body{}\n")
+        cases += (("missing index", no_index),)
+
+        for label, source in cases:
+            with self.subTest(case=label):
+                result = self.run_cli(
+                    "plan",
+                    "--name",
+                    "unsafe",
+                    "--source",
+                    str(source),
+                    "--target",
+                    self.base_url,
+                )
+                self.assertEqual(result.returncode, 1)
+                expected_code = "missing_index" if label == "missing index" else "unsafe_input"
+                self.assertEqual(self.payload(result)["error"]["code"], expected_code)
+                self.assertFalse(self.archive.exists())
+                self.assertFalse(self.runtime.exists())
+
+    def test_capture_limit_violations_report_which_limit_was_hit(self) -> None:
+        site = self.root / "site"
+        site.mkdir()
+        (site / "index.html").write_bytes(b"<!doctype html><h1>big</h1>\n")
+        (site / "style.css").write_bytes(b"body{}\n")
+
+        payload = self.config_payload()
+        payload["limits"]["max_files"] = 1
+        self.config.write_text(json.dumps(payload), encoding="utf-8")
+        files = self.run_cli(
+            "plan",
+            "--name",
+            "limited",
+            "--source",
+            str(site),
+            "--target",
+            self.base_url,
+        )
+        self.assertEqual(files.returncode, 1)
+        self.assertEqual(self.payload(files)["error"]["code"], "input_limit")
+        self.assertIn("file limit", self.payload(files)["error"]["message"])
+        self.assertFalse(self.archive.exists())
+
+        payload = self.config_payload()
+        payload["limits"]["max_bytes"] = 10
+        self.config.write_text(json.dumps(payload), encoding="utf-8")
+        bytes_limit = self.run_cli(
+            "plan",
+            "--name",
+            "limited",
+            "--source",
+            str(site / "index.html"),
+            "--target",
+            self.base_url,
+        )
+        self.assertEqual(bytes_limit.returncode, 1)
+        self.assertEqual(self.payload(bytes_limit)["error"]["code"], "input_limit")
+        self.assertIn("byte limit", self.payload(bytes_limit)["error"]["message"])
+        self.assertFalse(self.archive.exists())
+
+    def test_plan_reports_capture_warnings(self) -> None:
+        site = self.root / "site"
+        site.mkdir()
+        (site / "index.html").write_bytes(
+            b'<!doctype html><link href="/root.css"><script src="https://cdn.example/x.js">'
+            b"</script><script>navigator.serviceWorker.register('/sw.js')</script>\n"
+        )
+
+        result = self.run_cli(
+            "plan",
+            "--name",
+            "warnings",
+            "--source",
+            str(site),
+            "--target",
+            self.base_url,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.payload(result)["warnings"],
+            ["root_relative_reference", "external_dependency", "service_worker"],
+        )
+
+    def test_status_of_an_absent_name_observes_nulls(self) -> None:
+        result = self.run_cli("status", "--name", "nothing")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = self.payload(result)
+        self.assertEqual(payload["outcome"], "observed")
+        self.assertEqual(payload["archived_revision"], None)
+        self.assertEqual(payload["active_revision"], None)
+        self.assertEqual(payload["observation"]["saved"], None)
+        self.assertEqual(payload["observation"]["selection"]["state"], "absent")
+        self.assertEqual(payload["url"], f"{self.base_url}nothing/")
+
+    def test_status_pagination_uses_after_and_limit(self) -> None:
+        for name in ("alpha", "beta", "gamma"):
+            source = self.root / f"{name}.html"
+            source.write_bytes(b"<!doctype html><h1>page</h1>\n")
+            published = self.run_cli(
+                "publish",
+                "--name",
+                name,
+                "--source",
+                str(source),
+                "--target",
+                self.base_url,
+            )
+            self.assertEqual(published.returncode, 0, published.stderr)
+
+        first_page = self.run_cli("status", "--limit", "2")
+        self.assertEqual(first_page.returncode, 0, first_page.stderr)
+        first_payload = self.payload(first_page)
+        self.assertEqual(first_payload["total"], 3)
+        self.assertEqual([entry["name"] for entry in first_payload["entries"]], ["alpha", "beta"])
+        self.assertTrue(first_payload["truncated"])
+        self.assertEqual(first_payload["continuation"], "beta")
+
+        second_page = self.run_cli("status", "--after", "beta", "--limit", "2")
+        self.assertEqual(second_page.returncode, 0, second_page.stderr)
+        second_payload = self.payload(second_page)
+        self.assertEqual([entry["name"] for entry in second_payload["entries"]], ["gamma"])
+        self.assertFalse(second_payload["truncated"])
+        self.assertEqual(second_payload["continuation"], None)
+
+    def test_lock_timeout_conflicts_without_mutation(self) -> None:
+        source = self.root / "report.html"
+        source.write_bytes(b"<!doctype html><h1>A</h1>\n")
+        published = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+        )
+        self.assertEqual(published.returncode, 0, published.stderr)
+        first_commit = self.git("rev-parse", "refs/heads/published")
+        source.write_bytes(b"<!doctype html><h1>B</h1>\n")
+        active_revision = self.payload(published)["active_revision"]
+
+        payload = self.config_payload()
+        payload["limits"]["lock_seconds"] = 0.2
+        self.config.write_text(json.dumps(payload), encoding="utf-8")
+        descriptor = os.open(self.runtime / ".publish.lock", os.O_RDWR)
+        try:
+            import fcntl
+
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            blocked = self.run_cli(
+                "publish",
+                "--name",
+                "report",
+                "--source",
+                str(source),
+                "--target",
+                self.base_url,
+                "--expected-revision",
+                active_revision,
+            )
+        finally:
+            os.close(descriptor)
+
+        self.assertEqual(blocked.returncode, 1)
+        blocked_payload = self.payload(blocked)
+        self.assertEqual(blocked_payload["error"]["code"], "lock_timeout")
+        self.assertEqual(blocked_payload["error"]["next_action"]["kind"], "retry")
+        self.assertEqual(
+            blocked_payload["effects"], {"archive_advanced": False, "activated": False}
+        )
+        self.assertEqual(self.git("rev-parse", "refs/heads/published"), first_commit)
+        self.assertEqual(
+            (self.runtime / "public" / "report" / "index.html").read_bytes(),
+            b"<!doctype html><h1>A</h1>\n",
+        )
+
+    def test_a_broken_archive_path_reports_archive_failure(self) -> None:
+        source = self.root / "report.html"
+        source.write_bytes(b"<!doctype html><h1>broken archive</h1>\n")
+        self.archive.write_text("not a git repository", encoding="utf-8")
+
+        result = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+        )
+
+        self.assertEqual(result.returncode, 1)
+        payload = self.payload(result)
+        self.assertEqual(payload["error"]["code"], "archive_failure")
+        self.assertEqual(payload["error"]["phase"], "archive")
+        self.assertEqual(payload["effects"], {"archive_advanced": False, "activated": False})
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_byte_level_release_corruption_is_refused_then_recoverable(self) -> None:
+        source = self.root / "report.html"
+        body = b"<!doctype html><h1>corrupt</h1>\n"
+        source.write_bytes(body)
+        published = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+        )
+        self.assertEqual(published.returncode, 0, published.stderr)
+        revision = self.payload(published)["active_revision"]
+        release_file = self.runtime / "releases" / revision / "index.html"
+        corrupted = body.replace(b"<h1>c", b"<h1>C")
+        self.assertEqual(len(corrupted), len(body))
+        release_file.write_bytes(corrupted)
+
+        refused = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+        )
+        self.assertEqual(refused.returncode, 1)
+        refused_payload = self.payload(refused)
+        self.assertEqual(refused_payload["error"]["code"], "export_corruption")
+        self.assertEqual(
+            refused_payload["effects"], {"archive_advanced": False, "activated": False}
+        )
+
+        release_file.write_bytes(body)
+        recovered = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+        )
+        self.assertEqual(recovered.returncode, 0, recovered.stderr)
+        self.assertEqual(self.payload(recovered)["outcome"], "unchanged")
+
+    def test_degraded_selection_blocks_publication_until_repair(self) -> None:
+        source = self.root / "report.html"
+        source.write_bytes(b"<!doctype html><h1>A</h1>\n")
+        published = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+        )
+        self.assertEqual(published.returncode, 0, published.stderr)
+        revision = self.payload(published)["active_revision"]
+        public_link = self.runtime / "public" / "report"
+        public_link.unlink()
+        public_link.mkdir()
+
+        blocked = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+        )
+        self.assertEqual(blocked.returncode, 1)
+        blocked_payload = self.payload(blocked)
+        self.assertEqual(blocked_payload["error"]["code"], "state_degraded")
+        self.assertEqual(
+            blocked_payload["effects"], {"archive_advanced": False, "activated": False}
+        )
+
+        source.write_bytes(b"<!doctype html><h1>B</h1>\n")
+        still_blocked = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            revision,
+        )
+        self.assertEqual(still_blocked.returncode, 1)
+        self.assertEqual(self.payload(still_blocked)["error"]["code"], "state_degraded")
+
+        public_link.rmdir()
+        os.symlink(f"../releases/{revision}", public_link)
+        repaired = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            revision,
+        )
+        self.assertEqual(repaired.returncode, 0, repaired.stderr)
+        self.assertEqual(self.payload(repaired)["outcome"], "published")
+
+    def test_redirect_outside_the_publication_boundary_is_rejected(self) -> None:
+        self._stop_server()
+        redirect_server = QuietServer(("127.0.0.1", 0), RedirectHandler)
+        address = redirect_server.server_address
+        redirect_server.redirect_location = f"http://{address[0]}:{address[1]}/elsewhere/"
+        redirect_thread = threading.Thread(target=redirect_server.serve_forever, daemon=True)
+        redirect_thread.start()
+        payload = self.config_payload()
+        payload["base_url"] = f"http://{address[0]}:{address[1]}/"
+        self.config.write_text(json.dumps(payload), encoding="utf-8")
+        source = self.root / "report.html"
+        source.write_bytes(b"<!doctype html><h1>redirected</h1>\n")
+        try:
+            result = self.run_cli(
+                "publish",
+                "--name",
+                "report",
+                "--source",
+                str(source),
+                "--target",
+                payload["base_url"],
+            )
+        finally:
+            redirect_server.shutdown()
+            redirect_server.server_close()
+            redirect_thread.join(timeout=2)
+
+        self.assertEqual(result.returncode, 1)
+        error = self.payload(result)["error"]
+        self.assertEqual(error["code"], "delivery_failure")
+        self.assertEqual(error["phase"], "verify")
+        self.assertEqual(error["next_action"]["kind"], "fix_route")
+
+    def test_a_redirect_loop_exceeds_the_hop_limit(self) -> None:
+        self._stop_server()
+        redirect_server = QuietServer(("127.0.0.1", 0), RedirectHandler)
+        redirect_server.redirect_location = "/report/"
+        redirect_thread = threading.Thread(target=redirect_server.serve_forever, daemon=True)
+        redirect_thread.start()
+        payload = self.config_payload()
+        payload["base_url"] = (
+            f"http://{redirect_server.server_address[0]}:{redirect_server.server_address[1]}/"
+        )
+        self.config.write_text(json.dumps(payload), encoding="utf-8")
+        source = self.root / "report.html"
+        source.write_bytes(b"<!doctype html><h1>looped</h1>\n")
+        try:
+            result = self.run_cli(
+                "publish",
+                "--name",
+                "report",
+                "--source",
+                str(source),
+                "--target",
+                payload["base_url"],
+            )
+        finally:
+            redirect_server.shutdown()
+            redirect_server.server_close()
+            redirect_thread.join(timeout=2)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(self.payload(result)["error"]["code"], "delivery_failure")
+
+    def test_a_compressed_body_fails_byte_comparison(self) -> None:
+        self._stop_server()
+        gzip_server = QuietServer(("127.0.0.1", 0), GzipHandler)
+        gzip_thread = threading.Thread(target=gzip_server.serve_forever, daemon=True)
+        gzip_thread.start()
+        payload = self.config_payload()
+        payload["base_url"] = (
+            f"http://{gzip_server.server_address[0]}:{gzip_server.server_address[1]}/"
+        )
+        self.config.write_text(json.dumps(payload), encoding="utf-8")
+        source = self.root / "report.html"
+        source.write_bytes(b"<!doctype html><h1>gzipped</h1>\n")
+        try:
+            result = self.run_cli(
+                "publish",
+                "--name",
+                "report",
+                "--source",
+                str(source),
+                "--target",
+                payload["base_url"],
+            )
+        finally:
+            gzip_server.shutdown()
+            gzip_server.server_close()
+            gzip_thread.join(timeout=2)
+
+        self.assertEqual(result.returncode, 1)
+        result_payload = self.payload(result)
+        self.assertEqual(result_payload["error"]["code"], "delivery_failure")
+        self.assertEqual(result_payload["verification"]["result"], "failed")
+        self.assertEqual(result_payload["effects"], {"archive_advanced": True, "activated": True})
+
+    def test_same_size_update_changes_the_served_bytes(self) -> None:
+        first = self.root / "report.html"
+        first.write_bytes(b"<!doctype html><h1>aaaa</h1>\n")
+        published = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(first),
+            "--target",
+            self.base_url,
+        )
+        self.assertEqual(published.returncode, 0, published.stderr)
+        active_revision = self.payload(published)["active_revision"]
+
+        second = self.root / "report-b.html"
+        second.write_bytes(b"<!doctype html><h1>bbbb</h1>\n")
+        updated = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(second),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            active_revision,
+        )
+        self.assertEqual(updated.returncode, 0, updated.stderr)
+        self.assertEqual(self.payload(updated)["outcome"], "published")
+        with urllib.request.urlopen(self.payload(updated)["url"], timeout=2) as response:
+            self.assertEqual(response.read(), b"<!doctype html><h1>bbbb</h1>\n")
+
+    def test_git_filters_and_excludes_do_not_change_artifact_identity(self) -> None:
+        global_attributes = self.root / "global-attributes"
+        global_attributes.write_text("*.html filter=hostile-global\n", encoding="utf-8")
+        global_excludes = self.root / "global-excludes"
+        global_excludes.write_text("global.css\n", encoding="utf-8")
+        hostile = self.root / "hostile.gitconfig"
+        hostile.write_text(
+            f"[core]\n"
+            f"\tautocrlf = true\n"
+            f"\tattributesFile = {global_attributes}\n"
+            f"\texcludesFile = {global_excludes}\n"
+            f'[filter "hostile-global"]\n'
+            f"\tclean = sed s/original/global-filtered/g\n"
+            f"\trequired = true\n"
+            f"[commit]\n"
+            f"\tgpgSign = true\n",
+            encoding="utf-8",
+        )
+        source = self.root / "site"
+        source.mkdir()
+        bodies = {
+            "index.html": b"<!doctype html><h1>original one</h1>\r\n",
+            "global.css": b"global original one\n",
+            "repo.css": b"repo original one\n",
+        }
+        for path, body in bodies.items():
+            (source / path).write_bytes(body)
+
+        published = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+            env={"GIT_CONFIG_GLOBAL": str(hostile)},
+        )
+        self.assertEqual(published.returncode, 0, published.stderr)
+        first_revision = self.payload(published)["active_revision"]
+
+        repository_attributes = self.archive / "info" / "attributes"
+        repository_attributes.write_text("*.css filter=hostile-repository\n", encoding="utf-8")
+        repository_excludes = self.archive / "info" / "exclude"
+        repository_excludes.write_text("repo.css\n", encoding="utf-8")
+        config = self.archive / "config"
+        config.write_text(
+            config.read_text(encoding="utf-8")
+            + '[filter "hostile-repository"]\n'
+            + "\tclean = sed s/original/repository-filtered/g\n"
+            + "\trequired = true\n",
+            encoding="utf-8",
+        )
+        bodies = {
+            "index.html": b"<!doctype html><h1>original two</h1>\r\n",
+            "global.css": b"global original two\n",
+            "repo.css": b"repo original two\n",
+        }
+        for path, body in bodies.items():
+            (source / path).write_bytes(body)
+        republished = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            first_revision,
+            env={"GIT_CONFIG_GLOBAL": str(hostile)},
+        )
+        self.assertEqual(republished.returncode, 0, republished.stderr)
+        response = self.payload(republished)
+        self.assertEqual(response["outcome"], "published")
+        revision = response["active_revision"]
+        self.assertEqual(
+            self.git("ls-tree", "-r", "--name-only", revision).splitlines(),
+            ["global.css", "index.html", "repo.css"],
+        )
+        for path, body in bodies.items():
+            archived = subprocess.run(
+                ["git", f"--git-dir={self.archive}", "cat-file", "blob", f"{revision}:{path}"],
+                capture_output=True,
+                check=True,
+            ).stdout
+            self.assertEqual(archived, body)
+            self.assertEqual((self.runtime / "public" / "report" / path).read_bytes(), body)
+            with urllib.request.urlopen(f"{response['url']}{path}", timeout=2) as served:
+                self.assertEqual(served.read(), body)
+
+    def test_file_and_directory_transitions_appear_in_plan_differences(self) -> None:
+        file_site = self.root / "file-site"
+        file_site.mkdir()
+        (file_site / "index.html").write_bytes(b"<!doctype html><h1>transitions</h1>\n")
+        (file_site / "assets").write_bytes(b"asset file\n")
+        published = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(file_site),
+            "--target",
+            self.base_url,
+        )
+        self.assertEqual(published.returncode, 0, published.stderr)
+        file_revision = self.payload(published)["active_revision"]
+
+        directory_site = self.root / "directory-site"
+        directory_site.mkdir()
+        (directory_site / "index.html").write_bytes(b"<!doctype html><h1>transitions</h1>\n")
+        (directory_site / "assets").mkdir()
+        (directory_site / "assets" / "style.css").write_bytes(b"body{}\n")
+        planned = self.run_cli(
+            "plan",
+            "--name",
+            "report",
+            "--source",
+            str(directory_site),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            file_revision,
+        )
+        self.assertEqual(planned.returncode, 0, planned.stderr)
+        self.assertEqual(
+            self.payload(planned)["differences"],
+            {"added": ["assets/style.css"], "changed": [], "deleted": ["assets"]},
+        )
+        updated = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(directory_site),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            file_revision,
+        )
+        self.assertEqual(updated.returncode, 0, updated.stderr)
+        directory_revision = self.payload(updated)["active_revision"]
+        self.assertEqual(
+            self.git("ls-tree", "-r", "--name-only", directory_revision).splitlines(),
+            ["assets/style.css", "index.html"],
+        )
+        with urllib.request.urlopen(
+            f"{self.payload(updated)['url']}assets/style.css", timeout=2
+        ) as response:
+            self.assertEqual(response.read(), b"body{}\n")
+
+        back_to_file = self.run_cli(
+            "plan",
+            "--name",
+            "report",
+            "--source",
+            str(file_site),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            directory_revision,
+        )
+        self.assertEqual(back_to_file.returncode, 0, back_to_file.stderr)
+        self.assertEqual(
+            self.payload(back_to_file)["differences"],
+            {"added": ["assets"], "changed": [], "deleted": ["assets/style.css"]},
+        )
+        restored = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(file_site),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            directory_revision,
+        )
+        self.assertEqual(restored.returncode, 0, restored.stderr)
+        restored_payload = self.payload(restored)
+        self.assertEqual(
+            self.git(
+                "ls-tree", "-r", "--name-only", restored_payload["active_revision"]
+            ).splitlines(),
+            ["assets", "index.html"],
+        )
+        with urllib.request.urlopen(f"{restored_payload['url']}assets", timeout=2) as response:
+            self.assertEqual(response.read(), b"asset file\n")
+        with self.assertRaises(urllib.error.HTTPError) as missing:
+            urllib.request.urlopen(f"{restored_payload['url']}assets/style.css", timeout=2)
+        self.assertEqual(missing.exception.code, 404)
+
+    def test_publishing_leaves_the_source_untouched(self) -> None:
+        source = self.root / "report.html"
+        body = b"<!doctype html><h1>immutable</h1>\n"
+        source.write_bytes(body)
+        before_mtime = source.stat().st_mtime_ns
+
+        result = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(source.read_bytes(), body)
+        self.assertEqual(source.stat().st_mtime_ns, before_mtime)
+        self.assertEqual(list(self.root.glob("report*")), [source])
+
+    def test_help_documents_the_commands(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "html_publish", "--help"],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0)
+        for command in ("plan", "publish", "status"):
+            self.assertIn(command, result.stdout)
+        self.assertIn("--config", result.stdout)
+
+    def test_absent_active_content_follows_the_saved_and_expectation_rules(self) -> None:
+        source = self.root / "report.html"
+        source.write_bytes(b"<!doctype html><h1>A</h1>\n")
+        published = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+        )
+        self.assertEqual(published.returncode, 0, published.stderr)
+        revision_a = self.payload(published)["active_revision"]
+        head_commit = self.git("rev-parse", "refs/heads/published")
+        public_link = self.runtime / "public" / "report"
+
+        source_b = self.root / "report-b.html"
+        source_b.write_bytes(b"<!doctype html><h1>B</h1>\n")
+        public_link.unlink()
+
+        resumed = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+        )
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        resumed_payload = self.payload(resumed)
+        self.assertEqual(resumed_payload["outcome"], "published")
+        self.assertEqual(resumed_payload["effects"], {"archive_advanced": False, "activated": True})
+        self.assertEqual(self.git("rev-parse", "refs/heads/published"), head_commit)
+        self.assertEqual(
+            (public_link / "index.html").read_bytes(),
+            b"<!doctype html><h1>A</h1>\n",
+        )
+        self.assertEqual(len(list((self.runtime / "releases").iterdir())), 1)
+
+        public_link.unlink()
+        saved_conflict = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source_b),
+            "--target",
+            self.base_url,
+        )
+        self.assertEqual(saved_conflict.returncode, 1)
+        saved_payload = self.payload(saved_conflict)
+        self.assertEqual(saved_payload["error"]["code"], "revision_conflict")
+        self.assertEqual(
+            saved_payload["error"]["next_action"]["required_inputs"],
+            ["archived_revision", "requested_revision"],
+        )
+        self.assertEqual(saved_payload["effects"], {"archive_advanced": False, "activated": False})
+
+        expectation_conflict = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source_b),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            revision_a,
+        )
+        self.assertEqual(expectation_conflict.returncode, 1)
+        expectation_payload = self.payload(expectation_conflict)
+        self.assertEqual(expectation_payload["error"]["code"], "revision_conflict")
+        self.assertEqual(
+            expectation_payload["error"]["next_action"]["required_inputs"],
+            ["active_revision"],
+        )
+        self.assertEqual(self.git("rev-list", "--count", "refs/heads/published"), "1")
+
+    def test_noop_with_a_stale_expectation_reports_the_pending_archive(self) -> None:
+        source = self.root / "report.html"
+        source.write_bytes(b"<!doctype html><h1>A</h1>\n")
+        published = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+        )
+        self.assertEqual(published.returncode, 0, published.stderr)
+        revision_a = self.payload(published)["active_revision"]
+
+        source.write_bytes(b"<!doctype html><h1>B</h1>\n")
+        planned = self.run_cli(
+            "plan",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            revision_a,
+        )
+        self.assertEqual(planned.returncode, 0, planned.stderr)
+        revision_b = self.payload(planned)["requested_revision"]
+        (self.runtime / "releases" / revision_b).write_text("not a release", encoding="utf-8")
+        failed = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            revision_a,
+        )
+        self.assertEqual(failed.returncode, 1)
+        self.assertEqual(self.payload(failed)["error"]["code"], "export_corruption")
+        pending_commit = self.git("rev-parse", "refs/heads/published")
+
+        source.write_bytes(b"<!doctype html><h1>A</h1>\n")
+        noop = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            revision_b,
+        )
+        self.assertEqual(noop.returncode, 0, noop.stderr)
+        noop_payload = self.payload(noop)
+        self.assertEqual(noop_payload["outcome"], "unchanged")
+        self.assertEqual(noop_payload["effects"], {"archive_advanced": False, "activated": False})
+        self.assertEqual(noop_payload["archived_revision"], revision_b)
+        self.assertEqual(noop_payload["active_revision"], revision_a)
+        self.assertEqual(self.git("rev-parse", "refs/heads/published"), pending_commit)
+
+    def test_content_identity_permits_returning_to_an_earlier_revision(self) -> None:
+        stable_url = f"{self.base_url}report/"
+        source_a = self.root / "report-a.html"
+        source_b = self.root / "report-b.html"
+        source_a.write_bytes(b"<!doctype html><h1>A</h1>\n")
+        source_b.write_bytes(b"<!doctype html><h1>B</h1>\n")
+
+        published_a = self.run_cli(
+            "publish", "--name", "report", "--source", str(source_a), "--target", self.base_url
+        )
+        self.assertEqual(published_a.returncode, 0, published_a.stderr)
+        revision_a = self.payload(published_a)["active_revision"]
+
+        published_b = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source_b),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            revision_a,
+        )
+        self.assertEqual(published_b.returncode, 0, published_b.stderr)
+        revision_b = self.payload(published_b)["active_revision"]
+        self.assertEqual(self.payload(published_b)["url"], stable_url)
+
+        restored_a = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source_a),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            revision_b,
+        )
+        self.assertEqual(restored_a.returncode, 0, restored_a.stderr)
+        self.assertEqual(self.payload(restored_a)["active_revision"], revision_a)
+
+        republished_b = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source_b),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            revision_a,
+        )
+        self.assertEqual(republished_b.returncode, 0, republished_b.stderr)
+        self.assertEqual(self.payload(republished_b)["active_revision"], revision_b)
+        self.assertEqual(self.git("rev-list", "--count", "refs/heads/published"), "4")
+        self.assertEqual(
+            (self.runtime / "public" / "report" / "index.html").read_bytes(),
+            b"<!doctype html><h1>B</h1>\n",
+        )
+
+    def test_conditional_ref_failure_leaves_the_proposed_commit_unreferenced(self) -> None:
+        source = self.root / "report.html"
+        source.write_bytes(b"<!doctype html><h1>A</h1>\n")
+        published = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+        )
+        self.assertEqual(published.returncode, 0, published.stderr)
+        revision_a = self.payload(published)["active_revision"]
+
+        source.write_bytes(b"<!doctype html><h1>B</h1>\n")
+        original_command = _git.command
+        proposed: list[str] = []
+        rival: list[str] = []
+
+        def racing_command(
+            git_dir: Path | None,
+            args: Sequence[str],
+            deadline: Deadline,
+            **kwargs: Any,
+        ) -> bytes:
+            if args and args[0] == "update-ref":
+                head = (
+                    original_command(git_dir, ["rev-parse", "refs/heads/published"], deadline)
+                    .decode()
+                    .strip()
+                )
+                tree = (
+                    original_command(git_dir, ["rev-parse", f"{head}^{{tree}}"], deadline)
+                    .decode()
+                    .strip()
+                )
+                rival_commit = (
+                    original_command(
+                        git_dir, ["commit-tree", tree, "-p", head, "-m", "rival"], deadline
+                    )
+                    .decode()
+                    .strip()
+                )
+                original_command(
+                    git_dir, ["update-ref", "refs/heads/published", rival_commit, head], deadline
+                )
+                rival.append(rival_commit)
+                proposed.append(str(args[2]))
+            return original_command(git_dir, args, deadline, **kwargs)
+
+        report = io.StringIO()
+        arguments = [
+            "--config",
+            str(self.config),
+            "--json",
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            revision_a,
+        ]
+        with (
+            mock.patch.object(_git, "command", racing_command),
+            contextlib.redirect_stdout(report),
+        ):
+            exit_code = cli.main(arguments)
+
+        self.assertEqual(exit_code, 1)
+        payload = json.loads(report.getvalue())
+        self.assertEqual(payload["error"]["code"], "archive_failure")
+        self.assertEqual(payload["error"]["phase"], "archive")
+        self.assertEqual(payload["effects"], {"archive_advanced": False, "activated": False})
+        self.assertEqual(payload["archived_revision"], revision_a)
+        self.assertEqual(self.git("rev-parse", "refs/heads/published"), rival[0])
+        proposed_commit = proposed[0]
+        self.assertNotEqual(proposed_commit, rival[0])
+        subprocess.run(
+            ["git", f"--git-dir={self.archive}", "cat-file", "-e", f"{proposed_commit}^{{commit}}"],
+            capture_output=True,
+            check=True,
+        )
+        reachable = self.git("rev-list", "refs/heads/published")
+        self.assertNotIn(proposed_commit, reachable.splitlines())
+        self.assertEqual(self.git("rev-list", "--count", "refs/heads/published"), "2")
+
+    def test_concurrent_identical_publications_converge(self) -> None:
+        source = self.root / "report.html"
+        source.write_bytes(b"<!doctype html><h1>same</h1>\n")
+
+        def command() -> list[str]:
+            return [
+                sys.executable,
+                "-m",
+                "html_publish",
+                "--config",
+                str(self.config),
+                "--json",
+                "publish",
+                "--name",
+                "report",
+                "--source",
+                str(source),
+                "--target",
+                self.base_url,
+            ]
+
+        processes = [
+            subprocess.Popen(
+                command(),
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            for _ in range(2)
+        ]
+        results = [process.communicate(timeout=10) for process in processes]
+        payloads = [json.loads(stdout) for stdout, _stderr in results]
+
+        for process in processes:
+            self.assertEqual(process.returncode, 0)
+        self.assertEqual(
+            sorted(payload["outcome"] for payload in payloads),
+            ["published", "unchanged"],
+        )
+        self.assertEqual(self.git("rev-list", "--count", "refs/heads/published"), "1")
+        self.assertEqual(
+            (self.runtime / "public" / "report" / "index.html").read_bytes(),
+            b"<!doctype html><h1>same</h1>\n",
+        )
+
+    def test_concurrent_publications_of_different_names_both_succeed(self) -> None:
+        first = self.root / "alpha.html"
+        second = self.root / "beta.html"
+        first.write_bytes(b"<!doctype html><h1>alpha</h1>\n")
+        second.write_bytes(b"<!doctype html><h1>beta</h1>\n")
+
+        def command(name: str, source: Path) -> list[str]:
+            return [
+                sys.executable,
+                "-m",
+                "html_publish",
+                "--config",
+                str(self.config),
+                "--json",
+                "publish",
+                "--name",
+                name,
+                "--source",
+                str(source),
+                "--target",
+                self.base_url,
+            ]
+
+        processes = [
+            subprocess.Popen(
+                command(name, source),
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            for name, source in (("alpha", first), ("beta", second))
+        ]
+        results = [process.communicate(timeout=10) for process in processes]
+        payloads = [json.loads(stdout) for stdout, _stderr in results]
+
+        for process in processes:
+            self.assertEqual(process.returncode, 0)
+        self.assertEqual([payload["outcome"] for payload in payloads], ["published", "published"])
+        self.assertEqual(self.git("rev-list", "--count", "refs/heads/published"), "2")
+        self.assertEqual(
+            (self.runtime / "public" / "alpha" / "index.html").read_bytes(),
+            b"<!doctype html><h1>alpha</h1>\n",
+        )
+        self.assertEqual(
+            (self.runtime / "public" / "beta" / "index.html").read_bytes(),
+            b"<!doctype html><h1>beta</h1>\n",
+        )
 
 
 if __name__ == "__main__":
