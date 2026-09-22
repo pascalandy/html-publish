@@ -139,6 +139,7 @@ commit="<archive_commit from history>"
 uv run html-publish --config publisher.json --json restore \
   --name release-notes \
   --archive-commit "$commit" \
+  --target https://om1.donkey-arcturus.ts.net:8444/html-publish/ \
   --expected-revision "<active_revision from status>"
 ```
 

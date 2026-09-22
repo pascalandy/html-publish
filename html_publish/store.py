@@ -1231,6 +1231,22 @@ class PublicationStore:
                     state = self._state(name, full=False)
                     verification = Verification()
                     details: dict[str, object] = {}
+                    status_error: Failure | None = None
+                    selection = state.selection
+                    if selection.kind == "degraded":
+                        status_error = Failure(
+                            "state_degraded",
+                            "status",
+                            selection.detail or "The selected export is degraded",
+                            "inspect",
+                        )
+                    elif selection.kind == "unobserved":
+                        status_error = Failure(
+                            "state_unobserved",
+                            "status",
+                            selection.detail or "Selected state could not be observed",
+                            "inspect",
+                        )
                     if host_check:
                         checks, verification = self._host_checks(name, state)
                         details["host_checks"] = checks
@@ -1244,6 +1260,7 @@ class PublicationStore:
                         publication_url(self.config.base_url, name),
                         state=state,
                         verification=verification,
+                        error=status_error,
                         details=details,
                     )
                 names: set[str] = set()

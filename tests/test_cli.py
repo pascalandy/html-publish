@@ -1421,6 +1421,14 @@ class PublisherCliTest(unittest.TestCase):
             blocked_payload["effects"], {"archive_advanced": False, "activated": False}
         )
 
+        observed = self.run_cli("status", "--name", "report")
+        self.assertEqual(observed.returncode, 1)
+        observed_payload = self.payload(observed)
+        self.assertEqual(observed_payload["outcome"], "observed")
+        self.assertEqual(observed_payload["error"]["code"], "state_degraded")
+        self.assertEqual(observed_payload["observation"]["selection"]["state"], "degraded")
+        self.assertEqual(observed_payload["archived_revision"], revision)
+
         source.write_bytes(b"<!doctype html><h1>B</h1>\n")
         still_blocked = self.run_cli(
             "publish",
