@@ -37,7 +37,7 @@ The installed helper and test bytes matched the independently reviewed 31-test f
 
 The independent behavioral review passed all eight issue 8 criteria within the recorded scope
 
-After issue 7 closed, the coordinator applied managed snapshots `5f0585df38c2416b8c7c9dc4341efe1a` for `html-mode` and `html-communication` and `7a3217019c36423abbf89d41e6c01816` for `html-publish`. All three skills matched canonical bytes in all four installed locations. The managed audit found no drift. Native Codex and Pi discovery found all three skills. The installed authoring checker passed 40 checks
+The coordinator applied and verified managed snapshot `7a3217019c36423abbf89d41e6c01816` for `html-publish` during issue 7. After issue 7 closed, the coordinator applied managed snapshot `5f0585df38c2416b8c7c9dc4341efe1a` for `html-mode` and `html-communication`. All three skills matched canonical bytes in all four installed locations. The managed audit found no drift. Native Codex and Pi discovery found all three skills. The installed authoring checker passed 40 checks
 
 Fresh sessions created the fixtures, revised the existing checklist from its sibling receipt, created a distinct copy, and produced a local-only draft. The reviewer's live checker passed 31 checks
 
