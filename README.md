@@ -12,6 +12,25 @@ just check
 
 The checks use temporary Git archives, runtime directories, and a controlled loopback HTTP server
 
+## Publish through the controlled om1 host
+
+The controlled deployment publishes private artifacts at stable Tailscale HTTPS URLs. On an `om1` checkout, install or update the application and check it
+
+```sh
+just deploy-om1
+just health-om1
+```
+
+Then publish from the working machine
+
+```sh
+uv run html-publish-remote publish \
+  --name release-notes \
+  --source ./release-notes.html
+```
+
+See the [om1 operations guide](docs/operations.md) for installation, guarded updates, rollback, health checks, storage ownership, and known limits. The [controlled MVP evidence](docs/evidence/deployment/2026-09-21-om1-controlled-mvp.md) records the verified live deployment
+
 ## Configure a test target
 
 Create `publisher.json` with absolute storage paths and a canonical base URL
@@ -112,4 +131,4 @@ The MVP implements the first vertical slice of the [publisher architecture](docs
 - Versioned JSON and plain successful publish output
 - Full-body HTTP verification for the directory URL, every file, and a missing-path sentinel
 
-History, restore, interruption and filesystem fault injection, durable skill receipts, the permanent `om1` installation, and broad browser and concurrency matrices remain later tickets
+History, publication restore, interruption and filesystem fault injection, durable receipts, and broad browser and concurrency matrices remain later tickets. The controlled `om1` deployment is an MVP and is not production-ready

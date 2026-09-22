@@ -6,3 +6,4 @@
 - Treat `html_publish/store.py` as the only mutation owner
 - Keep controlled HTTP evidence separate from Tailscale, browser, and production evidence
 - Do not describe this MVP as production-ready
+- Use [docs/operations.md](docs/operations.md) for the controlled `om1` deployment workflow and [docs/evidence/deployment/2026-09-21-om1-controlled-mvp.md](docs/evidence/deployment/2026-09-21-om1-controlled-mvp.md) for its live verification record

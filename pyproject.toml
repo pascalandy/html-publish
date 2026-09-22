@@ -12,6 +12,9 @@ dependencies = []
 
 [project.scripts]
 html-publish = "html_publish.cli:entrypoint"
+html-publish-deploy = "html_publish.deploy:main"
+html-publish-remote = "html_publish.remote:main"
+html-publish-server = "html_publish.server:main"
 
 [dependency-groups]
 dev = [
