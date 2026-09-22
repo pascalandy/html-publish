@@ -3,6 +3,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -23,9 +24,12 @@ class InstalledHostTest(unittest.TestCase):
         cls.root = Path(__file__).resolve().parents[1]
         cls.temp = tempfile.TemporaryDirectory(prefix="html publish % host-")
         cls.base = Path(cls.temp.name)
+        uv_executable = shutil.which("uv", path="/usr/bin:/bin") or shutil.which("uv")
+        if uv_executable is None:
+            raise AssertionError("uv is required for installed host verification")
         wheel_dir = cls.base / "wheel"
         installation = subprocess.run(
-            ["uv", "build", "--wheel", "--out-dir", str(wheel_dir)],
+            [uv_executable, "build", "--wheel", "--out-dir", str(wheel_dir)],
             cwd=cls.root,
             capture_output=True,
             text=True,
@@ -41,12 +45,12 @@ class InstalledHostTest(unittest.TestCase):
                 "UV_TOOL_BIN_DIR": str(cls.base / "tool-bin"),
                 "XDG_CONFIG_HOME": str(cls.base / "config-home"),
                 "XDG_STATE_HOME": str(cls.base / "state-home"),
-                "PATH": "/usr/bin:/bin",
+                "PATH": f"{Path(uv_executable).parent}:/usr/bin:/bin",
             }
         )
         installation = subprocess.run(
             [
-                "uv",
+                uv_executable,
                 "tool",
                 "install",
                 "--from",
