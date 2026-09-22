@@ -498,20 +498,28 @@ class HelperCliTest(ReceiptFixture):
                         "print(json.dumps(payload))\nraise SystemExit(exit_code)",
                         "print(json.dumps(payload), flush=True)\n"
                         + ("import os\nos.close(1)\nos.close(2)\n" if close_streams else "")
-                        + "time.sleep(1)\nraise SystemExit(exit_code)",
+                        + "time.sleep(5)\nraise SystemExit(exit_code)",
                     )
                 )
-                self.write_config(command_seconds=0.1)
+                self.write_config(command_seconds=2)
                 source = self.root / f"timeout-{close_streams}.html"
                 source.write_text("timeout")
 
                 started = time.monotonic()
                 result = self.run_helper("publish", str(source), "--new", "timeout")
 
-                self.assertLess(time.monotonic() - started, 0.9)
-                self.assertEqual(result.returncode, 1)
+                self.assertLess(time.monotonic() - started, 4)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                 payload = self.payload(result)
-                self.assertEqual(payload["outcome"], "delivery_failed")
+                publish_calls = [call for call in self.calls() if call["operation"] == "publish"]
+                self.assertEqual(len(publish_calls), 1, payload)
+                self.assertTrue(self.state_path.exists(), payload)
+                self.assertEqual(
+                    json.loads(self.state_path.read_text())["active_revision"],
+                    payload["requested_revision"],
+                    payload,
+                )
+                self.assertEqual(payload["outcome"], "delivery_failed", payload)
                 error = payload["error"]
                 assert isinstance(error, dict)
                 self.assertEqual(error["code"], "publisher_timeout")
