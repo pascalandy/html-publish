@@ -18,7 +18,15 @@ just deploy-om1
 
 The command builds a wheel on `om1`, creates a content-addressed virtual environment, writes the publisher configuration and user unit, starts the service, installs the Tailscale route, and runs health checks. Repeating the command for the same wheel reports `unchanged`. A changed wheel creates and activates a new application release
 
-The installer refuses to replace a conflicting publisher configuration or a Tailscale handler already owned by another target. It leaves existing routes on ports 443, 8443, and 5173 untouched
+The installer checks configuration, route ownership, unit state, and pointer shape before creating deployment state or preparing a wheel. A conflicting configuration or route stops the install before activation. It checks those inputs again after preparing the release. Existing routes on ports 443, 8443, and 5173 remain untouched
+
+On activation failure, recovery restores this attempt's unit and configuration bytes and modes, exact application symlinks, and enabled state. This also applies to same-wheel reinstalls. Recovery refuses to overwrite a file, pointer, or route that no longer matches this attempt's writes. It removes only a newly created, still-matching `/html-publish` handler. It never restores a complete Tailscale Serve snapshot
+
+The error reports both the original failure and any recovery failures. If file or pointer recovery fails, the installer skips restarting the recovered service and reports that omission. Inspect the reported state before retrying. Application releases, the archive, and publication runtime remain in place. An incomplete application release is retained for inspection and blocks reuse of that wheel until the operator resolves it
+
+Run one installer at a time. Recovery is scoped to a caught failure in the current process. It is not a durable transaction across SIGKILL, crashes, or power loss. The installer accepts enabled, disabled, or absent units and refuses other unit-file states before changing them. Child commands have a 120-second deadline, followed by bounded process-group termination and direct-child reaping
+
+SIGTERM and SIGINT cancel the deploy command, stop its owned command group, and enter the same caught-failure recovery for install or rollback. Cancellation stops health checks instead of recording a failed check and continuing. The command reports the cancellation and any recovery failures as JSON on stderr, then exits 143 for SIGTERM or 130 for SIGINT. Further cancellation signals do not interrupt cleanup or recovery. The command restores the caller's prior signal handlers when it returns
 
 ## Storage and ownership
 
@@ -36,6 +44,46 @@ The `pascal` user owns the service and all deployment state
 | User systemd unit | `/home/pascal/.config/systemd/user/html-publish.service` |
 
 The user service listens on `127.0.0.1:4177`. Tailscale serves HTTPS on port 8444 and proxies `/html-publish` to that loopback service
+
+The generated service sets `ProtectSystem=strict` and `ProtectHome=read-only`. Publisher commands run outside that service and retain their normal write access. Before installing on a host, prove that its user manager enforces these settings with a temporary service. The following rehearsal uses only a fresh private tree and a transient unit. It does not change `html-publish.service` or any route
+
+```sh
+rehearsal=$(mktemp -d "$HOME/.local/state/html-publish-sandbox.XXXXXX")
+python3 - "$rehearsal" <<'PY'
+import sys
+from pathlib import Path
+root = Path(sys.argv[1])
+for name in ("archive.git", "runtime/releases/a", "runtime/public", "app-releases", "config"):
+    (root / name).mkdir(parents=True, exist_ok=True)
+(root / "runtime/releases/a/index.html").write_text("sandbox read proof")
+(root / "runtime/public/page").symlink_to("../releases/a")
+(root / "probe.py").write_text('''import errno, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+readonly = sys.argv[2] == "readonly"
+assert (root / "runtime/public/page/index.html").read_text() == "sandbox read proof"
+for name in ("archive.git", "runtime/releases/a", "runtime/public", "app-releases", "config"):
+    target = root / name / "write-probe"
+    try:
+        target.write_text("probe")
+    except OSError as error:
+        assert readonly and error.errno in (errno.EROFS, errno.EACCES, errno.EPERM), error
+    else:
+        target.unlink()
+        assert not readonly, f"Unexpected write access to {target}"
+print("PASS selected export readable; " + ("writes denied" if readonly else "baseline writes allowed"))
+''')
+PY
+python3 "$rehearsal/probe.py" "$rehearsal" writable
+systemd-run --user --wait --pipe --collect \
+  --unit="html-publish-sandbox-$(basename "$rehearsal")" \
+  --property=Type=oneshot --property=TimeoutStartSec=30 \
+  --property=NoNewPrivileges=yes --property=PrivateTmp=yes \
+  --property=ProtectSystem=strict --property=ProtectHome=read-only \
+  "$(command -v python3)" "$rehearsal/probe.py" "$rehearsal" readonly
+```
+
+Require both `PASS` results and exit status 0. Preserve the rehearsal tree and command output as evidence. Unit generation tests alone do not prove host enforcement
 
 ## Health checks
 
@@ -201,7 +249,7 @@ uv run python -m html_publish.deploy rollback \
   --release sha256-<wheel-digest>
 ```
 
-Rollback changes the application release pointer and restarts the service. It does not restore publication content. A failed post-rollback health check restores the original application pointers and restarts the service again
+Rollback changes the application release pointer and restarts the service. It does not restore publication content or earlier unit and configuration files. A failed rollback restores the exact original application pointers if they still match this attempt's writes. Recovery restart failures remain visible in the error
 
 Reinstall the current checkout with `just deploy-om1` after a rollback
 
