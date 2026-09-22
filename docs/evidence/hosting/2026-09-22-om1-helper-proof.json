@@ -1,0 +1,2153 @@
+{
+  "schema_version": 1,
+  "recorded_date": "2026-09-22",
+  "source_commit": "f911278dace83bfbdace081d8d8d8dfc1823b4d7",
+  "runtime_git_tree": "6298ca147a5c50eff81b46a20a237dc7ceb0d786",
+  "source_sha256": {
+    "scripts/probe_om1_issue2.py": "ff43a635682fff563960695ef7067272c2135f93ee03ca40ef6ccc8f7dcfaaa4",
+    "tests/test_probe_om1_issue2.py": "5dd17b60837cf8587b748c67944899d147979602768e126ddc611a66051340c3"
+  },
+  "redactions": [
+    "Tailnet DNS name",
+    "source-checkout and disposable-root paths",
+    "omitted unrelated listeners, full state, process owner token, and browser accessibility/timeline data",
+    "response headers deduplicated; checkpoint body prefixes omitted; original file hashes retained"
+  ],
+  "versions": {
+    "git": "git version 2.55.0",
+    "python": "Python 3.13.15",
+    "tailscale": "1.102.3"
+  },
+  "provenance": {
+    "commit": "f911278dace83bfbdace081d8d8d8dfc1823b4d7",
+    "modules": {
+      "html_publish": "<source-checkout>/html_publish/__init__.py",
+      "html_publish.cli": "<source-checkout>/html_publish/cli.py",
+      "html_publish.server": "<source-checkout>/html_publish/server.py"
+    },
+    "python": "/home/pascal/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/bin/python3.13",
+    "python_sha256": "93a93f4c8af5ae6f127fb0310f923d5fab89eb7257a0b801eec2e44b3f199840"
+  },
+  "route": {
+    "expected_host": "om1",
+    "observed_host": "om1",
+    "base_url": "https://<tailnet-host>:9443/html-publish-issue2-probe/",
+    "https_port": 9443,
+    "listen_port": 42491,
+    "route_path": "/html-publish-issue2-probe",
+    "route_target": "http://127.0.0.1:42491",
+    "name": "issue2-probe-5feefee3d32e"
+  },
+  "baseline": {
+    "serve": {
+      "TCP": {
+        "443": {
+          "HTTPS": true
+        },
+        "5173": {
+          "TCPForward": "127.0.0.1:5173"
+        },
+        "8443": {
+          "HTTPS": true
+        },
+        "8444": {
+          "HTTPS": true
+        }
+      },
+      "Web": {
+        "<tailnet-host>:443": {
+          "Handlers": {
+            "/": {
+              "Proxy": "http://127.0.0.1:3773"
+            }
+          }
+        },
+        "<tailnet-host>:8443": {
+          "Handlers": {
+            "/": {
+              "Proxy": "http://127.0.0.1:4176"
+            }
+          }
+        },
+        "<tailnet-host>:8444": {
+          "Handlers": {
+            "/html-publish": {
+              "Proxy": "http://127.0.0.1:4177"
+            }
+          }
+        }
+      }
+    },
+    "serve_fingerprint": "289f20dae3a2be931eba5f5324248c4a43a05a4b2a8c30803cdf537609574448",
+    "endpoints": {
+      "https-443": {
+        "sha256": "9c48fcabd8aef254351e56d4f9124689ab405f7c15a0cf8c2e7691f26ca8ac96",
+        "status": 200
+      },
+      "https-8443": {
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "status": 502
+      },
+      "installed-https": {
+        "sha256": "dc51b8c96c2d745df3bd5590d990230a482fd247123599548e0632fdbf97fc22",
+        "status": 200
+      },
+      "installed-loopback": {
+        "sha256": "dc51b8c96c2d745df3bd5590d990230a482fd247123599548e0632fdbf97fc22",
+        "status": 200
+      },
+      "loopback-5173": {
+        "error": "ConnectionRefusedError"
+      }
+    },
+    "service": "active",
+    "linger": "Linger=no"
+  },
+  "operations": [
+    {
+      "base_url": "https://<tailnet-host>:9443/html-publish-issue2-probe/",
+      "operation": "prepare",
+      "phase": "prepared",
+      "revision_a": "b4c22d28b3b16d8560f48a97ff0d2ee2ab351960",
+      "route_fingerprint": "4305e07d8fd05c16c8a1c8e687e417b0443c38d2f07668f7f3be45db42ad8d3f",
+      "stable_url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/"
+    },
+    {
+      "operation": "activate-b",
+      "phase": "b-active",
+      "revision_b": "7a835784bdcd5d491a4aff64248210d2c128609d"
+    },
+    {
+      "operation": "restore-a",
+      "phase": "a-restored",
+      "restored_revision": "b4c22d28b3b16d8560f48a97ff0d2ee2ab351960"
+    },
+    {
+      "evidence_retained": true,
+      "observations_restored": true,
+      "operation": "cleanup",
+      "phase": "cleaned",
+      "process_stopped": true,
+      "root_retained": false,
+      "route_removed": true,
+      "serve_restored": true,
+      "state_retained": true,
+      "unrelated_route_drift": false
+    }
+  ],
+  "checkpoints": [
+    {
+      "expect": "A",
+      "marker": "ISSUE2-A-fixtures",
+      "mode_walk": [
+        {
+          "mode": "0o700",
+          "path": "<probe-root>",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o755",
+          "path": "<probe-root>/runtime",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o755",
+          "path": "<probe-root>/runtime/public",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o755",
+          "path": "<probe-root>/runtime/releases",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o777",
+          "path": "<probe-root>/runtime/public/issue2-probe-5feefee3d32e",
+          "symlink": true,
+          "uid": 1000
+        },
+        {
+          "mode": "0o700",
+          "path": "<probe-root>/runtime/releases/b4c22d28b3b16d8560f48a97ff0d2ee2ab351960",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o755",
+          "path": "<probe-root>/runtime/releases/b4c22d28b3b16d8560f48a97ff0d2ee2ab351960/assets",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o644",
+          "path": "<probe-root>/runtime/releases/b4c22d28b3b16d8560f48a97ff0d2ee2ab351960/assets/removed.txt",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o644",
+          "path": "<probe-root>/runtime/releases/b4c22d28b3b16d8560f48a97ff0d2ee2ab351960/assets/state.css",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o644",
+          "path": "<probe-root>/runtime/releases/b4c22d28b3b16d8560f48a97ff0d2ee2ab351960/flip",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o644",
+          "path": "<probe-root>/runtime/releases/b4c22d28b3b16d8560f48a97ff0d2ee2ab351960/index.html",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o755",
+          "path": "<probe-root>/runtime/releases/b4c22d28b3b16d8560f48a97ff0d2ee2ab351960/paths",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o644",
+          "path": "<probe-root>/runtime/releases/b4c22d28b3b16d8560f48a97ff0d2ee2ab351960/paths/percent%.txt",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o644",
+          "path": "<probe-root>/runtime/releases/b4c22d28b3b16d8560f48a97ff0d2ee2ab351960/paths/percent%25.txt",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o644",
+          "path": "<probe-root>/runtime/releases/b4c22d28b3b16d8560f48a97ff0d2ee2ab351960/paths/space name.txt",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o644",
+          "path": "<probe-root>/runtime/releases/b4c22d28b3b16d8560f48a97ff0d2ee2ab351960/paths/unicodé.txt",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o755",
+          "path": "<probe-root>/runtime/releases/b4c22d28b3b16d8560f48a97ff0d2ee2ab351960/swap",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o644",
+          "path": "<probe-root>/runtime/releases/b4c22d28b3b16d8560f48a97ff0d2ee2ab351960/swap/index.html",
+          "symlink": false,
+          "uid": 1000
+        }
+      ],
+      "operation": "checkpoint",
+      "rows": [
+        {
+          "id": "P2-index",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/",
+          "response": {
+            "status": 200,
+            "size": 105,
+            "sha256": "395daaf4896f22f365b58b5f96bbc4c06831b30f41af60194341dbfdb1ded666",
+            "headers_ref": "h-a3a2d53e0658"
+          }
+        },
+        {
+          "id": "P2-css",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/assets/state.css",
+          "response": {
+            "status": 200,
+            "size": 52,
+            "sha256": "25b310b20219a3d0ce652a3480d3f84a4d91790ab5b79796a2d5b13d00ec2540",
+            "headers_ref": "h-cc890912ff1f"
+          }
+        },
+        {
+          "id": "P2-path",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/paths/space%20name.txt",
+          "response": {
+            "status": 200,
+            "size": 8,
+            "sha256": "2c7febff3596c7bf6c412f9e77369542db834d22c8c8f588f3afcf169ffe6d71",
+            "headers_ref": "h-119114607f92"
+          }
+        },
+        {
+          "id": "P2-path",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/paths/unicod%C3%A9.txt",
+          "response": {
+            "status": 200,
+            "size": 10,
+            "sha256": "9f2075bf5ad77e1ef1b5871077d98922d991bc77f1fed32c5aacf2f50d94d255",
+            "headers_ref": "h-e387fee124b3"
+          }
+        },
+        {
+          "id": "P2-path",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/paths/percent%2525.txt",
+          "response": {
+            "status": 200,
+            "size": 10,
+            "sha256": "dd7555d6a6de91251feb91e5b93dadbc89722d116a4fff791127b5e9825cb944",
+            "headers_ref": "h-e387fee124b3"
+          }
+        },
+        {
+          "id": "P2-path",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/paths/percent%25.txt",
+          "response": {
+            "status": 200,
+            "size": 18,
+            "sha256": "d136a1a645c578a3d8f687a029c1905ecca62848d2647e0ac97f461c87427dfa",
+            "headers_ref": "h-e460327fd4b0"
+          }
+        },
+        {
+          "id": "P1",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e?view=full",
+          "response": {
+            "status": 301,
+            "size": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "headers_ref": "h-070b4d37bed4"
+          }
+        },
+        {
+          "id": "P1",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/assets?view=full",
+          "response": {
+            "status": 301,
+            "size": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "headers_ref": "h-9bc3a68683ba"
+          }
+        },
+        {
+          "id": "P3",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/assets/removed.txt",
+          "response": {
+            "status": 200,
+            "size": 16,
+            "sha256": "1eee9a73b5ef3ca931e2c1b07b47e44415d23b8a647d2b0ba1f3bd1efa4f25b0",
+            "headers_ref": "h-c0a17f1f152f"
+          }
+        },
+        {
+          "id": "P4-file-to-directory",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/flip",
+          "response": {
+            "status": 200,
+            "size": 12,
+            "sha256": "f04bc2c15f5f8f75e126a200b97b9705e8cd1eaed33bdcaa8bfd82083d80b33c",
+            "headers_ref": "h-d0b9bcbc3a06"
+          }
+        },
+        {
+          "id": "P4-directory-to-file",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/swap/",
+          "response": {
+            "status": 200,
+            "size": 17,
+            "sha256": "a9c032e2c87515f2085a2b6ce1821fd1e1c294e6cfd46375205e4ff5900f228c",
+            "headers_ref": "h-9d5b3c6bff7e"
+          }
+        },
+        {
+          "id": "P5",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/missing.txt",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-be655d6d8d30"
+          }
+        },
+        {
+          "id": "P5-mount",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-be655d6d8d30"
+          }
+        },
+        {
+          "id": "A1",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/.git/HEAD",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-be655d6d8d30"
+          }
+        },
+        {
+          "id": "A1",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/archive.git/HEAD",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-be655d6d8d30"
+          }
+        },
+        {
+          "id": "A1",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/staging/index.html",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-be655d6d8d30"
+          }
+        },
+        {
+          "id": "A1",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/receipts/receipt.json",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-be655d6d8d30"
+          }
+        },
+        {
+          "id": "A1",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/probe.json",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-be655d6d8d30"
+          }
+        },
+        {
+          "id": "A1",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/temporary-link",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-be655d6d8d30"
+          }
+        },
+        {
+          "id": "A2-route-bounded-rejection",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/../private-sentinel.txt",
+          "response": {
+            "status": 404,
+            "size": 19,
+            "sha256": "b16e15764b8bc06c5c3f9f19bc8b99fa48e7894aa5a6ccdad65da49bbf564793",
+            "headers_ref": "h-b8f87e682a43"
+          }
+        },
+        {
+          "id": "A2-route-bounded-rejection",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/%2e%2e/private-sentinel.txt",
+          "response": {
+            "status": 404,
+            "size": 19,
+            "sha256": "b16e15764b8bc06c5c3f9f19bc8b99fa48e7894aa5a6ccdad65da49bbf564793",
+            "headers_ref": "h-b8f87e682a43"
+          }
+        },
+        {
+          "id": "A2-route-bounded-rejection",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/%252e%252e/private-sentinel.txt",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-be655d6d8d30"
+          }
+        },
+        {
+          "id": "A2-route-bounded-rejection",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/%2e%2e%2fprivate-sentinel.txt",
+          "response": {
+            "status": 404,
+            "size": 19,
+            "sha256": "b16e15764b8bc06c5c3f9f19bc8b99fa48e7894aa5a6ccdad65da49bbf564793",
+            "headers_ref": "h-b8f87e682a43"
+          }
+        },
+        {
+          "id": "A2-route-bounded-rejection",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/<encoded-probe-root>%2Fprivate-sentinel.txt",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-be655d6d8d30"
+          }
+        },
+        {
+          "id": "A2-route-bounded-rejection",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe<probe-root>/private-sentinel.txt",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-be655d6d8d30"
+          }
+        },
+        {
+          "id": "A3",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/uncontrolled",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-be655d6d8d30"
+          }
+        }
+      ],
+      "served_files": {
+        "assets/state.css": {
+          "mtime_ns": 1700000000000000000,
+          "sha256": "25b310b20219a3d0ce652a3480d3f84a4d91790ab5b79796a2d5b13d00ec2540",
+          "size": 52
+        },
+        "index.html": {
+          "mtime_ns": 1700000000000000000,
+          "sha256": "395daaf4896f22f365b58b5f96bbc4c06831b30f41af60194341dbfdb1ded666",
+          "size": 105
+        }
+      },
+      "stable_url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/"
+    },
+    {
+      "expect": "B",
+      "marker": "ISSUE2-B-fixtures",
+      "mode_walk": [
+        {
+          "mode": "0o700",
+          "path": "<probe-root>",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o755",
+          "path": "<probe-root>/runtime",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o755",
+          "path": "<probe-root>/runtime/public",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o755",
+          "path": "<probe-root>/runtime/releases",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o777",
+          "path": "<probe-root>/runtime/public/issue2-probe-5feefee3d32e",
+          "symlink": true,
+          "uid": 1000
+        },
+        {
+          "mode": "0o700",
+          "path": "<probe-root>/runtime/releases/7a835784bdcd5d491a4aff64248210d2c128609d",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o755",
+          "path": "<probe-root>/runtime/releases/7a835784bdcd5d491a4aff64248210d2c128609d/assets",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o644",
+          "path": "<probe-root>/runtime/releases/7a835784bdcd5d491a4aff64248210d2c128609d/assets/state.css",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o755",
+          "path": "<probe-root>/runtime/releases/7a835784bdcd5d491a4aff64248210d2c128609d/flip",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o644",
+          "path": "<probe-root>/runtime/releases/7a835784bdcd5d491a4aff64248210d2c128609d/flip/index.html",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o644",
+          "path": "<probe-root>/runtime/releases/7a835784bdcd5d491a4aff64248210d2c128609d/index.html",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o755",
+          "path": "<probe-root>/runtime/releases/7a835784bdcd5d491a4aff64248210d2c128609d/paths",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o644",
+          "path": "<probe-root>/runtime/releases/7a835784bdcd5d491a4aff64248210d2c128609d/paths/percent%.txt",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o644",
+          "path": "<probe-root>/runtime/releases/7a835784bdcd5d491a4aff64248210d2c128609d/paths/percent%25.txt",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o644",
+          "path": "<probe-root>/runtime/releases/7a835784bdcd5d491a4aff64248210d2c128609d/paths/space name.txt",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o644",
+          "path": "<probe-root>/runtime/releases/7a835784bdcd5d491a4aff64248210d2c128609d/paths/unicodé.txt",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o644",
+          "path": "<probe-root>/runtime/releases/7a835784bdcd5d491a4aff64248210d2c128609d/swap",
+          "symlink": false,
+          "uid": 1000
+        }
+      ],
+      "operation": "checkpoint",
+      "rows": [
+        {
+          "id": "P2-index",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/",
+          "response": {
+            "status": 200,
+            "size": 105,
+            "sha256": "9b8417898e4795bde23341ac2302f349545a7b35ba798a935285ec16be30c6fb",
+            "headers_ref": "h-27b98dad659b"
+          }
+        },
+        {
+          "id": "F2/F3-index-etag",
+          "outcome": "not_available",
+          "reason": "no observed ETag; ETag-only and combined cases unavailable"
+        },
+        {
+          "id": "F2/F3-index-ims-only",
+          "ok": true,
+          "request_headers": {
+            "If-Modified-Since": "Tue, 14 Nov 2023 22:13:20 GMT"
+          },
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/",
+          "response": {
+            "status": 200,
+            "size": 105,
+            "sha256": "9b8417898e4795bde23341ac2302f349545a7b35ba798a935285ec16be30c6fb",
+            "headers_ref": "h-27b98dad659b"
+          }
+        },
+        {
+          "id": "P2-css",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/assets/state.css",
+          "response": {
+            "status": 200,
+            "size": 52,
+            "sha256": "60fb857645ecaba639a37b6704a06509769413398bbbee24fe3bfaee45b2433a",
+            "headers_ref": "h-119748cda42f"
+          }
+        },
+        {
+          "id": "F2/F3-css-etag",
+          "outcome": "not_available",
+          "reason": "no observed ETag; ETag-only and combined cases unavailable"
+        },
+        {
+          "id": "F2/F3-css-ims-only",
+          "ok": true,
+          "request_headers": {
+            "If-Modified-Since": "Tue, 14 Nov 2023 22:13:20 GMT"
+          },
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/assets/state.css",
+          "response": {
+            "status": 200,
+            "size": 52,
+            "sha256": "60fb857645ecaba639a37b6704a06509769413398bbbee24fe3bfaee45b2433a",
+            "headers_ref": "h-119748cda42f"
+          }
+        },
+        {
+          "id": "P2-path",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/paths/space%20name.txt",
+          "response": {
+            "status": 200,
+            "size": 8,
+            "sha256": "9deca4889f4d697035b6b3e60f42d9ab206d0bdd08c86467e6443dfbe46f09ab",
+            "headers_ref": "h-239bde6ba59e"
+          }
+        },
+        {
+          "id": "P2-path",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/paths/unicod%C3%A9.txt",
+          "response": {
+            "status": 200,
+            "size": 10,
+            "sha256": "ea23485f7fd7982a3c2fec40d9d37e5ff7c0cedf7ba8aa8a5ddb939455a5f6d6",
+            "headers_ref": "h-5cdb3730993b"
+          }
+        },
+        {
+          "id": "P2-path",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/paths/percent%2525.txt",
+          "response": {
+            "status": 200,
+            "size": 10,
+            "sha256": "29f9aaa7c67441661f2e79212e0e0a1dfcb880b69b0acde75952dae1c470b849",
+            "headers_ref": "h-5cdb3730993b"
+          }
+        },
+        {
+          "id": "P2-path",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/paths/percent%25.txt",
+          "response": {
+            "status": 200,
+            "size": 18,
+            "sha256": "0b04088908e22569ead9725a81e2ab79bc5ce5eefc6fef0fbd69fffc370171d8",
+            "headers_ref": "h-3be2e15aaf29"
+          }
+        },
+        {
+          "id": "P1",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e?view=full",
+          "response": {
+            "status": 301,
+            "size": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "headers_ref": "h-5d3fac9095f2"
+          }
+        },
+        {
+          "id": "P1",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/assets?view=full",
+          "response": {
+            "status": 301,
+            "size": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "headers_ref": "h-3fc91ac61e3e"
+          }
+        },
+        {
+          "id": "P3",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/assets/removed.txt",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-875e25306af1"
+          }
+        },
+        {
+          "id": "P4-file-to-directory",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/flip/",
+          "response": {
+            "status": 200,
+            "size": 17,
+            "sha256": "6ec9d1aecb7398ffb7ac52836a8c543b336e376743d28d7145fd2b7397652f63",
+            "headers_ref": "h-7d2de13e78da"
+          }
+        },
+        {
+          "id": "P4-directory-to-file",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/swap",
+          "response": {
+            "status": 200,
+            "size": 12,
+            "sha256": "037b1e2feb2cccd55a30300ee4026dd61c3d95af549983c72f0e94375221a9dc",
+            "headers_ref": "h-0e41a0545e53"
+          }
+        },
+        {
+          "id": "P4-obsolete-child",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/swap/index.html",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-875e25306af1"
+          }
+        },
+        {
+          "id": "P5",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/missing.txt",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-875e25306af1"
+          }
+        },
+        {
+          "id": "P5-mount",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-875e25306af1"
+          }
+        },
+        {
+          "id": "A1",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/.git/HEAD",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-875e25306af1"
+          }
+        },
+        {
+          "id": "A1",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/archive.git/HEAD",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-875e25306af1"
+          }
+        },
+        {
+          "id": "A1",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/staging/index.html",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-875e25306af1"
+          }
+        },
+        {
+          "id": "A1",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/receipts/receipt.json",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-875e25306af1"
+          }
+        },
+        {
+          "id": "A1",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/probe.json",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-875e25306af1"
+          }
+        },
+        {
+          "id": "A1",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/temporary-link",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-875e25306af1"
+          }
+        },
+        {
+          "id": "A2-route-bounded-rejection",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/../private-sentinel.txt",
+          "response": {
+            "status": 404,
+            "size": 19,
+            "sha256": "b16e15764b8bc06c5c3f9f19bc8b99fa48e7894aa5a6ccdad65da49bbf564793",
+            "headers_ref": "h-4f9faf270b0a"
+          }
+        },
+        {
+          "id": "A2-route-bounded-rejection",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/%2e%2e/private-sentinel.txt",
+          "response": {
+            "status": 404,
+            "size": 19,
+            "sha256": "b16e15764b8bc06c5c3f9f19bc8b99fa48e7894aa5a6ccdad65da49bbf564793",
+            "headers_ref": "h-4f9faf270b0a"
+          }
+        },
+        {
+          "id": "A2-route-bounded-rejection",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/%252e%252e/private-sentinel.txt",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-875e25306af1"
+          }
+        },
+        {
+          "id": "A2-route-bounded-rejection",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/%2e%2e%2fprivate-sentinel.txt",
+          "response": {
+            "status": 404,
+            "size": 19,
+            "sha256": "b16e15764b8bc06c5c3f9f19bc8b99fa48e7894aa5a6ccdad65da49bbf564793",
+            "headers_ref": "h-4f9faf270b0a"
+          }
+        },
+        {
+          "id": "A2-route-bounded-rejection",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/<encoded-probe-root>%2Fprivate-sentinel.txt",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-875e25306af1"
+          }
+        },
+        {
+          "id": "A2-route-bounded-rejection",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe<probe-root>/private-sentinel.txt",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-875e25306af1"
+          }
+        },
+        {
+          "id": "A3",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/uncontrolled",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-875e25306af1"
+          }
+        }
+      ],
+      "served_files": {
+        "assets/state.css": {
+          "mtime_ns": 1700000000000000000,
+          "sha256": "60fb857645ecaba639a37b6704a06509769413398bbbee24fe3bfaee45b2433a",
+          "size": 52
+        },
+        "index.html": {
+          "mtime_ns": 1700000000000000000,
+          "sha256": "9b8417898e4795bde23341ac2302f349545a7b35ba798a935285ec16be30c6fb",
+          "size": 105
+        }
+      },
+      "stable_url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/"
+    },
+    {
+      "expect": "restored-A",
+      "marker": "ISSUE2-A-fixtures",
+      "mode_walk": [
+        {
+          "mode": "0o700",
+          "path": "<probe-root>",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o755",
+          "path": "<probe-root>/runtime",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o755",
+          "path": "<probe-root>/runtime/public",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o755",
+          "path": "<probe-root>/runtime/releases",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o777",
+          "path": "<probe-root>/runtime/public/issue2-probe-5feefee3d32e",
+          "symlink": true,
+          "uid": 1000
+        },
+        {
+          "mode": "0o700",
+          "path": "<probe-root>/runtime/releases/b4c22d28b3b16d8560f48a97ff0d2ee2ab351960",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o755",
+          "path": "<probe-root>/runtime/releases/b4c22d28b3b16d8560f48a97ff0d2ee2ab351960/assets",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o644",
+          "path": "<probe-root>/runtime/releases/b4c22d28b3b16d8560f48a97ff0d2ee2ab351960/assets/removed.txt",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o644",
+          "path": "<probe-root>/runtime/releases/b4c22d28b3b16d8560f48a97ff0d2ee2ab351960/assets/state.css",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o644",
+          "path": "<probe-root>/runtime/releases/b4c22d28b3b16d8560f48a97ff0d2ee2ab351960/flip",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o644",
+          "path": "<probe-root>/runtime/releases/b4c22d28b3b16d8560f48a97ff0d2ee2ab351960/index.html",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o755",
+          "path": "<probe-root>/runtime/releases/b4c22d28b3b16d8560f48a97ff0d2ee2ab351960/paths",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o644",
+          "path": "<probe-root>/runtime/releases/b4c22d28b3b16d8560f48a97ff0d2ee2ab351960/paths/percent%.txt",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o644",
+          "path": "<probe-root>/runtime/releases/b4c22d28b3b16d8560f48a97ff0d2ee2ab351960/paths/percent%25.txt",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o644",
+          "path": "<probe-root>/runtime/releases/b4c22d28b3b16d8560f48a97ff0d2ee2ab351960/paths/space name.txt",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o644",
+          "path": "<probe-root>/runtime/releases/b4c22d28b3b16d8560f48a97ff0d2ee2ab351960/paths/unicodé.txt",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o755",
+          "path": "<probe-root>/runtime/releases/b4c22d28b3b16d8560f48a97ff0d2ee2ab351960/swap",
+          "symlink": false,
+          "uid": 1000
+        },
+        {
+          "mode": "0o644",
+          "path": "<probe-root>/runtime/releases/b4c22d28b3b16d8560f48a97ff0d2ee2ab351960/swap/index.html",
+          "symlink": false,
+          "uid": 1000
+        }
+      ],
+      "operation": "checkpoint",
+      "rows": [
+        {
+          "id": "P2-index",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/",
+          "response": {
+            "status": 200,
+            "size": 105,
+            "sha256": "395daaf4896f22f365b58b5f96bbc4c06831b30f41af60194341dbfdb1ded666",
+            "headers_ref": "h-f802194d5b04"
+          }
+        },
+        {
+          "id": "F2/F3-index-etag",
+          "outcome": "not_available",
+          "reason": "no observed ETag; ETag-only and combined cases unavailable"
+        },
+        {
+          "id": "F2/F3-index-ims-only",
+          "ok": true,
+          "request_headers": {
+            "If-Modified-Since": "Tue, 14 Nov 2023 22:13:20 GMT"
+          },
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/",
+          "response": {
+            "status": 200,
+            "size": 105,
+            "sha256": "395daaf4896f22f365b58b5f96bbc4c06831b30f41af60194341dbfdb1ded666",
+            "headers_ref": "h-f802194d5b04"
+          }
+        },
+        {
+          "id": "P2-css",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/assets/state.css",
+          "response": {
+            "status": 200,
+            "size": 52,
+            "sha256": "25b310b20219a3d0ce652a3480d3f84a4d91790ab5b79796a2d5b13d00ec2540",
+            "headers_ref": "h-1abf3ea4e498"
+          }
+        },
+        {
+          "id": "F2/F3-css-etag",
+          "outcome": "not_available",
+          "reason": "no observed ETag; ETag-only and combined cases unavailable"
+        },
+        {
+          "id": "F2/F3-css-ims-only",
+          "ok": true,
+          "request_headers": {
+            "If-Modified-Since": "Tue, 14 Nov 2023 22:13:20 GMT"
+          },
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/assets/state.css",
+          "response": {
+            "status": 200,
+            "size": 52,
+            "sha256": "25b310b20219a3d0ce652a3480d3f84a4d91790ab5b79796a2d5b13d00ec2540",
+            "headers_ref": "h-1abf3ea4e498"
+          }
+        },
+        {
+          "id": "P2-path",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/paths/space%20name.txt",
+          "response": {
+            "status": 200,
+            "size": 8,
+            "sha256": "2c7febff3596c7bf6c412f9e77369542db834d22c8c8f588f3afcf169ffe6d71",
+            "headers_ref": "h-ccac946dde10"
+          }
+        },
+        {
+          "id": "P2-path",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/paths/unicod%C3%A9.txt",
+          "response": {
+            "status": 200,
+            "size": 10,
+            "sha256": "9f2075bf5ad77e1ef1b5871077d98922d991bc77f1fed32c5aacf2f50d94d255",
+            "headers_ref": "h-8735104d0a84"
+          }
+        },
+        {
+          "id": "P2-path",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/paths/percent%2525.txt",
+          "response": {
+            "status": 200,
+            "size": 10,
+            "sha256": "dd7555d6a6de91251feb91e5b93dadbc89722d116a4fff791127b5e9825cb944",
+            "headers_ref": "h-8735104d0a84"
+          }
+        },
+        {
+          "id": "P2-path",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/paths/percent%25.txt",
+          "response": {
+            "status": 200,
+            "size": 18,
+            "sha256": "d136a1a645c578a3d8f687a029c1905ecca62848d2647e0ac97f461c87427dfa",
+            "headers_ref": "h-b3f296f21416"
+          }
+        },
+        {
+          "id": "P1",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e?view=full",
+          "response": {
+            "status": 301,
+            "size": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "headers_ref": "h-2b1e0b709e7c"
+          }
+        },
+        {
+          "id": "P1",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/assets?view=full",
+          "response": {
+            "status": 301,
+            "size": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "headers_ref": "h-cf342541e1b2"
+          }
+        },
+        {
+          "id": "P3",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/assets/removed.txt",
+          "response": {
+            "status": 200,
+            "size": 16,
+            "sha256": "1eee9a73b5ef3ca931e2c1b07b47e44415d23b8a647d2b0ba1f3bd1efa4f25b0",
+            "headers_ref": "h-b7e7c5d991ea"
+          }
+        },
+        {
+          "id": "P4-file-to-directory",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/flip",
+          "response": {
+            "status": 200,
+            "size": 12,
+            "sha256": "f04bc2c15f5f8f75e126a200b97b9705e8cd1eaed33bdcaa8bfd82083d80b33c",
+            "headers_ref": "h-87dba52887a0"
+          }
+        },
+        {
+          "id": "P4-directory-to-file",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/swap/",
+          "response": {
+            "status": 200,
+            "size": 17,
+            "sha256": "a9c032e2c87515f2085a2b6ce1821fd1e1c294e6cfd46375205e4ff5900f228c",
+            "headers_ref": "h-bbf0d015463d"
+          }
+        },
+        {
+          "id": "P5",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/missing.txt",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-a1b179855f1f"
+          }
+        },
+        {
+          "id": "P5-mount",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-a1b179855f1f"
+          }
+        },
+        {
+          "id": "A1",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/.git/HEAD",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-a1b179855f1f"
+          }
+        },
+        {
+          "id": "A1",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/archive.git/HEAD",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-a1b179855f1f"
+          }
+        },
+        {
+          "id": "A1",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/staging/index.html",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-a1b179855f1f"
+          }
+        },
+        {
+          "id": "A1",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/receipts/receipt.json",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-a1b179855f1f"
+          }
+        },
+        {
+          "id": "A1",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/probe.json",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-a1b179855f1f"
+          }
+        },
+        {
+          "id": "A1",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/temporary-link",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-a1b179855f1f"
+          }
+        },
+        {
+          "id": "A2-route-bounded-rejection",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/../private-sentinel.txt",
+          "response": {
+            "status": 404,
+            "size": 19,
+            "sha256": "b16e15764b8bc06c5c3f9f19bc8b99fa48e7894aa5a6ccdad65da49bbf564793",
+            "headers_ref": "h-ae8e43c0cbb9"
+          }
+        },
+        {
+          "id": "A2-route-bounded-rejection",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/%2e%2e/private-sentinel.txt",
+          "response": {
+            "status": 404,
+            "size": 19,
+            "sha256": "b16e15764b8bc06c5c3f9f19bc8b99fa48e7894aa5a6ccdad65da49bbf564793",
+            "headers_ref": "h-ae8e43c0cbb9"
+          }
+        },
+        {
+          "id": "A2-route-bounded-rejection",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/%252e%252e/private-sentinel.txt",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-a1b179855f1f"
+          }
+        },
+        {
+          "id": "A2-route-bounded-rejection",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/%2e%2e%2fprivate-sentinel.txt",
+          "response": {
+            "status": 404,
+            "size": 19,
+            "sha256": "b16e15764b8bc06c5c3f9f19bc8b99fa48e7894aa5a6ccdad65da49bbf564793",
+            "headers_ref": "h-ae8e43c0cbb9"
+          }
+        },
+        {
+          "id": "A2-route-bounded-rejection",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/<encoded-probe-root>%2Fprivate-sentinel.txt",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-a1b179855f1f"
+          }
+        },
+        {
+          "id": "A2-route-bounded-rejection",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe<probe-root>/private-sentinel.txt",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-a1b179855f1f"
+          }
+        },
+        {
+          "id": "A3",
+          "ok": true,
+          "request_headers": {},
+          "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/uncontrolled",
+          "response": {
+            "status": 404,
+            "size": 335,
+            "sha256": "860b53ed6ea6a0cf602fae632cfcd28dbcf637f85a8bee28d2ee9c6cc9081669",
+            "headers_ref": "h-a1b179855f1f"
+          }
+        }
+      ],
+      "served_files": {
+        "assets/state.css": {
+          "mtime_ns": 1700000000000000000,
+          "sha256": "25b310b20219a3d0ce652a3480d3f84a4d91790ab5b79796a2d5b13d00ec2540",
+          "size": 52
+        },
+        "index.html": {
+          "mtime_ns": 1700000000000000000,
+          "sha256": "395daaf4896f22f365b58b5f96bbc4c06831b30f41af60194341dbfdb1ded666",
+          "size": 105
+        }
+      },
+      "stable_url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/"
+    }
+  ],
+  "browser": [
+    {
+      "phase": "A",
+      "background": "rgb(0, 0, 0)",
+      "color": "rgb(255, 255, 255)",
+      "cssState": "'A'",
+      "marker": "ISSUE2-A-fixtures",
+      "navigationType": "navigate",
+      "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/",
+      "screenshot": "2026-09-22-browser-A.png"
+    },
+    {
+      "phase": "B",
+      "background": "rgb(0, 0, 0)",
+      "color": "rgb(255, 255, 255)",
+      "cssState": "'B'",
+      "marker": "ISSUE2-B-fixtures",
+      "navigationType": "reload",
+      "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/",
+      "screenshot": "2026-09-22-browser-B.png"
+    },
+    {
+      "phase": "restored-A",
+      "background": "rgb(0, 0, 0)",
+      "color": "rgb(255, 255, 255)",
+      "cssState": "'A'",
+      "marker": "ISSUE2-A-fixtures",
+      "navigationType": "reload",
+      "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-5feefee3d32e/",
+      "screenshot": "2026-09-22-browser-restored-A.png"
+    }
+  ],
+  "second_device": {
+    "device": "m4mini",
+    "attribution": "coordinator-provenance.md in the raw run; retained exec objects omit argv",
+    "command": "rtk proxy ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=8 assistant@<m4mini-tailnet-host> curl --connect-timeout 5 --max-time 10 --fail --silent --show-error --include URL",
+    "accept_encoding": "No explicit header; retained raw responses have no Content-Encoding and bodies match identity hashes",
+    "responses": [
+      {
+        "resource": "index",
+        "status": 200,
+        "body": "<!doctype html><meta charset=utf-8><link rel=stylesheet href=assets/state.css><h1>ISSUE2-A-fixtures</h1>\n",
+        "headers": null,
+        "capture": "manual transcription from coordinator tool result af6711",
+        "phase": "A",
+        "sha256": "395daaf4896f22f365b58b5f96bbc4c06831b30f41af60194341dbfdb1ded666",
+        "size": 105
+      },
+      {
+        "resource": "css",
+        "status": 200,
+        "body": "body{--issue2-state:'A';color:#fff;background:#000}\n",
+        "headers": {
+          "cache-control": "no-store",
+          "content-type": "text/css",
+          "date": "Tue, 22 Sep 2026 13:07:57 GMT",
+          "last-modified": "Tue, 14 Nov 2023 22:13:20 GMT",
+          "server": "SimpleHTTP/0.6 Python/3.13.15",
+          "content-length": "52"
+        },
+        "capture": "retained raw exec output",
+        "tool_result": "1694d1",
+        "phase": "A",
+        "sha256": "25b310b20219a3d0ce652a3480d3f84a4d91790ab5b79796a2d5b13d00ec2540",
+        "size": 52
+      },
+      {
+        "resource": "index",
+        "status": 200,
+        "body": "<!doctype html><meta charset=utf-8><link rel=stylesheet href=assets/state.css><h1>ISSUE2-B-fixtures</h1>\n",
+        "headers": {
+          "cache-control": "no-store",
+          "content-type": "text/html",
+          "date": "Tue, 22 Sep 2026 13:08:25 GMT",
+          "last-modified": "Tue, 14 Nov 2023 22:13:20 GMT",
+          "server": "SimpleHTTP/0.6 Python/3.13.15",
+          "content-length": "105"
+        },
+        "capture": "retained raw exec output",
+        "tool_result": "400f40",
+        "phase": "B",
+        "sha256": "9b8417898e4795bde23341ac2302f349545a7b35ba798a935285ec16be30c6fb",
+        "size": 105
+      },
+      {
+        "resource": "css",
+        "status": 200,
+        "body": "body{--issue2-state:'B';color:#fff;background:#000}\n",
+        "headers": {
+          "cache-control": "no-store",
+          "content-type": "text/css",
+          "date": "Tue, 22 Sep 2026 13:08:25 GMT",
+          "last-modified": "Tue, 14 Nov 2023 22:13:20 GMT",
+          "server": "SimpleHTTP/0.6 Python/3.13.15",
+          "content-length": "52"
+        },
+        "capture": "retained raw exec output",
+        "tool_result": "b0c721",
+        "phase": "B",
+        "sha256": "60fb857645ecaba639a37b6704a06509769413398bbbee24fe3bfaee45b2433a",
+        "size": 52
+      },
+      {
+        "resource": "index",
+        "status": 200,
+        "body": "<!doctype html><meta charset=utf-8><link rel=stylesheet href=assets/state.css><h1>ISSUE2-A-fixtures</h1>\n",
+        "headers": {
+          "cache-control": "no-store",
+          "content-type": "text/html",
+          "date": "Tue, 22 Sep 2026 13:09:01 GMT",
+          "last-modified": "Tue, 14 Nov 2023 22:13:20 GMT",
+          "server": "SimpleHTTP/0.6 Python/3.13.15",
+          "content-length": "105"
+        },
+        "capture": "retained raw exec output",
+        "tool_result": "646e86",
+        "phase": "restored-A",
+        "sha256": "395daaf4896f22f365b58b5f96bbc4c06831b30f41af60194341dbfdb1ded666",
+        "size": 105
+      },
+      {
+        "resource": "css",
+        "status": 200,
+        "body": "body{--issue2-state:'A';color:#fff;background:#000}\n",
+        "headers": {
+          "cache-control": "no-store",
+          "content-type": "text/css",
+          "date": "Tue, 22 Sep 2026 13:09:01 GMT",
+          "last-modified": "Tue, 14 Nov 2023 22:13:20 GMT",
+          "server": "SimpleHTTP/0.6 Python/3.13.15",
+          "content-length": "52"
+        },
+        "capture": "retained raw exec output",
+        "tool_result": "79b9a5",
+        "phase": "restored-A",
+        "sha256": "25b310b20219a3d0ce652a3480d3f84a4d91790ab5b79796a2d5b13d00ec2540",
+        "size": 52
+      }
+    ]
+  },
+  "prior_failed_run": {
+    "source_commit": "71fd9ddf83168402bd27c8f84cee71d1d86e51e3",
+    "message": "checkpoint row P2-path failed",
+    "rows": [
+      {
+        "id": "P2-path",
+        "ok": true,
+        "request_headers": {},
+        "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-d9d77f886ce1/paths/percent%2525.txt",
+        "response": {
+          "status": 200,
+          "size": 10,
+          "sha256": "dd7555d6a6de91251feb91e5b93dadbc89722d116a4fff791127b5e9825cb944",
+          "headers_ref": "h-55a50f6e4827"
+        }
+      },
+      {
+        "id": "P2-path",
+        "ok": true,
+        "request_headers": {},
+        "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-d9d77f886ce1/paths/percent%25.txt",
+        "response": {
+          "status": 200,
+          "size": 18,
+          "sha256": "d136a1a645c578a3d8f687a029c1905ecca62848d2647e0ac97f461c87427dfa",
+          "headers_ref": "h-22efa60ec7a4"
+        }
+      },
+      {
+        "id": "P2-path",
+        "ok": false,
+        "request_headers": {},
+        "url": "https://<tailnet-host>:9443/html-publish-issue2-probe/issue2-probe-d9d77f886ce1/paths/percent%.txt",
+        "response": {
+          "status": 400,
+          "size": 15,
+          "sha256": "19b843cc92cb12aa314bb3c3913b2feeb852e85969bf06cb9d096931bfda34ba",
+          "headers_ref": "h-9617275136f1"
+        }
+      }
+    ],
+    "cleanup": {
+      "evidence_retained": true,
+      "observations_restored": true,
+      "operation": "cleanup",
+      "phase": "cleaned",
+      "process_stopped": true,
+      "root_retained": true,
+      "route_removed": true,
+      "serve_restored": true,
+      "state_retained": true,
+      "unrelated_route_drift": false
+    }
+  },
+  "response_headers": {
+    "h-a3a2d53e0658": {
+      "cache-control": "no-store",
+      "content-length": "105",
+      "content-type": "text/html",
+      "date": "Tue, 22 Sep 2026 13:07:16 GMT",
+      "last-modified": "Tue, 14 Nov 2023 22:13:20 GMT",
+      "server": "SimpleHTTP/0.6 Python/3.13.15"
+    },
+    "h-cc890912ff1f": {
+      "cache-control": "no-store",
+      "content-length": "52",
+      "content-type": "text/css",
+      "date": "Tue, 22 Sep 2026 13:07:16 GMT",
+      "last-modified": "Tue, 14 Nov 2023 22:13:20 GMT",
+      "server": "SimpleHTTP/0.6 Python/3.13.15"
+    },
+    "h-119114607f92": {
+      "cache-control": "no-store",
+      "content-length": "8",
+      "content-type": "text/plain",
+      "date": "Tue, 22 Sep 2026 13:07:16 GMT",
+      "last-modified": "Tue, 22 Sep 2026 13:07:05 GMT",
+      "server": "SimpleHTTP/0.6 Python/3.13.15"
+    },
+    "h-e387fee124b3": {
+      "cache-control": "no-store",
+      "content-length": "10",
+      "content-type": "text/plain",
+      "date": "Tue, 22 Sep 2026 13:07:16 GMT",
+      "last-modified": "Tue, 22 Sep 2026 13:07:05 GMT",
+      "server": "SimpleHTTP/0.6 Python/3.13.15"
+    },
+    "h-e460327fd4b0": {
+      "cache-control": "no-store",
+      "content-length": "18",
+      "content-type": "text/plain",
+      "date": "Tue, 22 Sep 2026 13:07:16 GMT",
+      "last-modified": "Tue, 22 Sep 2026 13:07:05 GMT",
+      "server": "SimpleHTTP/0.6 Python/3.13.15"
+    },
+    "h-070b4d37bed4": {
+      "cache-control": "no-store",
+      "date": "Tue, 22 Sep 2026 13:07:16 GMT",
+      "location": "issue2-probe-5feefee3d32e/?view=full",
+      "server": "SimpleHTTP/0.6 Python/3.13.15",
+      "transfer-encoding": "chunked"
+    },
+    "h-9bc3a68683ba": {
+      "cache-control": "no-store",
+      "date": "Tue, 22 Sep 2026 13:07:16 GMT",
+      "location": "assets/?view=full",
+      "server": "SimpleHTTP/0.6 Python/3.13.15",
+      "transfer-encoding": "chunked"
+    },
+    "h-c0a17f1f152f": {
+      "cache-control": "no-store",
+      "content-length": "16",
+      "content-type": "text/plain",
+      "date": "Tue, 22 Sep 2026 13:07:16 GMT",
+      "last-modified": "Tue, 22 Sep 2026 13:07:05 GMT",
+      "server": "SimpleHTTP/0.6 Python/3.13.15"
+    },
+    "h-d0b9bcbc3a06": {
+      "cache-control": "no-store",
+      "content-length": "12",
+      "content-type": "application/octet-stream",
+      "date": "Tue, 22 Sep 2026 13:07:16 GMT",
+      "last-modified": "Tue, 22 Sep 2026 13:07:05 GMT",
+      "server": "SimpleHTTP/0.6 Python/3.13.15"
+    },
+    "h-9d5b3c6bff7e": {
+      "cache-control": "no-store",
+      "content-length": "17",
+      "content-type": "text/html",
+      "date": "Tue, 22 Sep 2026 13:07:16 GMT",
+      "last-modified": "Tue, 22 Sep 2026 13:07:05 GMT",
+      "server": "SimpleHTTP/0.6 Python/3.13.15"
+    },
+    "h-be655d6d8d30": {
+      "cache-control": "no-store",
+      "content-length": "335",
+      "content-type": "text/html;charset=utf-8",
+      "date": "Tue, 22 Sep 2026 13:07:16 GMT",
+      "server": "SimpleHTTP/0.6 Python/3.13.15"
+    },
+    "h-b8f87e682a43": {
+      "content-length": "19",
+      "content-type": "text/plain; charset=utf-8",
+      "date": "Tue, 22 Sep 2026 13:07:16 GMT",
+      "x-content-type-options": "nosniff"
+    },
+    "h-27b98dad659b": {
+      "cache-control": "no-store",
+      "content-length": "105",
+      "content-type": "text/html",
+      "date": "Tue, 22 Sep 2026 13:08:08 GMT",
+      "last-modified": "Tue, 14 Nov 2023 22:13:20 GMT",
+      "server": "SimpleHTTP/0.6 Python/3.13.15"
+    },
+    "h-119748cda42f": {
+      "cache-control": "no-store",
+      "content-length": "52",
+      "content-type": "text/css",
+      "date": "Tue, 22 Sep 2026 13:08:08 GMT",
+      "last-modified": "Tue, 14 Nov 2023 22:13:20 GMT",
+      "server": "SimpleHTTP/0.6 Python/3.13.15"
+    },
+    "h-239bde6ba59e": {
+      "cache-control": "no-store",
+      "content-length": "8",
+      "content-type": "text/plain",
+      "date": "Tue, 22 Sep 2026 13:08:08 GMT",
+      "last-modified": "Tue, 22 Sep 2026 13:07:58 GMT",
+      "server": "SimpleHTTP/0.6 Python/3.13.15"
+    },
+    "h-5cdb3730993b": {
+      "cache-control": "no-store",
+      "content-length": "10",
+      "content-type": "text/plain",
+      "date": "Tue, 22 Sep 2026 13:08:08 GMT",
+      "last-modified": "Tue, 22 Sep 2026 13:07:58 GMT",
+      "server": "SimpleHTTP/0.6 Python/3.13.15"
+    },
+    "h-3be2e15aaf29": {
+      "cache-control": "no-store",
+      "content-length": "18",
+      "content-type": "text/plain",
+      "date": "Tue, 22 Sep 2026 13:08:08 GMT",
+      "last-modified": "Tue, 22 Sep 2026 13:07:58 GMT",
+      "server": "SimpleHTTP/0.6 Python/3.13.15"
+    },
+    "h-5d3fac9095f2": {
+      "cache-control": "no-store",
+      "date": "Tue, 22 Sep 2026 13:08:08 GMT",
+      "location": "issue2-probe-5feefee3d32e/?view=full",
+      "server": "SimpleHTTP/0.6 Python/3.13.15",
+      "transfer-encoding": "chunked"
+    },
+    "h-3fc91ac61e3e": {
+      "cache-control": "no-store",
+      "date": "Tue, 22 Sep 2026 13:08:08 GMT",
+      "location": "assets/?view=full",
+      "server": "SimpleHTTP/0.6 Python/3.13.15",
+      "transfer-encoding": "chunked"
+    },
+    "h-875e25306af1": {
+      "cache-control": "no-store",
+      "content-length": "335",
+      "content-type": "text/html;charset=utf-8",
+      "date": "Tue, 22 Sep 2026 13:08:08 GMT",
+      "server": "SimpleHTTP/0.6 Python/3.13.15"
+    },
+    "h-7d2de13e78da": {
+      "cache-control": "no-store",
+      "content-length": "17",
+      "content-type": "text/html",
+      "date": "Tue, 22 Sep 2026 13:08:08 GMT",
+      "last-modified": "Tue, 22 Sep 2026 13:07:58 GMT",
+      "server": "SimpleHTTP/0.6 Python/3.13.15"
+    },
+    "h-0e41a0545e53": {
+      "cache-control": "no-store",
+      "content-length": "12",
+      "content-type": "application/octet-stream",
+      "date": "Tue, 22 Sep 2026 13:08:08 GMT",
+      "last-modified": "Tue, 22 Sep 2026 13:07:58 GMT",
+      "server": "SimpleHTTP/0.6 Python/3.13.15"
+    },
+    "h-4f9faf270b0a": {
+      "content-length": "19",
+      "content-type": "text/plain; charset=utf-8",
+      "date": "Tue, 22 Sep 2026 13:08:08 GMT",
+      "x-content-type-options": "nosniff"
+    },
+    "h-f802194d5b04": {
+      "cache-control": "no-store",
+      "content-length": "105",
+      "content-type": "text/html",
+      "date": "Tue, 22 Sep 2026 13:08:43 GMT",
+      "last-modified": "Tue, 14 Nov 2023 22:13:20 GMT",
+      "server": "SimpleHTTP/0.6 Python/3.13.15"
+    },
+    "h-1abf3ea4e498": {
+      "cache-control": "no-store",
+      "content-length": "52",
+      "content-type": "text/css",
+      "date": "Tue, 22 Sep 2026 13:08:43 GMT",
+      "last-modified": "Tue, 14 Nov 2023 22:13:20 GMT",
+      "server": "SimpleHTTP/0.6 Python/3.13.15"
+    },
+    "h-ccac946dde10": {
+      "cache-control": "no-store",
+      "content-length": "8",
+      "content-type": "text/plain",
+      "date": "Tue, 22 Sep 2026 13:08:43 GMT",
+      "last-modified": "Tue, 22 Sep 2026 13:07:05 GMT",
+      "server": "SimpleHTTP/0.6 Python/3.13.15"
+    },
+    "h-8735104d0a84": {
+      "cache-control": "no-store",
+      "content-length": "10",
+      "content-type": "text/plain",
+      "date": "Tue, 22 Sep 2026 13:08:43 GMT",
+      "last-modified": "Tue, 22 Sep 2026 13:07:05 GMT",
+      "server": "SimpleHTTP/0.6 Python/3.13.15"
+    },
+    "h-b3f296f21416": {
+      "cache-control": "no-store",
+      "content-length": "18",
+      "content-type": "text/plain",
+      "date": "Tue, 22 Sep 2026 13:08:43 GMT",
+      "last-modified": "Tue, 22 Sep 2026 13:07:05 GMT",
+      "server": "SimpleHTTP/0.6 Python/3.13.15"
+    },
+    "h-2b1e0b709e7c": {
+      "cache-control": "no-store",
+      "date": "Tue, 22 Sep 2026 13:08:43 GMT",
+      "location": "issue2-probe-5feefee3d32e/?view=full",
+      "server": "SimpleHTTP/0.6 Python/3.13.15",
+      "transfer-encoding": "chunked"
+    },
+    "h-cf342541e1b2": {
+      "cache-control": "no-store",
+      "date": "Tue, 22 Sep 2026 13:08:43 GMT",
+      "location": "assets/?view=full",
+      "server": "SimpleHTTP/0.6 Python/3.13.15",
+      "transfer-encoding": "chunked"
+    },
+    "h-b7e7c5d991ea": {
+      "cache-control": "no-store",
+      "content-length": "16",
+      "content-type": "text/plain",
+      "date": "Tue, 22 Sep 2026 13:08:43 GMT",
+      "last-modified": "Tue, 22 Sep 2026 13:07:05 GMT",
+      "server": "SimpleHTTP/0.6 Python/3.13.15"
+    },
+    "h-87dba52887a0": {
+      "cache-control": "no-store",
+      "content-length": "12",
+      "content-type": "application/octet-stream",
+      "date": "Tue, 22 Sep 2026 13:08:43 GMT",
+      "last-modified": "Tue, 22 Sep 2026 13:07:05 GMT",
+      "server": "SimpleHTTP/0.6 Python/3.13.15"
+    },
+    "h-bbf0d015463d": {
+      "cache-control": "no-store",
+      "content-length": "17",
+      "content-type": "text/html",
+      "date": "Tue, 22 Sep 2026 13:08:43 GMT",
+      "last-modified": "Tue, 22 Sep 2026 13:07:05 GMT",
+      "server": "SimpleHTTP/0.6 Python/3.13.15"
+    },
+    "h-a1b179855f1f": {
+      "cache-control": "no-store",
+      "content-length": "335",
+      "content-type": "text/html;charset=utf-8",
+      "date": "Tue, 22 Sep 2026 13:08:43 GMT",
+      "server": "SimpleHTTP/0.6 Python/3.13.15"
+    },
+    "h-ae8e43c0cbb9": {
+      "content-length": "19",
+      "content-type": "text/plain; charset=utf-8",
+      "date": "Tue, 22 Sep 2026 13:08:43 GMT",
+      "x-content-type-options": "nosniff"
+    },
+    "h-55a50f6e4827": {
+      "cache-control": "no-store",
+      "content-length": "10",
+      "content-type": "text/plain",
+      "date": "Tue, 22 Sep 2026 12:57:32 GMT",
+      "last-modified": "Tue, 22 Sep 2026 12:57:22 GMT",
+      "server": "SimpleHTTP/0.6 Python/3.13.15"
+    },
+    "h-22efa60ec7a4": {
+      "cache-control": "no-store",
+      "content-length": "18",
+      "content-type": "text/plain",
+      "date": "Tue, 22 Sep 2026 12:57:32 GMT",
+      "last-modified": "Tue, 22 Sep 2026 12:57:22 GMT",
+      "server": "SimpleHTTP/0.6 Python/3.13.15"
+    },
+    "h-9617275136f1": {
+      "connection": "close",
+      "content-type": "text/plain; charset=utf-8"
+    }
+  },
+  "screenshots": [
+    {
+      "phase": "A",
+      "file": "2026-09-22-browser-A.png",
+      "sha256": "976206412fe7bdc933f4303141cdd0f44cdf641b2f396b2726f4b41f73b35ed4"
+    },
+    {
+      "phase": "B",
+      "file": "2026-09-22-browser-B.png",
+      "sha256": "8f685672fd76c2eb0a114344079017195791909b6da7b9c8e870d7bbd24f3397"
+    },
+    {
+      "phase": "restored-A",
+      "file": "2026-09-22-browser-restored-A.png",
+      "sha256": "976206412fe7bdc933f4303141cdd0f44cdf641b2f396b2726f4b41f73b35ed4"
+    }
+  ],
+  "raw_source_sha256": [
+    {
+      "run": "issue2-percent-path-f911278-638f9a68",
+      "file": "activate-b-1790082478913162529.json",
+      "sha256": "5272905c3045fc27374533eedaf8c5e2eb85893269e1b31b8be5aec9127310ca"
+    },
+    {
+      "run": "issue2-percent-path-f911278-638f9a68",
+      "file": "checkpoint-A-1790082436541647134.json",
+      "sha256": "706899f35d09d9c75ce6540ffc109e822ad8d3518d14277558824d790a8463c6"
+    },
+    {
+      "run": "issue2-percent-path-f911278-638f9a68",
+      "file": "checkpoint-B-1790082488814290050.json",
+      "sha256": "d2f3e30405d3a230b7b39b5957bdc3574ad8e877a0394ff4b6edf4473a0c1c01"
+    },
+    {
+      "run": "issue2-percent-path-f911278-638f9a68",
+      "file": "checkpoint-B-command.json",
+      "sha256": "88515709d92e3caa3c4443aa2d7ebbc5f920458d1a579bc8b065aae7a8b244e7"
+    },
+    {
+      "run": "issue2-percent-path-f911278-638f9a68",
+      "file": "checkpoint-restored-A-1790082523353024779.json",
+      "sha256": "fa6a2af11cbef3276d3933a2e69f57b3f65dcfbbaaab94dec0b535f500ecdc74"
+    },
+    {
+      "run": "issue2-percent-path-f911278-638f9a68",
+      "file": "checkpoint-restored-A-command.json",
+      "sha256": "5cc4e200b11a3f057b4a688d59e55201cdb68df68172473202ebfbc92f5fd166"
+    },
+    {
+      "run": "issue2-percent-path-f911278-638f9a68",
+      "file": "cleanup-1790082542003571927.json",
+      "sha256": "316012b21430eda76344ce1fef0b265ada3fd8aba083a1ab877f69aae2d60862"
+    },
+    {
+      "run": "issue2-percent-path-f911278-638f9a68",
+      "file": "coordinator-browser-client-A.json",
+      "sha256": "06ba8e9bced177ac73836759844acd472a21c9ca871ccdd6cefa55172e6e977d"
+    },
+    {
+      "run": "issue2-percent-path-f911278-638f9a68",
+      "file": "coordinator-browser-client-B.json",
+      "sha256": "c6b4f852b13655830cc1682385766546eb09efd82562939428960f12246ccd60"
+    },
+    {
+      "run": "issue2-percent-path-f911278-638f9a68",
+      "file": "coordinator-browser-client-restored-A.json",
+      "sha256": "011067dd9c9352d871d1a6d03c3d105fcf07659ecf87da8231a3ad04727eed0b"
+    },
+    {
+      "run": "issue2-percent-path-f911278-638f9a68",
+      "file": "coordinator-provenance.md",
+      "sha256": "c2cd050675726586a93876bedeee06fb0719c0545cb4ee0ec40c3c16dc9e99ea"
+    },
+    {
+      "run": "issue2-percent-path-f911278-638f9a68",
+      "file": "preflight-1790082112137479615.json",
+      "sha256": "18f7a0f4183a5f2e2dc2f019786889ef79285111b463a1e7d6f7885eb2165aa0"
+    },
+    {
+      "run": "issue2-percent-path-f911278-638f9a68",
+      "file": "prepare-1790082426115711530.json",
+      "sha256": "f7d8e69ce81739592fb10520f1e708cbdad2f02c11a0b883ae210f7cf39a8ddd"
+    },
+    {
+      "run": "issue2-percent-path-f911278-638f9a68",
+      "file": "probe.json",
+      "sha256": "55ba7e0d6e6d83d2d252b9768979edba4bb4a72b7e4177b55a1f6a34fed4a1fa"
+    },
+    {
+      "run": "issue2-percent-path-f911278-638f9a68",
+      "file": "restore-a-1790082522901938035.json",
+      "sha256": "15656852344054356c252b2cd4db08bf251c6f023fc17941f9987764ea2b4d7b"
+    },
+    {
+      "run": "issue2-self-status-71fd9dd-c7be839f",
+      "file": "checkpoint-A-failed-1790081852848196021.json",
+      "sha256": "c7d91404c0e1b5037d10280fb3f26f01dfeb4f62d40051192ff65667ec088d0c"
+    },
+    {
+      "run": "issue2-self-status-71fd9dd-c7be839f",
+      "file": "cleanup-1790081875039021198.json",
+      "sha256": "6317d81c91b86e9e6e7642f8c508b2a055225ee8ccc17b488b275587a8e92945"
+    },
+    {
+      "run": "issue2-self-status-71fd9dd-c7be839f",
+      "file": "operation-failed-1790081852849332460.json",
+      "sha256": "ddb7e44a7b3b67a897e9202f42c9b5a90cd92cbc903ba25acfb664cb75ab39dd"
+    },
+    {
+      "run": "issue2-self-status-71fd9dd-c7be839f",
+      "file": "preflight-1790081564343179027.json",
+      "sha256": "86dabc7544b110b4517126a657722a69161112d1d536b40fcbbe6e3b87685ce0"
+    },
+    {
+      "run": "issue2-self-status-71fd9dd-c7be839f",
+      "file": "prepare-1790081843115986693.json",
+      "sha256": "1eba1c70997e1dea76346df1f02cf8d9855804e9d03150e01534b4f04a9b759e"
+    },
+    {
+      "run": "issue2-self-status-71fd9dd-c7be839f",
+      "file": "probe.json",
+      "sha256": "b047820ac6197a9e2564d00774ae47c8b7a47b9e4fb619be2d209d45087f9403"
+    }
+  ]
+}
