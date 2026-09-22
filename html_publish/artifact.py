@@ -174,10 +174,10 @@ def capture(
     site_root.mkdir(parents=True)
     _git.init_bare(identity_repo, object_format, deadline)
 
-    entries: list[FileEntry] = []
+    staged: list[tuple[PurePosixPath, int]] = []
     total_bytes = 0
     for source_file, relative in _iter_source(source):
-        if len(entries) >= limits.max_files:
+        if len(staged) >= limits.max_files:
             raise PublishError(
                 "input_limit",
                 "capture",
@@ -188,10 +188,9 @@ def capture(
         remaining_bytes = limits.max_bytes - total_bytes
         size = _copy_stable(source_file, destination, deadline, remaining_bytes)
         total_bytes += size
-        blob = _git.hash_file(identity_repo, destination, deadline, write=True)
-        entries.append(FileEntry(RelativePath(relative.as_posix()), size, blob))
+        staged.append((relative, size))
 
-    if not entries:
+    if not staged:
         raise PublishError(
             "invalid_input",
             "capture",
@@ -205,6 +204,11 @@ def capture(
             "A directory artifact must contain index.html",
             "fix_input",
         )
+    blobs = _git.hash_files(identity_repo, site_root, [path for path, _ in staged], deadline)
+    entries = [
+        FileEntry(RelativePath(path.as_posix()), size, blob)
+        for (path, size), blob in zip(staged, blobs, strict=True)
+    ]
     entries.sort(key=lambda entry: str(entry.path).encode("utf-8"))
     revision = _git.make_site_tree(
         identity_repo,

@@ -17,6 +17,7 @@ import threading
 import time
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Sequence
 from pathlib import Path
@@ -218,6 +219,33 @@ class PublisherCliTest(unittest.TestCase):
         self.assertEqual(payload["differences"]["added"], ["index.html"])
         self.assertFalse(self.archive.exists())
         self.assertFalse(self.runtime.exists())
+
+    def test_newline_temporary_parent_preserves_served_bytes(self) -> None:
+        temporary_parent = self.root / "temporary\nparent"
+        temporary_parent.mkdir()
+        source = self.root / "site"
+        source.mkdir()
+        files = {
+            "index.html": b"<!doctype html><h1>exact bytes</h1>\n",
+            "café space.txt": b"\x00binary\ncontent\xff",
+        }
+        for name, contents in files.items():
+            (source / name).write_bytes(contents)
+        arguments = ("--name", "report", "--source", str(source), "--target", self.base_url)
+        environment = {"TMPDIR": str(temporary_parent)}
+
+        planned = self.run_cli("plan", *arguments, env=environment)
+        self.assertEqual(planned.returncode, 0, planned.stderr)
+        self.assertEqual(self.payload(planned)["file_count"], len(files))
+        published = self.run_cli("publish", *arguments, env=environment)
+        self.assertEqual(published.returncode, 0, published.stderr)
+        report = self.payload(published)
+        self.assertEqual(report["verification"]["result"], "passed")
+        self.assertEqual(report["active_revision"], self.payload(planned)["requested_revision"])
+        for name, contents in files.items():
+            url = self.base_url + "report/" + urllib.parse.quote(name)
+            with urllib.request.urlopen(url) as response:
+                self.assertEqual(response.read(), contents)
 
     def test_publish_file_and_identical_retry_use_one_commit(self) -> None:
         source = self.root / "report.html"
