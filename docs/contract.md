@@ -200,6 +200,9 @@ newer expectation.
 
 ## S6. Delivery and freshness
 
+The read-only loopback helper must start serving the health endpoint without waiting for a reverse
+DNS lookup of its bound address.
+
 Verification compares the committed path set with the local export, then checks the directory
 entry URL, `index.html` with HTML content type, and every expected file over the stable HTTPS
 URL. Percent-encode path segments exactly once; redirects may remain only within the same origin

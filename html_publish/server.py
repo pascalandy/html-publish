@@ -33,6 +33,16 @@ class ServerConfig:
     port: int
 
 
+class PublicationHTTPServer(http.server.ThreadingHTTPServer):
+    def server_bind(self) -> None:
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        if not isinstance(host, str):
+            raise TypeError("server bind address must be text")
+        self.server_name = host
+        self.server_port = port
+
+
 class PublicationRequestHandler(http.server.SimpleHTTPRequestHandler):
     def __init__(
         self,
@@ -190,7 +200,7 @@ def _parse_args(argv: Sequence[str] | None) -> ServerConfig:
 def main(argv: Sequence[str] | None = None) -> int:
     config = _parse_args(argv)
     handler = functools.partial(PublicationRequestHandler, directory=str(config.directory))
-    server = http.server.ThreadingHTTPServer((config.bind, config.port), handler)
+    server = PublicationHTTPServer((config.bind, config.port), handler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

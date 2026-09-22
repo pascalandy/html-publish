@@ -111,18 +111,26 @@ class PublicationServerTest(unittest.TestCase):
         self.assertEqual(headers["Cache-Control"], "no-store")
         self.assertEqual(body, b"ok\n")
 
-    def test_future_public_directory_can_appear_after_server_start(self) -> None:
+    def test_future_public_directory_can_appear_without_reverse_dns(self) -> None:
         future_runtime = Path(self.temporary.name) / "future-runtime"
         future_public = future_runtime / "public"
         future_port = self._unused_port()
+        entry = (
+            "import socket\n"
+            "from html_publish.server import main\n"
+            "def reject(_host):\n"
+            "    raise RuntimeError('reverse DNS attempted')\n"
+            "socket.getfqdn = reject\n"
+            "raise SystemExit(main())\n"
+        )
         future_log_path = Path(self.temporary.name) / "future-server.log"
         future_log = future_log_path.open("w", encoding="utf-8")
         self.addCleanup(future_log.close)
         process = subprocess.Popen(
             [
                 sys.executable,
-                "-m",
-                "html_publish.server",
+                "-c",
+                entry,
                 "--directory",
                 str(future_public),
                 "--port",
