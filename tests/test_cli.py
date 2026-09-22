@@ -43,11 +43,13 @@ class QuietServer(http.server.ThreadingHTTPServer):
 
 class SlowHandler(http.server.BaseHTTPRequestHandler):
     body = b"<!doctype html><h1>slow</h1>\n" + b"." * 256
+    request_started = threading.Event()
 
     def log_message(self, format: str, *args: object) -> None:
         pass
 
     def do_GET(self) -> None:
+        self.request_started.set()
         if self.path not in {"/report/", "/report/index.html"}:
             self.send_error(404)
             return
@@ -883,30 +885,28 @@ class PublisherCliTest(unittest.TestCase):
         self.assertFalse(self.runtime.exists())
 
     def test_total_deadline_interrupts_a_trickling_http_body(self) -> None:
-        self._stop_server()
-        slow_server = QuietServer(("127.0.0.1", 0), SlowHandler)
-        slow_thread = threading.Thread(target=slow_server.serve_forever, daemon=True)
-        slow_thread.start()
-        address = slow_server.server_address
-        slow_url = f"http://{address[0]}:{address[1]}/"
-        payload = self.config_payload()
-        payload["base_url"] = slow_url
-        payload["limits"]["command_seconds"] = 10
-        payload["limits"]["verification_seconds"] = 10
-        self.config.write_text(json.dumps(payload), encoding="utf-8")
         source = self.root / "report.html"
         source.write_bytes(SlowHandler.body)
+        initial_config = self.config_payload()
+        initial_config["limits"]["command_seconds"] = 120
+        self.config.write_text(json.dumps(initial_config), encoding="utf-8")
+        published = self.run_cli(
+            "publish", "--name", "report", "--source", str(source), "--target", self.base_url
+        )
+        self.assertEqual(published.returncode, 0, published.stdout)
+        active_revision = self.payload(published)["active_revision"]
+
+        self._stop_server()
+        SlowHandler.request_started.clear()
+        slow_server = QuietServer(self.server.server_address, SlowHandler)
+        slow_thread = threading.Thread(target=slow_server.serve_forever, daemon=True)
+        slow_thread.start()
+        initial_config["limits"]["command_seconds"] = 10
+        initial_config["limits"]["verification_seconds"] = 10
+        self.config.write_text(json.dumps(initial_config), encoding="utf-8")
         started = time.monotonic()
         try:
-            result = self.run_cli(
-                "publish",
-                "--name",
-                "report",
-                "--source",
-                str(source),
-                "--target",
-                slow_url,
-            )
+            result = self.run_cli("verify", "--name", "report")
         finally:
             slow_server.shutdown()
             slow_server.server_close()
@@ -914,10 +914,12 @@ class PublisherCliTest(unittest.TestCase):
         elapsed = time.monotonic() - started
 
         self.assertEqual(result.returncode, 1)
+        self.assertTrue(SlowHandler.request_started.is_set())
         response = self.payload(result)
         self.assertEqual(response["error"]["code"], "command_timeout")
         self.assertEqual(response["verification"]["result"], "failed")
-        self.assertEqual(response["effects"], {"archive_advanced": True, "activated": True})
+        self.assertEqual(response["active_revision"], active_revision)
+        self.assertEqual(response["effects"], {"archive_advanced": False, "activated": False})
         self.assertLess(elapsed, 20)
 
     def test_status_reports_saved_and_selected_facts_without_http(self) -> None:
