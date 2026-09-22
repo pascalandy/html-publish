@@ -1800,6 +1800,105 @@ class PublisherCliTest(unittest.TestCase):
             with urllib.request.urlopen(f"{response['url']}{path}", timeout=2) as served:
                 self.assertEqual(served.read(), body)
 
+    def test_identical_retry_preserves_known_removed_path_verification(self) -> None:
+        stale_enabled = True
+
+        class StaleHandler(QuietHandler):
+            def do_GET(self) -> None:
+                if stale_enabled and self.path in {"/report/old.txt", "/report/foreign.txt"}:
+                    body = b"old asset\n"
+                    self.send_response(200)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                super().do_GET()
+
+        self.server.RequestHandlerClass = functools.partial(
+            StaleHandler, directory=str(self.runtime / "public")
+        )
+        source = self.root / "site"
+        source.mkdir()
+        (source / "index.html").write_bytes(b"<!doctype html><h1>A</h1>\n")
+        (source / "old.txt").write_bytes(b"old asset\n")
+        arguments = [
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+        ]
+        published = self.run_cli(*arguments)
+        self.assertEqual(published.returncode, 0, published.stdout)
+        revision_a = self.payload(published)["active_revision"]
+        (source / "index.html").write_bytes(b"<!doctype html><h1>B</h1>\n")
+        (source / "old.txt").unlink()
+        retry_arguments = [*arguments, "--expected-revision", revision_a, "--request-id", "retry-b"]
+        failed = self.run_cli(*retry_arguments)
+        self.assertEqual(failed.returncode, 1, failed.stdout)
+        failed_payload = self.payload(failed)
+        commit_b = failed_payload["archive_commit"]
+        revision_b = failed_payload["requested_revision"]
+        self.assertEqual(failed_payload["active_revision"], revision_b)
+        self.assertEqual(failed_payload["error"]["code"], "delivery_failure")
+        self.assertEqual(failed_payload["error"]["phase"], "verify")
+        self.assertEqual(failed_payload["effects"], {"archive_advanced": True, "activated": True})
+
+        retry = self.run_cli(*retry_arguments)
+        self.assertEqual(retry.returncode, 1, retry.stdout)
+        retry_payload = self.payload(retry)
+        self.assertEqual(retry_payload["error"]["code"], "delivery_failure")
+        self.assertEqual(retry_payload["error"]["phase"], "verify")
+        self.assertEqual(retry_payload["verification"]["result"], "failed")
+        self.assertEqual(retry_payload["effects"], {"archive_advanced": False, "activated": False})
+        self.assertEqual(retry_payload["archive_commit"], commit_b)
+        self.assertEqual(retry_payload["active_revision"], revision_b)
+        with urllib.request.urlopen(f"{self.base_url}report/old.txt", timeout=2) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.read(), b"old asset\n")
+        verified = self.run_cli("verify", "--name", "report")
+        self.assertEqual(verified.returncode, 0, verified.stdout)
+        self.assertNotIn("removed_paths", self.payload(verified)["verification"]["scope"])
+
+        foreign = self.root / "foreign"
+        foreign.mkdir()
+        (foreign / "index.html").write_bytes(b"<!doctype html><h1>other</h1>\n")
+        (foreign / "foreign.txt").write_bytes(b"old asset\n")
+        other = self.run_cli(
+            "publish", "--name", "other", "--source", str(foreign), "--target", self.base_url
+        )
+        self.assertEqual(other.returncode, 0, other.stdout)
+        foreign_revision = self.payload(other)["active_revision"]
+        for expectation in (None, revision_b, "f" * 40, foreign_revision):
+            with self.subTest(expectation=expectation):
+                guard = [] if expectation is None else ["--expected-revision", expectation]
+                unchanged = self.run_cli(*arguments, *guard)
+                self.assertEqual(unchanged.returncode, 0, unchanged.stdout)
+                payload = self.payload(unchanged)
+                self.assertEqual(payload["outcome"], "unchanged")
+                self.assertEqual(payload["archive_commit"], commit_b)
+                self.assertNotIn("removed_paths", payload["verification"]["scope"])
+
+        stale_enabled = False
+        repaired = self.run_cli(*retry_arguments)
+        self.assertEqual(repaired.returncode, 0, repaired.stdout)
+        repaired_payload = self.payload(repaired)
+        self.assertEqual(repaired_payload["outcome"], "unchanged")
+        self.assertEqual(repaired_payload["archive_commit"], commit_b)
+        self.assertEqual(
+            repaired_payload["effects"], {"archive_advanced": False, "activated": False}
+        )
+        self.assertEqual(repaired_payload["verification"]["result"], "passed")
+        self.assertIn("removed_paths", repaired_payload["verification"]["scope"])
+        with self.assertRaises(urllib.error.HTTPError) as removed:
+            urllib.request.urlopen(f"{self.base_url}report/old.txt", timeout=2)
+        self.assertEqual(removed.exception.code, 404)
+        history = self.run_cli("history", "--name", "report")
+        self.assertEqual(history.returncode, 0, history.stdout)
+        self.assertEqual(len(self.payload(history)["entries"]), 2)
+
     def test_file_and_directory_transitions_appear_in_plan_differences(self) -> None:
         file_site = self.root / "file-site"
         file_site.mkdir()
@@ -1851,6 +1950,20 @@ class PublisherCliTest(unittest.TestCase):
         )
         self.assertEqual(updated.returncode, 0, updated.stderr)
         directory_revision = self.payload(updated)["active_revision"]
+        retry = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(directory_site),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            file_revision,
+        )
+        self.assertEqual(retry.returncode, 0, retry.stdout)
+        self.assertEqual(self.payload(retry)["outcome"], "unchanged")
+        self.assertNotIn("removed_paths", self.payload(retry)["verification"]["scope"])
         self.assertEqual(
             self.git("ls-tree", "-r", "--name-only", directory_revision).splitlines(),
             ["assets/style.css", "index.html"],

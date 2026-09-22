@@ -31,3 +31,4 @@ Preconditions:
 - Run the offline step last because `offline` stops the owned server.
 - A local integrity failure occurs before delivery and therefore reports delivery `not_checked`.
 - Verification never activates a saved-but-inactive revision.
+- Standalone verify has no previous-revision input and does not claim `removed_paths`. Use the [identical retry recipe](identical-retry.md) to recheck deletions with the original reachable expectation.

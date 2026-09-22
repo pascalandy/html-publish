@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import functools
 import http.server
 import io
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -14,11 +16,12 @@ import threading
 import time
 import types
 import unittest
+import urllib.request
 from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from html_publish import cli, store
+from html_publish import _git, cli, store
 from html_publish.model import Deadline
 from tests.test_cli import QuietServer
 
@@ -396,6 +399,85 @@ class RecoveryTest(unittest.TestCase):
         self.assertEqual(payload["error"]["code"], "activation_failure")
         self.assertEqual(payload["error"]["phase"], "activate")
         self.assertEqual(payload["effects"], {"archive_advanced": True, "activated": False})
+
+    def test_export_write_failure_retains_private_bytes_and_reuses_saved_commit(self) -> None:
+        source = self.root / "report.html"
+        body_a = b"<!doctype html><h1>A</h1>\n"
+        body_b = b"<!doctype html><h1>B</h1>\n"
+        source.write_bytes(body_a)
+        source.chmod(0o755)
+        published = self.run_cli(*self.publish_arguments(source))
+        self.assertEqual(published.returncode, 0, published.stdout)
+        revision_a = self.payload(published)["active_revision"]
+        selected_a = (self.runtime / "public" / "report").readlink()
+        source.write_bytes(body_b)
+        arguments = [*self.publish_arguments(source, revision_a), "--request-id", "write-b"]
+        partial = body_b[:12]
+
+        def failing_export(
+            git_dir: Path, object_id: str, destination: Path, deadline: Deadline
+        ) -> None:
+            self.assertTrue(destination.is_relative_to(self.runtime / "staging"))
+            with destination.open("xb") as output:
+                output.write(partial)
+                output.flush()
+                raise OSError(errno.ENOSPC, "No space left on device", str(destination))
+
+        report = io.StringIO()
+        with (
+            mock.patch.object(_git, "export_blob", failing_export),
+            contextlib.redirect_stdout(report),
+        ):
+            exit_code = cli.main(["--config", str(self.config), "--json", *arguments])
+        self.assertEqual(exit_code, 1)
+        failed = json.loads(report.getvalue())
+        revision_b = failed["requested_revision"]
+        saved_commit = failed["archive_commit"]
+        self.assertEqual(failed["error"]["code"], "export_failure")
+        self.assertEqual(failed["error"]["phase"], "export")
+        self.assertIn("No space left on device", failed["error"]["message"])
+        self.assertIn(f"({len(partial)} bytes)", failed["error"]["message"])
+        self.assertEqual(failed["effects"], {"archive_advanced": True, "activated": False})
+        self.assertEqual(failed["archived_revision"], revision_b)
+        self.assertEqual(failed["active_revision"], revision_a)
+        self.assertEqual(failed["verification"]["result"], "not_checked")
+        self.assertEqual((self.runtime / "public" / "report").readlink(), selected_a)
+        self.assertEqual([path.name for path in (self.runtime / "public").iterdir()], ["report"])
+        stages = list((self.runtime / "staging").iterdir())
+        self.assertEqual(len(stages), 1)
+        self.assertEqual(stat.S_IMODE(stages[0].stat().st_mode), 0o700)
+        self.assertEqual((stages[0] / "index.html").read_bytes(), partial)
+        self.assertFalse((self.runtime / "releases" / revision_b).exists())
+        with urllib.request.urlopen(f"{self.base_url}report/", timeout=2) as response:
+            self.assertEqual(response.read(), body_a)
+        status = self.run_cli("status", "--name", "report")
+        self.assertEqual(status.returncode, 0, status.stdout)
+        self.assertEqual(
+            self.payload(status)["observation"]["saved"]["archive_commit"], saved_commit
+        )
+        self.assertEqual(self.payload(status)["observation"]["selection"]["revision"], revision_a)
+
+        retry = self.run_cli(*arguments)
+        self.assertEqual(retry.returncode, 0, retry.stdout)
+        recovered = self.payload(retry)
+        self.assertEqual(recovered["outcome"], "published")
+        self.assertEqual(recovered["archive_commit"], saved_commit)
+        self.assertEqual(recovered["active_revision"], revision_b)
+        self.assertEqual(recovered["effects"], {"archive_advanced": False, "activated": True})
+        self.assertEqual(recovered["verification"]["result"], "passed")
+        self.assertEqual(self.git("rev-list", "--count", "refs/heads/published"), "2")
+        self.assertEqual((stages[0] / "index.html").read_bytes(), partial)
+        release_file = self.runtime / "releases" / revision_b / "index.html"
+        self.assertEqual(stat.S_IMODE(release_file.stat().st_mode), 0o644)
+        self.assertEqual(release_file.stat().st_nlink, 1)
+        self.assertNotEqual(
+            (source.stat().st_dev, source.stat().st_ino),
+            (release_file.stat().st_dev, release_file.stat().st_ino),
+        )
+        self.assertTrue(self.git("ls-tree", revision_b).startswith("100644 blob "))
+        self.assertEqual(stat.S_IMODE(source.stat().st_mode), 0o755)
+        with urllib.request.urlopen(f"{self.base_url}report/", timeout=2) as response:
+            self.assertEqual(response.read(), body_b)
 
     def test_rename_failure_reports_export_failure_with_stage_usage(self) -> None:
         source = self.root / "report.html"
