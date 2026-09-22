@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shlex
@@ -37,7 +38,8 @@ def _run(argv: list[str], seconds: float) -> tuple[int, str]:
     try:
         stdout, stderr = process.communicate(timeout=max(0.001, seconds))
     except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGKILL)
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
         process.communicate()
         return 124, "command timed out"
     return process.returncode, (stdout or stderr).strip()[:65536]
@@ -101,7 +103,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def _http_check(url: str, remaining: float) -> Check:
+def _probe_http(url: str, remaining: float) -> Check:
     if remaining <= 0:
         return _check(
             "http_reachability",
@@ -156,6 +158,63 @@ def _http_check(url: str, remaining: float) -> Check:
             str(error),
             "Inspect URL, listener, and network access",
         )
+
+
+def _http_check(url: str, remaining: float) -> Check:
+    if remaining <= 0:
+        return _check(
+            "http_reachability",
+            "client_http",
+            "fail",
+            "Command budget expired",
+            "Increase --command-seconds",
+        )
+    try:
+        code, output = _run(
+            [sys.executable, "-m", "html_publish.doctor", "http", url, str(remaining)],
+            remaining,
+        )
+    except OSError as error:
+        return _check(
+            "http_reachability",
+            "client_http",
+            "fail",
+            str(error),
+            "Inspect the installed tool and network access",
+        )
+    if code == 124:
+        return _check(
+            "http_reachability",
+            "client_http",
+            "fail",
+            "HTTP probe exceeded the command budget",
+            "Increase --command-seconds",
+        )
+    if code != 0:
+        return _check(
+            "http_reachability",
+            "client_http",
+            "fail",
+            output or f"HTTP probe exited {code}",
+            "Inspect the installed tool",
+        )
+    try:
+        result: object = json.loads(output)
+    except json.JSONDecodeError:
+        result = None
+    typed = cast(dict[str, object], result) if isinstance(result, dict) else None
+    if typed is None or any(
+        not isinstance(typed.get(key), str)
+        for key in ("id", "scope", "status", "detail", "next_step")
+    ):
+        return _check(
+            "http_reachability",
+            "client_http",
+            "fail",
+            "HTTP probe returned an invalid result",
+            "Inspect the installed tool",
+        )
+    return cast(Check, typed)
 
 
 def run_doctor(
@@ -443,3 +502,9 @@ def run_doctor(
                     )
     checks.append(_http_check(url, deadline - time.monotonic()))
     return checks
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 4 or sys.argv[1] != "http":
+        raise SystemExit(2)
+    print(json.dumps(_probe_http(sys.argv[2], float(sys.argv[3]))))

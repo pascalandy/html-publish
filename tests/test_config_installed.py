@@ -436,6 +436,51 @@ class InstalledConfigurationTest(unittest.TestCase):
                     for check in cast(list[dict[str, str]], network["checks"])
                 )
             )
+            slow_dns = artifacts / "slow-dns"
+            slow_dns.mkdir()
+            (slow_dns / "sitecustomize.py").write_text(
+                "import os\nimport pathlib\nimport socket\nimport time\n"
+                "original = socket.getaddrinfo\n"
+                "def delayed(*args, **kwargs):\n"
+                "    pathlib.Path(os.environ['DNS_MARKER']).write_text('called')\n"
+                "    time.sleep(3)\n"
+                "    return original(*args, **kwargs)\n"
+                "socket.getaddrinfo = delayed\n"
+            )
+            marker = artifacts / "dns-called.txt"
+            environment["DNS_MARKER"] = str(marker)
+            previous_pythonpath = environment.get("PYTHONPATH")
+            environment["PYTHONPATH"] = str(slow_dns)
+            started = time.monotonic()
+            try:
+                bounded = command(
+                    cli,
+                    "doctor",
+                    "--role",
+                    "publisher",
+                    "--config",
+                    str(publisher),
+                    "--network",
+                    "--command-seconds",
+                    "1",
+                    "--json",
+                    exit_code=1,
+                )
+            finally:
+                environment.pop("DNS_MARKER")
+                if previous_pythonpath is None:
+                    environment.pop("PYTHONPATH")
+                else:
+                    environment["PYTHONPATH"] = previous_pythonpath
+            self.assertLess(time.monotonic() - started, 2)
+            self.assertEqual(marker.read_text(), "called")
+            http_check = next(
+                check
+                for check in cast(list[dict[str, str]], bounded["checks"])
+                if check["id"] == "http_reachability"
+            )
+            self.assertEqual(http_check["status"], "fail")
+            self.assertIn("command budget", http_check["detail"])
             self.assertFalse(calls.exists())
             self.assertEqual(publisher.read_bytes(), first_bytes)
             self.assertEqual(publisher.stat().st_mtime_ns, first_stat.st_mtime_ns)
