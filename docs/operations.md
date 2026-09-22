@@ -108,6 +108,59 @@ The URL remains `https://om1.donkey-arcturus.ts.net:8444/html-publish/release-no
 
 If SSH fails before the remote invocation, the client reports that publication did not start. If SSH loses the result after a publish invocation starts, run `status` before retrying because the outcome is unknown
 
+## Publication recovery and cleanup
+
+The installed CLI observes and recovers publications without manual Git commands. Read the saved-versus-active facts for one name
+
+```sh
+uv run html-publish --config publisher.json --json status \
+  --name release-notes
+```
+
+Revalidate the selected export and probe the stable URL without activating anything
+
+```sh
+uv run html-publish --config publisher.json --json verify \
+  --name release-notes
+```
+
+List the bounded page history with restore identifiers and changed-path summaries
+
+```sh
+uv run html-publish --config publisher.json --json history \
+  --name release-notes
+```
+
+Restore an earlier revision through the same guarded workflow. Restore requires the currently active revision as `--expected-revision`, appends history instead of rewinding, and keeps the stable URL
+
+```sh
+commit="<archive_commit from history>"
+
+uv run html-publish --config publisher.json --json restore \
+  --name release-notes \
+  --archive-commit "$commit" \
+  --expected-revision "<active_revision from status>"
+```
+
+### Interrupted publications
+
+An interrupted publication leaves one of three durable states, and `status` reports each one. Before the archive branch advances, the previous saved and active state remains authoritative and the original input is retried. After the branch advances but before selection, `status` reports the saved-but-inactive revision and an identical retry with the original valid expectation reuses it without a duplicate commit. After the release rename, the same retry validates and reuses the existing export. After selection, the page may be active but unverified: run `verify`, then repeat identical input, which returns `unchanged` without another commit. Changed live content against the old expectation conflicts
+
+A process kill releases the publication lock, so a retry can acquire it immediately. Process-interruption recovery is proven; power-loss resilience is not claimed
+
+### Private failed staging
+
+A failed export or a failed activation keeps its private staging directory under `runtime/staging` and reports its path and size in the error. Successful commands remove only their own staging. `status` reports pending staging entries and their total size under `staging`
+
+Reviewed manual cleanup after confirming no publication is in flight:
+
+1. Run `status` and confirm no other publisher process holds the lock
+2. Run `verify` for every name you expect to be active and confirm each passes
+3. Remove only `runtime/staging/release-*` and `runtime/staging/link-*` entries
+4. Leave `runtime/releases`, `runtime/public`, and the Git archive untouched
+
+An orphaned Git ref lock is reported in the `archive_failure` message and is never removed automatically. After confirming no publisher process runs, remove the named `*.lock` file under the archive and retry
+
 ## Application rollback
 
 Roll back to the previously installed application release
@@ -131,6 +184,6 @@ Reinstall the current checkout with `just deploy-om1` after a rollback
 
 - User linger is disabled on the verified host, and reboot persistence has not been verified
 - A lost SSH connection can leave its private `incoming` directory for operator inspection, and established SSH or SCP sessions have no total command deadline
-- Application rollback is available, while publication history and restore remain deferred
-- Durable receipts and broad transfer, filesystem, interruption, browser, and concurrency fault matrices remain deferred
+- Application rollback changes the application release pointer; it does not restore publication content. Publication restore is available through the installed CLI
+- Durable receipts, remote backup, and the browser, transfer, and second-device fault matrices remain deferred
 - The workflow is a controlled private MVP and is not production-ready

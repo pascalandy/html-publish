@@ -20,15 +20,27 @@ html-publish --config publisher.json --json publish \
   --target https://om1.example.ts.net/pages/ \
   --expected-revision "$active_revision" \
   --request-id attempt-001
+
+html-publish --config publisher.json --json verify \
+  --name release-notes
+
+html-publish --config publisher.json --json history \
+  --name release-notes --limit 20 --diff "$saved_revision"
+
+html-publish --config publisher.json --json restore \
+  --name release-notes --archive-commit "$commit" \
+  --target https://om1.example.ts.net/pages/ \
+  --expected-revision "$active_revision"
 ```
 
-The MVP supports creation, guarded replacement, identical retries, and read-only observation. A caller reads `active_revision` from `status`, then supplies it as `--expected-revision` when planning and publishing changed content. The active revision acts as a compare-and-swap guard, while the publication URL stays stable. History, restore, receipts, and production installation remain later work.
+The publisher supports creation, guarded replacement, identical retries, read-only observation, explicit verification, bounded history, and guarded restore. A caller reads `active_revision` from `status`, then supplies it as `--expected-revision` when planning, publishing, or restoring changed content. The active revision acts as a compare-and-swap guard, while the publication URL stays stable. Durable receipts and production installation remain later work.
 
 ## Data shape
 
 The publisher keeps saved, selected, and verified facts separate.
 
 ```python
+@dataclass(frozen=True)
 class PublicationStore:
     def plan(
         self,
@@ -41,6 +53,22 @@ class PublicationStore:
         self,
         name: Name,
         source: Path,
+        target: str,
+        expected_revision: Revision | None,
+        request_id: str | None,
+    ) -> Report: ...
+    def verify_page(self, name: Name) -> Report: ...
+    def history(
+        self,
+        name: Name,
+        limit: int,
+        after: str | None,
+        diff_revision: str | None,
+    ) -> Report: ...
+    def restore(
+        self,
+        name: Name,
+        archive_commit: str,
         target: str,
         expected_revision: Revision | None,
         request_id: str | None,
@@ -66,7 +94,7 @@ class Verification:
     revision: Revision | None
 ```
 
-`Selection` distinguishes absent, selected, degraded, and unobserved state. A selected value from `status` proves the link shape and archive membership. `publish` validates every path and byte before it treats the release as healthy.
+`Selection` distinguishes absent, selected, degraded, and unobserved state. A selected value from `status` proves the link shape and archive membership. `publish` validates every path and byte before it treats the release as healthy. `verify` revalidates the selected export and probes delivery without activating. `history` walks the page-changing commits reachable from the branch tip and reports restore identifiers with changed-path summaries and optional capped text differences.
 
 ## Module ownership
 
@@ -74,12 +102,12 @@ class Verification:
 | --- | --- |
 | `cli.py` | Arguments, configuration parsing, JSON v1, plain output, and exit codes |
 | `artifact.py` | Source capture, accepted paths, exact bytes, Git tree identity, and HTML warnings |
-| `store.py` | Git history, runtime layout, the process lock, mutation order, state observation, and partial effects |
-| `delivery.py` | URL construction, redirect boundaries, HTTP body comparison, and delivery evidence |
+| `store.py` | Git history, runtime layout, the process lock, mutation order, state observation, history, restore, and partial effects |
+| `delivery.py` | URL construction, redirect boundaries, HTTP body comparison, delivery evidence, and host diagnostics |
 
 `_git.py` is a private mechanism shared by capture and storage. It owns the one sanitized Git invocation policy and exposes no publication decisions
 
-`PublicationStore` is the only mutation owner. The caller cannot archive without selection checks or activate before archive persistence.
+`PublicationStore` is the only mutation owner. The caller cannot archive without selection checks or activate before archive persistence. `restore` rebuilds the captured site from committed blobs and enters the same guarded transaction as `publish`, so both share the decision rules, the lock, and the verification.
 
 `plan` and `publish` share one decision over the requested revision, expected revision, saved page, and active selection. The result is `create`, `update`, `unchanged`, or `conflict`. `plan` observes the full local state and computes the exact requested revision and file differences under the process lock, but it writes only to temporary storage.
 
@@ -96,9 +124,9 @@ class Verification:
 9. Export committed bytes into private staging and validate the complete release
 10. Rename the immutable release into place
 11. Rename a privately staged symlink into `public/<name>`
-12. Verify the stable URL before releasing the lock
+12. Verify the stable URL, including removed paths from the replaced active tree, before releasing the lock
 
-The lock covers observation, the compare-and-swap decision, activation, and HTTP verification because every name shares one archive branch. A replacement materializes the complete requested site, so files omitted from the new artifact disappear from the active URL while unrelated publications remain intact. Identical retry takes precedence over the revision guard because a response can be lost after the update succeeds. The full interruption and persistence fault matrix remains in the recovery ticket.
+The lock covers observation, the compare-and-swap decision, activation, and HTTP verification because every name shares one archive branch. A replacement materializes the complete requested site, so files omitted from the new artifact disappear from the active URL while unrelated publications remain intact. Identical retry takes precedence over the revision guard because a response can be lost after the update succeeds. Verification of a replacement also probes the removed paths of the replaced active tree, skipping paths that the new artifact uses as directories. A failed publication leaves the observed state and partial effects; recovery uses `status`, `verify`, `history`, and an identical retry, never automatic rollback. The full process-kill matrix is proven in `tests/test_recovery.py`.
 
 ## Synthesis decision
 

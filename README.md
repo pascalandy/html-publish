@@ -119,16 +119,68 @@ uv run html-publish --config publisher.json --json publish \
 
 The update keeps the stable URL. A competing update based on revision A returns a conflict. Retrying the same page B is `unchanged`, even with revision A as the expectation
 
+## Verify, review history, and restore
+
+Revalidate the selected export and probe delivery without changing anything
+
+```sh
+uv run html-publish --config publisher.json --json verify \
+  --name release-notes
+```
+
+List the bounded page history with restore identifiers and changed-path summaries
+
+```sh
+uv run html-publish --config publisher.json --json history \
+  --name release-notes
+```
+
+Review what differs between an earlier revision and the latest saved content
+
+```sh
+saved_revision="$(
+  uv run html-publish --config publisher.json --json history \
+    --name release-notes | jq -r .archived_revision
+)"
+uv run html-publish --config publisher.json --json history \
+  --name release-notes --diff "$saved_revision"
+```
+
+Restore the page to an earlier archive commit. Restore shares the guarded workflow, expects the currently active revision, and appends history rather than rewinding it
+
+```sh
+commit="$(
+  uv run html-publish --config publisher.json --json history \
+    --name release-notes | jq -r '.entries[-1].archive_commit'
+)"
+uv run html-publish --config publisher.json --json restore \
+  --name release-notes \
+  --archive-commit "$commit" \
+  --target http://127.0.0.1:8000/ \
+  --expected-revision "$revision_a" \
+  --request-id attempt-restore
+```
+
+Diagnose configuration, DNS, and route drift without repairing anything
+
+```sh
+uv run html-publish --config publisher.json --json status \
+  --name release-notes --host-check
+```
+
 ## Current boundary
 
 The MVP implements the first vertical slice of the [publisher architecture](docs/architecture.md)
 
-- `plan`, `publish`, and `status`
+- `plan`, `publish`, `status`, `verify`, `history`, and `restore`
 - One HTML file or a directory with `index.html`
 - A bare Git archive with one publisher-owned branch
 - Immutable releases and atomic public symlink selection
 - Guarded replacement at the stable URL with active revision compare-and-swap
-- Versioned JSON and plain successful publish output
-- Full-body HTTP verification for the directory URL, every file, and a missing-path sentinel
+- Guarded restore at a reachable archive commit that appends history
+- Interruption recovery from real process kills at every durable transition
+- Versioned JSON and plain successful publish/restore output
+- Full-body HTTP verification for the directory URL, every file, removed paths, and a missing-path sentinel
+- Host diagnostics for configuration, DNS, and route drift without repair
 
-History, publication restore, interruption and filesystem fault injection, durable receipts, and broad browser and concurrency matrices remain later tickets. The controlled `om1` deployment is an MVP and is not production-ready
+Durable receipts, the authoring-skill cutover, om1 persistence evidence, and broad browser and concurrency matrices remain later tickets. The controlled `om1` deployment is an MVP and is not production-ready

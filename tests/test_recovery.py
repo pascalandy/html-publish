@@ -12,6 +12,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 from pathlib import Path
 from typing import Any
@@ -471,6 +472,42 @@ class RecoveryTest(unittest.TestCase):
         retry = self.run_cli(*self.publish_arguments(source, revision_a))
         self.assertEqual(retry.returncode, 0, retry.stderr)
         self.assertEqual(self.payload(retry)["outcome"], "published")
+
+    def test_source_change_during_capture_fails_without_persistent_state(self) -> None:
+        source = self.root / "report.html"
+        source.write_bytes(b"<!doctype html><h1>A</h1>\n")
+        original_fstat = os.fstat
+        calls = {"count": 0}
+
+        def changing_fstat(fd: int) -> Any:
+            result = original_fstat(fd)
+            calls["count"] += 1
+            if calls["count"] > 1:
+                return types.SimpleNamespace(
+                    st_mode=result.st_mode,
+                    st_dev=result.st_dev,
+                    st_ino=result.st_ino,
+                    st_size=result.st_size + 1,
+                    st_mtime_ns=result.st_mtime_ns + 1_000_000,
+                )
+            return result
+
+        report = io.StringIO()
+        with (
+            mock.patch("os.fstat", changing_fstat),
+            contextlib.redirect_stdout(report),
+        ):
+            exit_code = cli.main(
+                ["--config", str(self.config), "--json", *self.publish_arguments(source)]
+            )
+
+        self.assertEqual(exit_code, 1)
+        payload = json.loads(report.getvalue())
+        self.assertEqual(payload["error"]["code"], "source_changed")
+        self.assertEqual(payload["error"]["phase"], "capture")
+        self.assertEqual(payload["error"]["next_action"]["kind"], "retry")
+        self.assertFalse(self.archive.exists())
+        self.assertFalse(self.runtime.exists())
 
     def test_git_child_timeout_is_reaped(self) -> None:
         stub = self.root / "stub-bin"
