@@ -27,6 +27,8 @@ operations and emits JSON by default. Both executables show help, version, and
 machine-readable command discovery without a configuration file or network access.
 The `html-publish artifact` group manages caller receipts through `publish`, `retry`, `status`,
 and `restore`; root help recommends it for durable publication.
+Artifact results, including usage errors, emit one JSON handoff by default. Discovery includes
+required positional arguments from the same parser as executable help.
 
 `--config`, `--json`, `--version`, and the publisher's `--command-seconds` may precede
 or follow a publisher operation. Remote connection and time-budget options may
@@ -350,6 +352,10 @@ a reachable archive commit. The six root publisher commands and their JSON v1 re
 remain unchanged. Artifact commands emit a separate JSON v1 handoff that reports receipt
 persistence, publisher effects, and delivery verification independently. The personal skill
 delegates to this installed workflow after its separate migration.
+The client configuration's command budget, or an explicit `--command-seconds` override, runs
+from artifact command entry through capture, receipt locking, inspection, and dispatch. The
+copy and lock limits remain ceilings inside that one budget. A retry never receives a fresh
+dispatch allowance after spending time on status inspection.
 
 The versioned receipt contains name, configured host/base URL, **accepted revision**, pending
 intent, and last observation. Before **every** dispatch, atomically save pending intent including

@@ -44,6 +44,17 @@ def _option(action: argparse.Action) -> dict[str, object]:
     }
 
 
+def _positional(action: argparse.Action) -> dict[str, object]:
+    return {
+        "name": action.dest,
+        "metavar": action.metavar or action.dest.upper(),
+        "required": action.required,
+        "nargs": action.nargs,
+        "value_type": getattr(action.type, "__name__", "string"),
+        "help": action.help,
+    }
+
+
 def command_schema(parser: argparse.ArgumentParser, executable: str) -> dict[str, object]:
     operations = next(action for action in parser._actions if action.dest == "operation")
     choices = cast(dict[str, argparse.ArgumentParser], operations.choices)
@@ -65,6 +76,15 @@ def command_schema(parser: argparse.ArgumentParser, executable: str) -> dict[str
             "examples": list(command._defaults["_examples"]),
             "effects": list(command._defaults["_effects"]),
         }
+        positionals = [
+            _positional(action)
+            for action in command._actions
+            if not action.option_strings
+            and action.dest != "help"
+            and not isinstance(action.choices, dict)
+        ]
+        if positionals:
+            result["positionals"] = positionals
         nested = next(
             (action for action in command._actions if isinstance(action.choices, dict)),
             None,

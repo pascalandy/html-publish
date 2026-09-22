@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import subprocess
@@ -44,9 +45,13 @@ class InstalledArtifactTest(unittest.TestCase):
             client_config = run / "instance/client.json"
             wrapper = run / "instance/publisher-wrapper.py"
             drop = run / "instance/drop-next-result"
+            delay = run / "instance/delay-transport"
             wrapper.write_text(
-                "import pathlib, subprocess, sys\n"
+                "import pathlib, subprocess, sys, time\n"
                 f"flag = pathlib.Path({str(drop)!r})\n"
+                f"delay = pathlib.Path({str(delay)!r})\n"
+                "if delay.exists() and any(x in sys.argv for x in ('status', 'publish')):\n"
+                "    time.sleep(0.7)\n"
                 f"result = subprocess.run([{cli!r}, *sys.argv[1:]], capture_output=True)\n"
                 "if flag.exists() and any(x in sys.argv for x in ('publish', 'restore')):\n"
                 "    flag.unlink()\n"
@@ -125,10 +130,31 @@ class InstalledArtifactTest(unittest.TestCase):
 
             schema_commands = cast(list[dict[str, object]], call("schema")["commands"])
             self.assertEqual(schema_commands[6]["name"], "artifact")
+            artifact_commands = cast(list[dict[str, object]], schema_commands[6]["commands"])
+            publish_schema = artifact_commands[0]
+            self.assertEqual(publish_schema["name"], "publish")
+            self.assertEqual(
+                cast(list[dict[str, object]], publish_schema["positionals"]),
+                [
+                    {
+                        "name": "source",
+                        "metavar": "SOURCE",
+                        "required": True,
+                        "nargs": None,
+                        "value_type": "string",
+                        "help": "HTML file or directory",
+                    }
+                ],
+            )
+            self.assertNotIn("positionals", schema_commands[0])
             invalid = call("--json", "artifact", "publish", "--bad", code=2)
             self.assertEqual(invalid["operation"], "publish")
             self.assertEqual(cast(dict[str, object], invalid["error"])["code"], "invalid_usage")
             self.assertIn("receipt_persisted", invalid)
+            plain_invalid = call("artifact", "publish", "--bad", code=2)
+            self.assertEqual(plain_invalid["error"], invalid["error"])
+            root_invalid = call("--config", "artifact", "--json", "publish", "--bad", code=2)
+            self.assertNotIn("receipt_persisted", root_invalid)
             self.assertIn(
                 "--archive-commit",
                 subprocess.run(
@@ -411,6 +437,60 @@ class InstalledArtifactTest(unittest.TestCase):
                 len(cast(list[object], publisher("history", "--name", "persist")["entries"])),
                 before_recovery,
             )
+
+            with (receipt / "lock").open("r+") as held_lock:
+                fcntl.flock(held_lock, fcntl.LOCK_EX)
+                started = time.monotonic()
+                lock_failure = artifact(
+                    "status",
+                    "--receipt",
+                    str(receipt),
+                    "--command-seconds",
+                    "0.2",
+                    code=1,
+                )
+                self.assertLess(time.monotonic() - started, 0.6)
+                self.assertEqual(
+                    cast(dict[str, object], lock_failure["error"])["code"],
+                    "command_timeout",
+                )
+                fcntl.flock(held_lock, fcntl.LOCK_UN)
+
+            budget_source = run / "instance/budget.html"
+            budget_source.write_bytes(b"budget frozen bytes\n")
+            budget_receipt = run / "budget.publish"
+            drop.touch()
+            lost_budget = artifact(
+                "publish",
+                str(budget_source),
+                "--new",
+                "budget",
+                "--receipt",
+                str(budget_receipt),
+                code=1,
+            )
+            self.assertEqual(lost_budget["pending_state"], "uncertain")
+            delay.touch()
+            started = time.monotonic()
+            budget_failure = artifact(
+                "retry",
+                "--receipt",
+                str(budget_receipt),
+                "--command-seconds",
+                "1",
+                code=1,
+            )
+            elapsed = time.monotonic() - started
+            self.assertLess(elapsed, 1.35)
+            self.assertEqual(
+                cast(dict[str, object], budget_failure["error"])["code"], "publisher_timeout"
+            )
+            budget_state = json.loads((budget_receipt / "receipt.json").read_text())
+            self.assertEqual(budget_state["pending"]["intent"]["id"], lost_budget["attempt_id"])
+            delay.unlink()
+            finished_budget = artifact("retry", "--receipt", str(budget_receipt))
+            self.assertEqual(finished_budget["attempt_id"], lost_budget["attempt_id"])
+            self.assertEqual(fetch("/budget/")[1], b"budget frozen bytes\n")
         finally:
             lifecycle("stop")
         self.assertTrue(log.is_file())

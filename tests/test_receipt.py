@@ -303,6 +303,27 @@ class ReceiptFixture(unittest.TestCase):
 
 
 class HelperCliTest(ReceiptFixture):
+    def test_canonical_v1_config_fingerprint_remains_compatible(self) -> None:
+        config = self.root / "canonical-v1.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "target": {"id": "fixture", "base_url": "https://example.test/pages/"},
+                    "execution": {
+                        "kind": "local",
+                        "command": ["/usr/bin/html-publish"],
+                        "publisher_config": "/tmp/publisher.json",
+                    },
+                }
+            )
+        )
+
+        self.assertEqual(
+            receipt.load_config(config).fingerprint,
+            "4fcefde651bcce5451d70013d587a6ad03bd21048573616025e1121e28c38382",
+        )
+
     def test_contradictory_activation_advances_acceptance_without_completion(
         self,
     ) -> None:

@@ -59,6 +59,19 @@ class PersistenceFailure(ReceiptFailure):
         super().__init__("receipt_persistence_failed", message, "retry_after_inspection")
 
 
+@dataclass(frozen=True)
+class CommandBudget:
+    expires_at: float
+
+    def remaining(self, ceiling: float | None = None) -> float:
+        remaining = self.expires_at - time.monotonic()
+        if remaining <= 0:
+            raise ReceiptFailure(
+                "command_timeout", "The artifact command exceeded its total time budget", "retry"
+            )
+        return min(remaining, ceiling) if ceiling is not None else remaining
+
+
 class Parser(argparse.ArgumentParser):
     def error(self, message: str) -> NoReturn:
         raise UsageFailure(message)
@@ -558,7 +571,11 @@ def _ensure_receipt_dir(path: Path) -> None:
 
 
 @contextlib.contextmanager
-def receipt_lock(receipt_dir: Path, seconds: float) -> Generator[None, None, None]:
+def receipt_lock(
+    receipt_dir: Path, seconds: float, budget: CommandBudget | None = None
+) -> Generator[None, None, None]:
+    if budget is not None:
+        budget.remaining()
     _ensure_receipt_dir(receipt_dir)
     lock_path = receipt_dir / "lock"
     descriptor = os.open(
@@ -581,13 +598,17 @@ def receipt_lock(receipt_dir: Path, seconds: float) -> Generator[None, None, Non
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except BlockingIOError as error:
+                if budget is not None:
+                    budget.remaining()
                 if time.monotonic() >= deadline:
                     raise ReceiptFailure(
                         "receipt_busy",
                         f"Receipt is locked: {receipt_dir}",
                         "retry_later",
                     ) from error
-                time.sleep(0.05)
+                time.sleep(min(0.05, budget.remaining()) if budget is not None else 0.05)
+        if budget is not None:
+            budget.remaining()
         yield
     finally:
         with contextlib.suppress(OSError):
@@ -618,16 +639,22 @@ def _check_disjoint(source: Path, receipt_dir: Path) -> None:
 class CopyBudget:
     limits: Limits
     deadline: float
+    command_budget: CommandBudget | None = None
     files: int = 0
     bytes: int = 0
 
-    def add(self, size: int) -> None:
+    def check(self) -> None:
+        if self.command_budget is not None:
+            self.command_budget.remaining()
         if time.monotonic() > self.deadline:
             raise ReceiptFailure(
                 "copy_timeout",
                 "The immutable copy exceeded its time budget",
                 "reduce_input",
             )
+
+    def add(self, size: int) -> None:
+        self.check()
         self.files += 1
         self.bytes += size
         if self.files > self.limits.max_files or self.bytes > self.limits.max_bytes:
@@ -672,12 +699,7 @@ def _copy_regular(
             file_digest = hashlib.sha256()
             with os.fdopen(output, "wb", closefd=True) as target:
                 while True:
-                    if time.monotonic() > budget.deadline:
-                        raise ReceiptFailure(
-                            "copy_timeout",
-                            "The immutable copy exceeded its time budget",
-                            "reduce_input",
-                        )
+                    budget.check()
                     chunk = os.read(descriptor, 1024 * 1024)
                     if not chunk:
                         break
@@ -733,12 +755,7 @@ def _copy_directory(
             "copy_failed", f"Could not read input directory {source}: {error}", "retry"
         ) from error
     for entry in entries:
-        if time.monotonic() > budget.deadline:
-            raise ReceiptFailure(
-                "copy_timeout",
-                "The immutable copy exceeded its time budget",
-                "reduce_input",
-            )
+        budget.check()
         child_relative = entry.name if not relative else f"{relative}/{entry.name}"
         child_source = Path(entry.path)
         child_destination = destination / entry.name
@@ -773,7 +790,15 @@ def _copy_directory(
     _sync_directory(destination)
 
 
-def freeze_input(source: Path, receipt_dir: Path, attempt_id: str, limits: Limits) -> FrozenInput:
+def freeze_input(
+    source: Path,
+    receipt_dir: Path,
+    attempt_id: str,
+    limits: Limits,
+    command_budget: CommandBudget | None = None,
+) -> FrozenInput:
+    if command_budget is not None:
+        command_budget.remaining()
     try:
         source_info = source.lstat()
     except OSError as error:
@@ -800,7 +825,11 @@ def freeze_input(source: Path, receipt_dir: Path, attempt_id: str, limits: Limit
     temporary.mkdir(mode=0o700)
     input_path = temporary / "input"
     digest = hashlib.sha256()
-    budget = CopyBudget(limits, time.monotonic() + limits.copy_seconds)
+    budget = CopyBudget(
+        limits,
+        time.monotonic() + limits.copy_seconds,
+        command_budget,
+    )
     try:
         if stat.S_ISREG(source_info.st_mode):
             _copy_regular(source, input_path, "", digest, budget)
@@ -808,9 +837,11 @@ def freeze_input(source: Path, receipt_dir: Path, attempt_id: str, limits: Limit
         else:
             _copy_directory(source, input_path, "", digest, budget)
             kind = "directory"
+        budget.check()
         _sync_directory(temporary)
         os.replace(temporary, final_attempt)
         _sync_directory(receipt_dir)
+        budget.check()
     except BaseException:
         shutil.rmtree(temporary, ignore_errors=True)
         raise
@@ -823,11 +854,18 @@ def freeze_input(source: Path, receipt_dir: Path, attempt_id: str, limits: Limit
     )
 
 
-def _scan_snapshot(path: Path, kind: InputKind, limits: Limits) -> FrozenInput:
+def _scan_snapshot(
+    path: Path, kind: InputKind, limits: Limits, command_budget: CommandBudget | None = None
+) -> FrozenInput:
     digest = hashlib.sha256()
-    budget = CopyBudget(limits, time.monotonic() + limits.copy_seconds)
+    budget = CopyBudget(
+        limits,
+        time.monotonic() + limits.copy_seconds,
+        command_budget,
+    )
 
     def scan(current: Path, relative: str) -> None:
+        budget.check()
         info = current.lstat()
         if stat.S_ISLNK(info.st_mode):
             raise ReceiptFailure(
@@ -839,6 +877,7 @@ def _scan_snapshot(path: Path, kind: InputKind, limits: Limits) -> FrozenInput:
             descriptor = os.open(current, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
             try:
                 while True:
+                    budget.check()
                     chunk = os.read(descriptor, 1024 * 1024)
                     if not chunk:
                         break
@@ -865,7 +904,14 @@ def _scan_snapshot(path: Path, kind: InputKind, limits: Limits) -> FrozenInput:
     return FrozenInput("", kind, digest.hexdigest(), budget.files, budget.bytes)
 
 
-def verify_snapshot(receipt_dir: Path, frozen: FrozenInput, limits: Limits) -> Path:
+def verify_snapshot(
+    receipt_dir: Path,
+    frozen: FrozenInput,
+    limits: Limits,
+    command_budget: CommandBudget | None = None,
+) -> Path:
+    if command_budget is not None:
+        command_budget.remaining()
     path = receipt_dir / frozen.path
     try:
         resolved = path.resolve(strict=True)
@@ -876,7 +922,7 @@ def verify_snapshot(receipt_dir: Path, frozen: FrozenInput, limits: Limits) -> P
         ) from error
     if not _is_within(resolved, receipt_real):
         raise ReceiptFailure("snapshot_escape", "Snapshot escapes the receipt bundle", "inspect")
-    scanned = _scan_snapshot(path, frozen.kind, limits)
+    scanned = _scan_snapshot(path, frozen.kind, limits, command_budget)
     if (
         scanned.digest != frozen.digest
         or scanned.file_count != frozen.file_count
@@ -936,16 +982,20 @@ def _stop_process_group(process: subprocess.Popen[bytes]) -> bool:
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
         return False
-    with contextlib.suppress(subprocess.TimeoutExpired):
+    try:
         process.wait(timeout=0.2)
-    with contextlib.suppress(ProcessLookupError):
-        os.killpg(process.pid, signal.SIGKILL)
-    process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        try:
+            if os.getpgid(process.pid) == process.pid:
+                os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait(timeout=1)
     deadline = time.monotonic() + 0.2
     while time.monotonic() < deadline:
         try:
             os.killpg(process.pid, 0)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             break
         time.sleep(0.01)
     return True
@@ -1384,11 +1434,13 @@ def _validate_binding(receipt: Receipt, config: ClientConfig) -> None:
 
 
 def _status_payload(
-    receipt: Receipt, config: ClientConfig
+    receipt: Receipt, config: ClientConfig, budget: CommandBudget | None = None
 ) -> tuple[ProcessResult, Mapping[str, object] | None]:
     process = _run_process(
         _executor_command(config, "status", receipt.binding.name),
-        config.limits.command_seconds,
+        budget.remaining(config.limits.command_seconds)
+        if budget is not None
+        else config.limits.command_seconds,
         config.limits.output_bytes,
     )
     if process.timed_out or process.output_limited or process.group_stopped or process.cancelled:
@@ -1565,11 +1617,16 @@ def _emit(payload: Mapping[str, object]) -> None:
     print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
 
 
-def _dispatch(receipt_dir: Path, receipt: Receipt, config: ClientConfig) -> DispatchResult:
+def _dispatch(
+    receipt_dir: Path,
+    receipt: Receipt,
+    config: ClientConfig,
+    budget: CommandBudget | None = None,
+) -> DispatchResult:
     pending = receipt.pending
     assert pending is not None
     source = (
-        verify_snapshot(receipt_dir, pending.intent.input, config.limits)
+        verify_snapshot(receipt_dir, pending.intent.input, config.limits, budget)
         if isinstance(pending.intent, PublishIntent)
         else None
     )
@@ -1582,7 +1639,13 @@ def _dispatch(receipt_dir: Path, receipt: Receipt, config: ClientConfig) -> Disp
         pending.intent.id,
         pending.intent.archive_commit if isinstance(pending.intent, RestoreIntent) else None,
     )
-    process = _run_process(command, config.limits.command_seconds, config.limits.output_bytes)
+    process = _run_process(
+        command,
+        budget.remaining(config.limits.command_seconds)
+        if budget is not None
+        else config.limits.command_seconds,
+        config.limits.output_bytes,
+    )
     saved = _saved_result(pending, process)
     result_path = _result_path(receipt_dir, saved.attempt_id)
     classification = reduce_result(receipt, saved)
@@ -1681,9 +1744,10 @@ def _new_pending(
     receipt: Receipt,
     expectation: Expectation,
     limits: Limits,
+    budget: CommandBudget | None = None,
 ) -> Receipt:
     attempt_id = uuid.uuid4().hex
-    frozen = freeze_input(source, receipt_dir, attempt_id, limits)
+    frozen = freeze_input(source, receipt_dir, attempt_id, limits, budget)
     pending = Pending(PublishIntent(attempt_id, expectation, frozen), 1, "uncertain")
     prepared = dataclasses.replace(receipt, pending=pending, completion=None)
     _write_receipt(receipt_dir, prepared)
@@ -1720,7 +1784,7 @@ def _reviewed_replacement(
     return Expectation("reviewed", reviewed_revision, replaces_attempt)
 
 
-def _publish(arguments: argparse.Namespace, config_path: Path) -> int:
+def _publish(arguments: argparse.Namespace, config_path: Path, started_at: float) -> int:
     source = Path(arguments.source).expanduser().absolute()
     receipt_dir = (
         Path(arguments.receipt).expanduser().absolute()
@@ -1776,7 +1840,8 @@ def _publish(arguments: argparse.Namespace, config_path: Path) -> int:
         return 0
 
     config = load_config(config_path, getattr(arguments, "command_seconds", None))
-    with receipt_lock(receipt_dir, config.limits.lock_seconds):
+    budget = CommandBudget(started_at + config.limits.command_seconds)
+    with receipt_lock(receipt_dir, config.limits.lock_seconds, budget):
         receipt_path = receipt_dir / "receipt.json"
         creating = arguments.new is not None or arguments.adopt is not None
         if creating and receipt_path.exists():
@@ -1831,7 +1896,7 @@ def _publish(arguments: argparse.Namespace, config_path: Path) -> int:
                         "--adopt requires --reviewed-revision and accepts no --replaces-attempt",
                         "review_status",
                     )
-                process, payload = _status_payload(receipt, config)
+                process, payload = _status_payload(receipt, config, budget)
                 if process.exit_code != 0 or payload is None:
                     raise ReceiptFailure(
                         "adoption_observation_failed",
@@ -1848,20 +1913,21 @@ def _publish(arguments: argparse.Namespace, config_path: Path) -> int:
                 receipt = dataclasses.replace(receipt, last_observation=observation)
                 expectation = Expectation("reviewed", arguments.reviewed_revision, None)
 
-        prepared = _new_pending(source, receipt_dir, receipt, expectation, config.limits)
+        prepared = _new_pending(source, receipt_dir, receipt, expectation, config.limits, budget)
         return _finish_dispatch(
             "publish",
             receipt_dir,
             source,
-            _dispatch(receipt_dir, prepared, config),
+            _dispatch(receipt_dir, prepared, config, budget),
             1,
         )
 
 
-def _restore(arguments: argparse.Namespace, config_path: Path) -> int:
+def _restore(arguments: argparse.Namespace, config_path: Path, started_at: float) -> int:
     config = load_config(config_path, getattr(arguments, "command_seconds", None))
+    budget = CommandBudget(started_at + config.limits.command_seconds)
     receipt_dir = Path(arguments.receipt).expanduser().absolute()
-    with receipt_lock(receipt_dir, config.limits.lock_seconds):
+    with receipt_lock(receipt_dir, config.limits.lock_seconds, budget):
         receipt = load_receipt(receipt_dir)
         _validate_binding(receipt, config)
         receipt = _recover_saved_result(receipt_dir, receipt).receipt
@@ -1895,14 +1961,15 @@ def _restore(arguments: argparse.Namespace, config_path: Path) -> int:
         )
         _write_receipt(receipt_dir, prepared)
         return _finish_dispatch(
-            "restore", receipt_dir, None, _dispatch(receipt_dir, prepared, config), 1
+            "restore", receipt_dir, None, _dispatch(receipt_dir, prepared, config, budget), 1
         )
 
 
-def _retry(arguments: argparse.Namespace, config_path: Path) -> int:
+def _retry(arguments: argparse.Namespace, config_path: Path, started_at: float) -> int:
     config = load_config(config_path, getattr(arguments, "command_seconds", None))
+    budget = CommandBudget(started_at + config.limits.command_seconds)
     receipt_dir = Path(arguments.receipt).expanduser().absolute()
-    with receipt_lock(receipt_dir, config.limits.lock_seconds):
+    with receipt_lock(receipt_dir, config.limits.lock_seconds, budget):
         receipt = load_receipt(receipt_dir)
         _validate_binding(receipt, config)
         recovery = _recover_saved_result(receipt_dir, receipt)
@@ -1933,7 +2000,7 @@ def _retry(arguments: argparse.Namespace, config_path: Path) -> int:
             )
         calls = 0
         if pending.state == "uncertain":
-            process, payload = _status_payload(receipt, config)
+            process, payload = _status_payload(receipt, config, budget)
             calls += 1
             if process.exit_code != 0 or payload is None:
                 raise ReceiptFailure(
@@ -1946,7 +2013,7 @@ def _retry(arguments: argparse.Namespace, config_path: Path) -> int:
             pending = receipt.pending
             assert pending is not None
         if isinstance(pending.intent, PublishIntent):
-            verify_snapshot(receipt_dir, pending.intent.input, config.limits)
+            verify_snapshot(receipt_dir, pending.intent.input, config.limits, budget)
         next_pending = dataclasses.replace(
             pending,
             dispatch_generation=pending.dispatch_generation + 1,
@@ -1958,12 +2025,12 @@ def _retry(arguments: argparse.Namespace, config_path: Path) -> int:
             "retry",
             receipt_dir,
             None,
-            _dispatch(receipt_dir, receipt, config),
+            _dispatch(receipt_dir, receipt, config, budget),
             calls + 1,
         )
 
 
-def _status(arguments: argparse.Namespace, config_path: Path) -> int:
+def _status(arguments: argparse.Namespace, config_path: Path, started_at: float) -> int:
     receipt_dir = Path(arguments.receipt).expanduser().absolute()
     if arguments.local_only:
         receipt = load_receipt(receipt_dir)
@@ -1980,10 +2047,11 @@ def _status(arguments: argparse.Namespace, config_path: Path) -> int:
         )
         return 0
     config = load_config(config_path, getattr(arguments, "command_seconds", None))
-    with receipt_lock(receipt_dir, config.limits.lock_seconds):
+    budget = CommandBudget(started_at + config.limits.command_seconds)
+    with receipt_lock(receipt_dir, config.limits.lock_seconds, budget):
         receipt = load_receipt(receipt_dir)
         _validate_binding(receipt, config)
-        process, payload = _status_payload(receipt, config)
+        process, payload = _status_payload(receipt, config, budget)
         if process.exit_code != 0 or payload is None:
             raise ReceiptFailure(
                 "status_failed",
@@ -2035,16 +2103,17 @@ def _parser() -> Parser:
     return parser
 
 
-def run(parsed: argparse.Namespace, config_path: Path) -> int:
+def run(parsed: argparse.Namespace, config_path: Path, started_at: float | None = None) -> int:
     operation = parsed.artifact_action
+    started_at = time.monotonic() if started_at is None else started_at
     try:
         if operation == "publish":
-            return _publish(parsed, config_path)
+            return _publish(parsed, config_path, started_at)
         if operation == "retry":
-            return _retry(parsed, config_path)
+            return _retry(parsed, config_path, started_at)
         if operation == "restore":
-            return _restore(parsed, config_path)
-        return _status(parsed, config_path)
+            return _restore(parsed, config_path, started_at)
+        return _status(parsed, config_path, started_at)
     except ReceiptFailure as error:
         _emit(
             _handoff(
@@ -2110,6 +2179,7 @@ def usage_error(action: str, message: str) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    started_at = time.monotonic()
     arguments = list(sys.argv[1:] if argv is None else argv)
     operation = next(
         (item for item in arguments if item in {"publish", "retry", "status", "restore"}), "usage"
@@ -2120,7 +2190,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return usage_error(operation, str(error))
     parsed.artifact_action = parsed.operation
     config_path = cast(Path, parsed.config).expanduser().absolute()
-    return run(parsed, config_path)
+    return run(parsed, config_path, started_at)
 
 
 if __name__ == "__main__":

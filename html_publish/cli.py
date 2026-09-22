@@ -7,6 +7,7 @@ import math
 import re
 import signal
 import sys
+import time
 from collections.abc import Generator, Mapping
 from dataclasses import asdict
 from pathlib import Path
@@ -133,7 +134,7 @@ def _globals(command: argparse.ArgumentParser, version: str) -> None:
         type=_positive_seconds,
         default=argparse.SUPPRESS,
         help="override total command budget in seconds "
-        "(default: configuration limit, normally 120)",
+        "(default: configuration limit; publisher 120, client 150)",
     )
 
 
@@ -164,7 +165,7 @@ def _parser(json_version: bool = False) -> Parser:
         "--command-seconds",
         type=_positive_seconds,
         help="override total command budget in seconds "
-        "(default: configuration limit, normally 120)",
+        "(default: configuration limit; publisher 120, client 150)",
     )
     commands = parser.add_subparsers(dest="operation", required=True)
 
@@ -1088,6 +1089,7 @@ def _run_config(parsed: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    started_at = time.monotonic()
     arguments = list(sys.argv[1:] if argv is None else argv)
     json_output = "--json" in arguments
     parsed = argparse.Namespace()
@@ -1103,7 +1105,7 @@ def main(argv: list[str] | None = None) -> int:
             from html_publish import receipt
 
             path, _ = selected_path("client", parsed.config)
-            return receipt.run(parsed, path)
+            return receipt.run(parsed, path, started_at)
         config_path, _ = selected_path("publisher", parsed.config)
         config = load_config(config_path)
         command_seconds = parsed.command_seconds or config.limits.command_seconds
@@ -1151,7 +1153,7 @@ def main(argv: list[str] | None = None) -> int:
     except UsageFailure as error:
         failure = Failure("invalid_usage", "usage", str(error), "fix_arguments")
         operation = getattr(parsed, "operation", None)
-        if operation == "artifact" and json_output:
+        if operation == "artifact":
             from html_publish import receipt
 
             index = arguments.index("artifact")
