@@ -7,6 +7,8 @@ import http.server
 import io
 import json
 import os
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -990,7 +992,7 @@ class PublisherCliTest(unittest.TestCase):
     def test_git_older_than_the_supported_minimum_is_rejected(self) -> None:
         stub = self.root / "stub-bin"
         stub.mkdir()
-        (stub / "git").write_text("#!/bin/sh\necho 'git version 2.10.0'\n", encoding="utf-8")
+        (stub / "git").write_text("#!/bin/sh\necho 'git version 2.35.0'\n", encoding="utf-8")
         (stub / "git").chmod(0o755)
 
         result = self.run_cli("status", env={"PATH": f"{stub}:{os.environ['PATH']}"})
@@ -999,7 +1001,87 @@ class PublisherCliTest(unittest.TestCase):
         payload = self.payload(result)
         self.assertEqual(payload["error"]["code"], "git_unsupported")
         self.assertEqual(payload["error"]["phase"], "version")
-        self.assertIn("2.22", payload["error"]["message"])
+        self.assertIn("2.36", payload["error"]["message"])
+
+    def test_git_at_the_supported_minimum_can_publish(self) -> None:
+        real_git = shutil.which("git")
+        assert real_git is not None
+        stub = self.root / "stub-bin"
+        stub.mkdir()
+        (stub / "git").write_text(
+            "#!/bin/sh\n"
+            'for argument in "$@"; do\n'
+            '  if [ "$argument" = "--version" ]; then\n'
+            "    echo 'git version 2.36.0'\n"
+            "    exit 0\n"
+            "  fi\n"
+            "done\n"
+            f'exec {shlex.quote(real_git)} "$@"\n',
+            encoding="utf-8",
+        )
+        (stub / "git").chmod(0o755)
+        source = self.root / "report.html"
+        body = b"<!doctype html><h1>minimum git</h1>\n"
+        source.write_bytes(body)
+
+        result = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+            env={"PATH": f"{stub}:{os.environ['PATH']}"},
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.payload(result)["outcome"], "published")
+        with urllib.request.urlopen(self.payload(result)["url"], timeout=2) as response:
+            self.assertEqual(response.read(), body)
+
+    def test_git_preflight_uses_the_total_command_deadline(self) -> None:
+        real_git = shutil.which("git")
+        assert real_git is not None
+        stub = self.root / "stub-bin"
+        stub.mkdir()
+        (stub / "git").write_text(
+            "#!/bin/sh\n"
+            'for argument in "$@"; do\n'
+            '  if [ "$argument" = "--version" ]; then\n'
+            "    sleep 0.45\n"
+            "  else\n"
+            "    continue\n"
+            "  fi\n"
+            f'  exec {shlex.quote(real_git)} "$@"\n'
+            "done\n"
+            "sleep 0.10\n"
+            f'exec {shlex.quote(real_git)} "$@"\n',
+            encoding="utf-8",
+        )
+        (stub / "git").chmod(0o755)
+        payload = self.config_payload()
+        payload["limits"]["command_seconds"] = 0.6
+        self.config.write_text(json.dumps(payload), encoding="utf-8")
+        source = self.root / "report.html"
+        source.write_bytes(b"<!doctype html><h1>deadline</h1>\n")
+
+        started = time.monotonic()
+        result = self.run_cli(
+            "plan",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+            env={"PATH": f"{stub}:{os.environ['PATH']}"},
+        )
+        elapsed = time.monotonic() - started
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertEqual(self.payload(result)["error"]["code"], "command_timeout")
+        self.assertLess(elapsed, 1.2)
 
     def test_a_missing_git_executable_is_reported_as_unavailable(self) -> None:
         result = self.run_cli("status", env={"PATH": "/nonexistent-html-publish-bin"})
@@ -1500,14 +1582,33 @@ class PublisherCliTest(unittest.TestCase):
         with urllib.request.urlopen(self.payload(updated)["url"], timeout=2) as response:
             self.assertEqual(response.read(), b"<!doctype html><h1>bbbb</h1>\n")
 
-    def test_git_transformation_settings_do_not_change_artifact_identity(self) -> None:
+    def test_git_filters_and_excludes_do_not_change_artifact_identity(self) -> None:
+        global_attributes = self.root / "global-attributes"
+        global_attributes.write_text("*.html filter=hostile-global\n", encoding="utf-8")
+        global_excludes = self.root / "global-excludes"
+        global_excludes.write_text("global.css\n", encoding="utf-8")
         hostile = self.root / "hostile.gitconfig"
         hostile.write_text(
-            "[core]\n\tautocrlf = true\n[commit]\n\tgpgSign = true\n", encoding="utf-8"
+            f"[core]\n"
+            f"\tautocrlf = true\n"
+            f"\tattributesFile = {global_attributes}\n"
+            f"\texcludesFile = {global_excludes}\n"
+            f'[filter "hostile-global"]\n'
+            f"\tclean = sed s/original/global-filtered/g\n"
+            f"\trequired = true\n"
+            f"[commit]\n"
+            f"\tgpgSign = true\n",
+            encoding="utf-8",
         )
-        source = self.root / "report.html"
-        crlf_body = b"<!doctype html><h1>crlf</h1>\r\n"
-        source.write_bytes(crlf_body)
+        source = self.root / "site"
+        source.mkdir()
+        bodies = {
+            "index.html": b"<!doctype html><h1>original one</h1>\r\n",
+            "global.css": b"global original one\n",
+            "repo.css": b"repo original one\n",
+        }
+        for path, body in bodies.items():
+            (source / path).write_bytes(body)
 
         published = self.run_cli(
             "publish",
@@ -1520,13 +1621,27 @@ class PublisherCliTest(unittest.TestCase):
             env={"GIT_CONFIG_GLOBAL": str(hostile)},
         )
         self.assertEqual(published.returncode, 0, published.stderr)
-        revision = self.payload(published)["active_revision"]
-        self.assertEqual(
-            (self.runtime / "public" / "report" / "index.html").read_bytes(), crlf_body
-        )
+        first_revision = self.payload(published)["active_revision"]
 
+        repository_attributes = self.archive / "info" / "attributes"
+        repository_attributes.write_text("*.css filter=hostile-repository\n", encoding="utf-8")
+        repository_excludes = self.archive / "info" / "exclude"
+        repository_excludes.write_text("repo.css\n", encoding="utf-8")
         config = self.archive / "config"
-        config.write_text(config.read_text(encoding="utf-8") + "[core]\n\tautocrlf = true\n")
+        config.write_text(
+            config.read_text(encoding="utf-8")
+            + '[filter "hostile-repository"]\n'
+            + "\tclean = sed s/original/repository-filtered/g\n"
+            + "\trequired = true\n",
+            encoding="utf-8",
+        )
+        bodies = {
+            "index.html": b"<!doctype html><h1>original two</h1>\r\n",
+            "global.css": b"global original two\n",
+            "repo.css": b"repo original two\n",
+        }
+        for path, body in bodies.items():
+            (source / path).write_bytes(body)
         republished = self.run_cli(
             "publish",
             "--name",
@@ -1535,69 +1650,95 @@ class PublisherCliTest(unittest.TestCase):
             str(source),
             "--target",
             self.base_url,
+            "--expected-revision",
+            first_revision,
             env={"GIT_CONFIG_GLOBAL": str(hostile)},
         )
         self.assertEqual(republished.returncode, 0, republished.stderr)
-        self.assertEqual(self.payload(republished)["outcome"], "unchanged")
-        self.assertEqual(self.payload(republished)["archived_revision"], revision)
-        self.assertEqual(self.git("rev-list", "--count", "refs/heads/published"), "1")
+        response = self.payload(republished)
+        self.assertEqual(response["outcome"], "published")
+        revision = response["active_revision"]
+        self.assertEqual(
+            self.git("ls-tree", "-r", "--name-only", revision).splitlines(),
+            ["global.css", "index.html", "repo.css"],
+        )
+        for path, body in bodies.items():
+            archived = subprocess.run(
+                ["git", f"--git-dir={self.archive}", "cat-file", "blob", f"{revision}:{path}"],
+                capture_output=True,
+                check=True,
+            ).stdout
+            self.assertEqual(archived, body)
+            self.assertEqual((self.runtime / "public" / "report" / path).read_bytes(), body)
+            with urllib.request.urlopen(f"{response['url']}{path}", timeout=2) as served:
+                self.assertEqual(served.read(), body)
 
     def test_file_and_directory_transitions_appear_in_plan_differences(self) -> None:
-        single = self.root / "report.html"
-        single.write_bytes(b"<!doctype html><h1>single</h1>\n")
+        file_site = self.root / "file-site"
+        file_site.mkdir()
+        (file_site / "index.html").write_bytes(b"<!doctype html><h1>transitions</h1>\n")
+        (file_site / "assets").write_bytes(b"asset file\n")
         published = self.run_cli(
             "publish",
             "--name",
             "report",
             "--source",
-            str(single),
+            str(file_site),
             "--target",
             self.base_url,
         )
         self.assertEqual(published.returncode, 0, published.stderr)
-        single_revision = self.payload(published)["active_revision"]
+        file_revision = self.payload(published)["active_revision"]
 
-        directory = self.root / "site"
-        directory.mkdir()
-        (directory / "index.html").write_bytes(b"<!doctype html><h1>directory</h1>\n")
-        (directory / "assets").mkdir()
-        (directory / "assets" / "style.css").write_bytes(b"body{}\n")
+        directory_site = self.root / "directory-site"
+        directory_site.mkdir()
+        (directory_site / "index.html").write_bytes(b"<!doctype html><h1>transitions</h1>\n")
+        (directory_site / "assets").mkdir()
+        (directory_site / "assets" / "style.css").write_bytes(b"body{}\n")
         planned = self.run_cli(
             "plan",
             "--name",
             "report",
             "--source",
-            str(directory),
+            str(directory_site),
             "--target",
             self.base_url,
             "--expected-revision",
-            single_revision,
+            file_revision,
         )
         self.assertEqual(planned.returncode, 0, planned.stderr)
         self.assertEqual(
             self.payload(planned)["differences"],
-            {"added": ["assets/style.css"], "changed": ["index.html"], "deleted": []},
+            {"added": ["assets/style.css"], "changed": [], "deleted": ["assets"]},
         )
         updated = self.run_cli(
             "publish",
             "--name",
             "report",
             "--source",
-            str(directory),
+            str(directory_site),
             "--target",
             self.base_url,
             "--expected-revision",
-            single_revision,
+            file_revision,
         )
         self.assertEqual(updated.returncode, 0, updated.stderr)
         directory_revision = self.payload(updated)["active_revision"]
+        self.assertEqual(
+            self.git("ls-tree", "-r", "--name-only", directory_revision).splitlines(),
+            ["assets/style.css", "index.html"],
+        )
+        with urllib.request.urlopen(
+            f"{self.payload(updated)['url']}assets/style.css", timeout=2
+        ) as response:
+            self.assertEqual(response.read(), b"body{}\n")
 
         back_to_file = self.run_cli(
             "plan",
             "--name",
             "report",
             "--source",
-            str(single),
+            str(file_site),
             "--target",
             self.base_url,
             "--expected-revision",
@@ -1606,8 +1747,32 @@ class PublisherCliTest(unittest.TestCase):
         self.assertEqual(back_to_file.returncode, 0, back_to_file.stderr)
         self.assertEqual(
             self.payload(back_to_file)["differences"],
-            {"added": [], "changed": ["index.html"], "deleted": ["assets/style.css"]},
+            {"added": ["assets"], "changed": [], "deleted": ["assets/style.css"]},
         )
+        restored = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(file_site),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            directory_revision,
+        )
+        self.assertEqual(restored.returncode, 0, restored.stderr)
+        restored_payload = self.payload(restored)
+        self.assertEqual(
+            self.git(
+                "ls-tree", "-r", "--name-only", restored_payload["active_revision"]
+            ).splitlines(),
+            ["assets", "index.html"],
+        )
+        with urllib.request.urlopen(f"{restored_payload['url']}assets", timeout=2) as response:
+            self.assertEqual(response.read(), b"asset file\n")
+        with self.assertRaises(urllib.error.HTTPError) as missing:
+            urllib.request.urlopen(f"{restored_payload['url']}assets/style.css", timeout=2)
+        self.assertEqual(missing.exception.code, 404)
 
     def test_publishing_leaves_the_source_untouched(self) -> None:
         source = self.root / "report.html"
