@@ -2273,6 +2273,51 @@ class PublisherCliTest(unittest.TestCase):
         self.assertEqual(corrupt.returncode, 1)
         self.assertEqual(self.payload(corrupt)["error"]["code"], "export_corruption")
 
+    def test_verify_failures_preserve_observed_state_and_verification_facts(self) -> None:
+        source = self.root / "report.html"
+        expected = b"<!doctype html><h1>verified</h1>\n"
+        source.write_bytes(expected)
+        published = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+        )
+        self.assertEqual(published.returncode, 0, published.stderr)
+        published_payload = self.payload(published)
+        revision = published_payload["active_revision"]
+
+        self._stop_server()
+        failed_delivery = self.run_cli("verify", "--name", "report")
+
+        self.assertEqual(failed_delivery.returncode, 1)
+        delivery_payload = self.payload(failed_delivery)
+        self.assertEqual(delivery_payload["error"]["code"], "delivery_failure")
+        self.assertEqual(delivery_payload["archived_revision"], revision)
+        self.assertEqual(delivery_payload["archive_commit"], published_payload["archive_commit"])
+        self.assertEqual(delivery_payload["active_revision"], revision)
+        self.assertTrue(delivery_payload["observation"]["selection"]["integrity_checked"])
+        self.assertEqual(delivery_payload["verification"]["result"], "failed")
+        self.assertEqual(delivery_payload["verification"]["revision"], revision)
+        self.assertEqual(delivery_payload["verification"]["probe_location"], "host")
+
+        release_file = self.runtime / "releases" / revision / "index.html"
+        release_file.write_bytes(b"<!doctype html><h1>tampered</h1>\n")
+        corrupt = self.run_cli("verify", "--name", "report")
+
+        self.assertEqual(corrupt.returncode, 1)
+        corrupt_payload = self.payload(corrupt)
+        self.assertEqual(corrupt_payload["error"]["code"], "export_corruption")
+        self.assertEqual(corrupt_payload["archived_revision"], revision)
+        self.assertEqual(corrupt_payload["archive_commit"], published_payload["archive_commit"])
+        self.assertEqual(corrupt_payload["active_revision"], revision)
+        self.assertFalse(corrupt_payload["observation"]["selection"]["integrity_checked"])
+        self.assertEqual(corrupt_payload["verification"]["result"], "not_checked")
+        self.assertIsNone(corrupt_payload["verification"]["revision"])
+
     def test_history_lists_changes_and_restore_identifiers(self) -> None:
         source = self.root / "report.html"
         source.write_bytes(b"<!doctype html><h1>A</h1>\n")
@@ -2385,9 +2430,9 @@ class PublisherCliTest(unittest.TestCase):
         self.assertEqual(len(deeper_payload["entries"]), 1)
         self.assertFalse(deeper_payload["truncated"])
 
-    def test_history_diff_text_is_capped(self) -> None:
+    def test_history_diff_text_is_utf8_capped_after_replacement(self) -> None:
         source = self.root / "report.html"
-        source.write_bytes(b"<!doctype html><h1>" + b"a" * 200_000 + b"</h1>\n")
+        source.write_bytes(b"<!doctype html><h1>A</h1>\n")
         first = self.run_cli(
             "publish",
             "--name",
@@ -2399,7 +2444,7 @@ class PublisherCliTest(unittest.TestCase):
         )
         self.assertEqual(first.returncode, 0, first.stderr)
         revision_a = self.payload(first)["active_revision"]
-        source.write_bytes(b"<!doctype html><h1>" + b"b" * 200_000 + b"</h1>\n")
+        source.write_bytes(b'<meta charset="iso-8859-1"><h1>\n' + b"\xe9" * 70_000 + b"\n</h1>")
         second = self.run_cli(
             "publish",
             "--name",
@@ -2417,8 +2462,8 @@ class PublisherCliTest(unittest.TestCase):
         self.assertEqual(diff.returncode, 0, diff.stderr)
         diff_payload = self.payload(diff)
         self.assertTrue(diff_payload["diff"]["truncated"])
-        self.assertLessEqual(len(diff_payload["diff"]["text"].encode()), 64 * 1024)
-        self.assertIn("-<!doctype html><h1>" + "a" * 50, diff_payload["diff"]["text"])
+        self.assertLessEqual(len(diff_payload["diff"]["text"].encode("utf-8")), 64 * 1024)
+        self.assertIn("\ufffd" * 50, diff_payload["diff"]["text"])
 
     def test_restore_selects_an_earlier_revision_and_appends_history(self) -> None:
         source = self.root / "report.html"
@@ -2656,6 +2701,23 @@ class PublisherCliTest(unittest.TestCase):
         self.assertEqual(payload["verification"]["revision"], active_revision)
         self.assertEqual(payload["host_checks"]["route"], "ok")
         self.assertTrue(payload["host_checks"]["dns_resolved"])
+
+        release_file = self.runtime / "releases" / active_revision / "index.html"
+        corrupted_bytes = b"<!doctype html><h1>evil</h1>\n"
+        release_file.write_bytes(corrupted_bytes)
+        with urllib.request.urlopen(payload["url"], timeout=2) as response:
+            self.assertEqual(response.read(), corrupted_bytes)
+
+        corrupted = self.run_cli("status", "--name", "report", "--host-check")
+
+        self.assertEqual(corrupted.returncode, 0, corrupted.stderr)
+        corrupted_payload = self.payload(corrupted)
+        self.assertEqual(corrupted_payload["verification"]["result"], "failed")
+        self.assertEqual(corrupted_payload["verification"]["revision"], active_revision)
+        self.assertEqual(corrupted_payload["verification"]["probe_location"], "local")
+        self.assertEqual(corrupted_payload["host_checks"]["route"], "not_checked")
+        self.assertFalse(corrupted_payload["observation"]["selection"]["integrity_checked"])
+        release_file.write_bytes(source.read_bytes())
 
         unnamed = self.run_cli("status", "--host-check")
         self.assertEqual(unnamed.returncode, 0, unnamed.stderr)
