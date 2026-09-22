@@ -35,11 +35,11 @@ machines. The source cache was warm after fixture creation and the warm-up. Thes
 include CLI startup and capture work; they exclude wheel installation.
 
 A fresh 100-file SHA-1 `publish` used its own loopback server for each run. Five timed runs
-after a warm-up included the CLI's full HTTP verification and a second read of the served
-index and last asset. Linux median time fell from 0.828 to 0.748 seconds. m4mini fell from
-5.998 to 5.109 seconds. Both hosts kept the same revision. Git processes fell from 519 to
-420; 100 `cat-file` exports and 300 remaining per-file hashes still run during save and
-release validation. This patch leaves those store-owned stages intact.
+after a warm-up included the CLI's full HTTP verification. A second read of the served index
+and last asset happened after each timing. Linux median time fell from 0.828 to 0.748 seconds.
+m4mini fell from 5.998 to 5.109 seconds. Both hosts kept the same revision. Git processes
+fell from 519 to 420; 100 `cat-file` exports and 300 remaining per-file hashes still run during
+save and release validation. This patch leaves those store-owned stages intact.
 
 The [verification skill](../../../.agents/skills/verify-html-publish/SKILL.md) installed the
 candidate wheel in an owned Linux instance. Its first-publication recipe passed plan,
@@ -74,3 +74,22 @@ export, and release validation. Batching those stages needs separate failure-ord
 publication-state proof before changing `store.py`. Copying all sources before one hash batch
 can also change which failure is reported when a later source fails at the same time as an
 earlier Git hash would have failed.
+
+## Quoted filename correction
+
+An independent review found that Git treats a `--stdin-paths` line starting with `"` as a
+C-quoted path. The source validator accepts a literal filename such as `"README.md"`. Before
+the correction, changing only that file left the SHA-1 and SHA-256 planned revisions unchanged.
+Publishing then failed with `archive_failure` because capture had hashed the unquoted sibling.
+
+Commit `67d0a9ebe241f36a637ab83964acfa9f063c9985` prefixes each validated relative path
+with `./` before sending it to Git. Git 2.55.0 on Linux and Apple Git 2.54.0 on m4mini hashed
+seven literal path shapes with that framing. The [installed-wheel proof](2026-09-22-quoted-path.json)
+records different planned revisions after the quoted file changed in both object formats. On
+both hosts, SHA-256 publish and verify passed, and loopback HTTP served the exact quoted,
+unquoted, binary, and HTML bytes. The slashless URL returned 301 and a missing file returned
+404. The proof wheel SHA-256 was
+`02cfdebe9b905ce9aecc60d2dc68fbcbe2c7ccbaa88fabc2c1ddd4419c5235c3`.
+
+The timing table above measures the original batch commit. The one-line path framing correction
+has not had a separate controlled timing run.
