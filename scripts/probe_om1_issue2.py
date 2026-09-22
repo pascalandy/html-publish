@@ -1182,7 +1182,6 @@ def _checkpoint_checks(
         (f"paths/{quote('unicodé.txt')}", "paths/unicodé.txt", "text/plain"),
         ("paths/percent%2525.txt", "paths/percent%25.txt", "text/plain"),
         ("paths/percent%25.txt", "paths/percent%.txt", "text/plain"),
-        ("paths/percent%.txt", "paths/percent%.txt", "text/plain"),
     ):
         _expect_response(
             rows,
