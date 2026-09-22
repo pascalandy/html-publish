@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import json
 import os
 import shlex
@@ -26,7 +27,7 @@ def report(
     expected: str | None = None,
     outcome: str = "observed",
 ) -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
         "schema_version": 1,
         "operation": operation,
         "request_id": request_id,
@@ -54,6 +55,45 @@ def report(
         "error": None,
         "observation": None,
     }
+    if operation == "status" and name is None:
+        payload["entries"] = []
+    if outcome in {"published", "unchanged", "verified"}:
+        payload.update(
+            {
+                "requested_revision": "rev-b" if operation in {"publish", "restore"} else None,
+                "archived_revision": "rev-b",
+                "archive_commit": "commit-b",
+                "active_revision": "rev-b",
+                "observation": {
+                    "saved": {"revision": "rev-b", "archive_commit": "commit-b"},
+                    "selection": {
+                        "state": "selected",
+                        "revision": "rev-b",
+                        "integrity_checked": True,
+                        "detail": None,
+                    },
+                },
+                "verification": {
+                    "result": "passed",
+                    "revision": "rev-b",
+                    "checked_at": "2026-09-22T12:00:00+00:00",
+                    "probe_location": "host",
+                    "files_checked": 1,
+                    "bytes_checked": 8,
+                    "scope": [
+                        "local_export",
+                        "directory_url",
+                        "index_html",
+                        "all_files",
+                        "missing_path",
+                    ],
+                    "detail": None,
+                },
+            }
+        )
+        if outcome == "published":
+            payload["effects"] = {"archive_advanced": True, "activated": True}
+    return payload
 
 
 class RemoteCliTest(unittest.TestCase):
@@ -462,6 +502,229 @@ class RemoteCliTest(unittest.TestCase):
                 self.assertEqual(payload["effects"], {"archive_advanced": None, "activated": None})
                 self.assertRegex(payload["transport"]["staging"], r"/incoming/[0-9a-f]{32}$")
         self.assertNotIn("cleanup", [record["stage"] for record in self.records()])
+
+    def test_nested_mutation_report_contract_rejects_false_success_without_cleanup(self) -> None:
+        valid = report("publish", request_id="attempt-1", expected="rev-a", outcome="published")
+        cases: list[tuple[str, object]] = [
+            ("verification", {"result": "passed"}),
+            ("verification.result", "failed"),
+            ("verification.result", "not_checked"),
+            ("verification.revision", "different-revision"),
+            ("verification.checked_at", None),
+            ("verification.checked_at", 12),
+            ("verification.probe_location", ["host"]),
+            ("verification.probe_location", "client"),
+            ("verification.files_checked", True),
+            ("verification.files_checked", -1),
+            ("verification.files_checked", 0),
+            ("verification.bytes_checked", 1.5),
+            ("verification.bytes_checked", False),
+            ("verification.scope", "all_files"),
+            ("verification.scope", ["all_files", 12]),
+            ("verification.scope", ["local_export"]),
+            ("verification.detail", {"unexpected": "object"}),
+            ("observation", "not a state object"),
+            ("observation", None),
+            ("observation", {"saved": None}),
+            ("observation.saved", {"revision": "rev-b"}),
+            ("observation.saved.archive_commit", 9),
+            ("observation.saved.revision", "different-revision"),
+            ("observation.selection", {"state": "selected"}),
+            ("observation.selection.state", "unknown"),
+            ("observation.selection.revision", None),
+            ("observation.selection.integrity_checked", "yes"),
+            ("observation.selection.integrity_checked", False),
+            ("observation.selection.detail", []),
+            ("requested_revision", "different-revision"),
+            ("active_revision", "different-revision"),
+        ]
+        for path, value in cases:
+            with self.subTest(path=path, value=value):
+                payload = copy.deepcopy(valid)
+                owner = payload
+                parts = path.split(".")
+                for part in parts[:-1]:
+                    owner = owner[part]
+                owner[parts[-1]] = value
+                result = self.run_remote(
+                    *self.artifact_args(),
+                    environment=self.environment | {"FIXTURE_STDOUT": json.dumps(payload)},
+                )
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                rejected = json.loads(result.stdout)
+                self.assertEqual(rejected["error"]["code"], "remote_protocol_failure")
+                self.assertEqual(rejected["effects"], {"archive_advanced": None, "activated": None})
+                self.assertEqual(rejected["request_id"], "attempt-1")
+                self.assertEqual(rejected["expected_revision"], "rev-a")
+                self.assertEqual(rejected["transport"]["cleanup"], "skipped")
+                self.assertRegex(rejected["transport"]["staging"], r"/incoming/[0-9a-f]{32}$")
+        self.assertNotIn("cleanup", [record["stage"] for record in self.records()])
+
+    def test_restore_and_verify_require_successful_revision_bound_verification(self) -> None:
+        for operation in ("restore", "verify"):
+            args = [operation, "--name", "release-notes"]
+            if operation == "restore":
+                args += [
+                    "--archive-commit",
+                    "commit-b",
+                    "--request-id",
+                    "attempt-1",
+                    "--expected-revision",
+                    "rev-a",
+                ]
+            for path, value in (("result", "failed"), ("revision", "other")):
+                with self.subTest(operation=operation, path=path):
+                    payload = report(
+                        operation,
+                        outcome="published" if operation == "restore" else "verified",
+                        request_id="attempt-1" if operation == "restore" else None,
+                        expected="rev-a" if operation == "restore" else None,
+                    )
+                    payload["verification"][path] = value
+                    result = self.run_remote(
+                        *args,
+                        environment=self.environment | {"FIXTURE_STDOUT": json.dumps(payload)},
+                    )
+                    self.assertEqual(result.returncode, 1)
+                    rejected = json.loads(result.stdout)
+                    self.assertEqual(rejected["error"]["code"], "remote_protocol_failure")
+                    effect = None if operation == "restore" else False
+                    self.assertEqual(
+                        rejected["effects"], {"archive_advanced": effect, "activated": effect}
+                    )
+
+    def test_valid_pending_archive_noop_preserves_nested_additive_fields(self) -> None:
+        payload = report("publish", request_id="attempt-1", expected="rev-a", outcome="unchanged")
+        payload["archived_revision"] = "pending-revision"
+        payload["archive_commit"] = "pending-commit"
+        payload["observation"]["saved"].update(
+            {
+                "revision": "pending-revision",
+                "archive_commit": "pending-commit",
+                "future_saved": True,
+            }
+        )
+        payload["verification"]["future_verification"] = {"kept": True}
+        payload["observation"]["future_observation"] = [1, 2]
+        payload["observation"]["selection"]["future_selection"] = "kept"
+        result = self.run_remote(
+            *self.artifact_args(),
+            environment=self.environment | {"FIXTURE_STDOUT": json.dumps(payload)},
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(result.stdout), payload)
+        self.assertEqual(self.records()[-1]["stage"], "cleanup")
+
+    def test_status_preserves_failed_host_checks_and_degraded_observations(self) -> None:
+        payload = report("status")
+        payload["archived_revision"] = "rev-b"
+        payload["archive_commit"] = "commit-b"
+        payload["active_revision"] = "rev-b"
+        payload["observation"] = {
+            "saved": {"revision": "rev-b", "archive_commit": "commit-b"},
+            "selection": {
+                "state": "selected",
+                "revision": "rev-b",
+                "integrity_checked": False,
+                "detail": None,
+            },
+        }
+        payload["verification"].update(
+            {
+                "result": "failed",
+                "revision": "rev-b",
+                "probe_location": "host",
+                "scope": ["local_export"],
+                "detail": "Route drift",
+            }
+        )
+        result = self.run_remote(
+            "status",
+            "--name",
+            "release-notes",
+            "--host-check",
+            environment=self.environment | {"FIXTURE_STDOUT": json.dumps(payload)},
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(json.loads(result.stdout), payload)
+        payload["active_revision"] = None
+        payload["observation"] = {
+            "saved": {"revision": "rev-b", "archive_commit": "commit-b"},
+            "selection": {
+                "state": "degraded",
+                "revision": None,
+                "integrity_checked": False,
+                "detail": "Dangling symlink",
+            },
+        }
+        payload["verification"] = report("status")["verification"]
+        payload["error"] = {
+            "code": "state_degraded",
+            "phase": "status",
+            "message": "Dangling symlink",
+            "next_action": {"kind": "inspect", "required_inputs": []},
+        }
+        result = self.run_remote(
+            "status",
+            "--name",
+            "release-notes",
+            environment=self.environment
+            | {"FIXTURE_STDOUT": json.dumps(payload), "FIXTURE_INVOKE_EXIT": "1"},
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(json.loads(result.stdout), payload)
+        listing = report("status", name=None)
+        listing["error"] = payload["error"]
+        listing["entries"] = [
+            {
+                "name": "release-notes",
+                "url": TARGET + "release-notes/",
+                "observation": payload["observation"],
+            }
+        ]
+        result = self.run_remote(
+            "status",
+            environment=self.environment
+            | {"FIXTURE_STDOUT": json.dumps(listing), "FIXTURE_INVOKE_EXIT": "1"},
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(json.loads(result.stdout), listing)
+        listing["entries"][0]["observation"] = "not a state object"
+        result = self.run_remote(
+            "status",
+            environment=self.environment
+            | {"FIXTURE_STDOUT": json.dumps(listing), "FIXTURE_INVOKE_EXIT": "1"},
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(json.loads(result.stdout)["error"]["code"], "remote_protocol_failure")
+
+    def test_valid_failed_mutation_preserves_activation_and_failed_verification(self) -> None:
+        payload = report("publish", request_id="attempt-1", expected="rev-a", outcome="published")
+        payload["outcome"] = "error"
+        payload["verification"].update(
+            {
+                "result": "failed",
+                "checked_at": None,
+                "files_checked": 0,
+                "bytes_checked": 0,
+                "scope": [],
+                "detail": "Bytes did not match",
+            }
+        )
+        payload["error"] = {
+            "code": "delivery_failure",
+            "phase": "verify",
+            "message": "Bytes did not match",
+            "next_action": {"kind": "inspect", "required_inputs": []},
+        }
+        result = self.run_remote(
+            *self.artifact_args(),
+            environment=self.environment
+            | {"FIXTURE_STDOUT": json.dumps(payload), "FIXTURE_INVOKE_EXIT": "1"},
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(json.loads(result.stdout), payload)
+        self.assertEqual(self.records()[-1]["stage"], "cleanup")
 
     def test_deadline_reaps_children_in_every_phase_and_preserves_effects(self) -> None:
         success = report("publish", request_id="attempt-1", expected="rev-a", outcome="published")

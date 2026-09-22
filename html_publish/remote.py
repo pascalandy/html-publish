@@ -533,6 +533,100 @@ def _json_object(data: bytes) -> dict[str, object]:
     return cast(dict[str, object], raw)
 
 
+def _report_object(value: object, fields: set[str], label: str) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise ProtocolFailure(f"The host result {label} must be an object")
+    values = cast(dict[str, object], value)
+    if not fields.issubset(values):
+        raise ProtocolFailure(f"The host result {label} is missing required fields")
+    return values
+
+
+def _validate_verification(value: object) -> dict[str, object]:
+    verification = _report_object(
+        value,
+        {
+            "result",
+            "revision",
+            "checked_at",
+            "probe_location",
+            "files_checked",
+            "bytes_checked",
+            "scope",
+            "detail",
+        },
+        "verification",
+    )
+    if verification["result"] not in ("passed", "failed", "not_checked"):
+        raise ProtocolFailure("The host result verification result is invalid")
+    for key in ("revision", "checked_at", "probe_location", "detail"):
+        if verification[key] is not None and not isinstance(verification[key], str):
+            raise ProtocolFailure(f"The host result verification {key} must be text or null")
+    for key in ("files_checked", "bytes_checked"):
+        count = verification[key]
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            raise ProtocolFailure(
+                f"The host result verification {key} must be a nonnegative integer"
+            )
+    scope = verification["scope"]
+    if not isinstance(scope, list) or not all(
+        isinstance(item, str) for item in cast(list[object], scope)
+    ):
+        raise ProtocolFailure("The host result verification scope must be a list of strings")
+    return verification
+
+
+def _validate_observation(
+    value: object, report: Mapping[str, object] | None = None
+) -> dict[str, object] | None:
+    saved_revision: object = None
+    archive_commit: object = None
+    active_revision: object = None
+    selection: dict[str, object] | None = None
+    if value is not None:
+        observation = _report_object(value, {"saved", "selection"}, "observation")
+        if observation["saved"] is not None:
+            saved = _report_object(
+                observation["saved"], {"revision", "archive_commit"}, "saved state"
+            )
+            if any(
+                not isinstance(saved[key], str) or not saved[key]
+                for key in ("revision", "archive_commit")
+            ):
+                raise ProtocolFailure(
+                    "The host result saved revision and commit must be nonempty text"
+                )
+            saved_revision, archive_commit = saved["revision"], saved["archive_commit"]
+        selection = _report_object(
+            observation["selection"],
+            {"state", "revision", "integrity_checked", "detail"},
+            "selection",
+        )
+        state = selection["state"]
+        if state not in ("absent", "selected", "degraded", "unobserved"):
+            raise ProtocolFailure("The host result selection state is invalid")
+        if type(selection["integrity_checked"]) is not bool:
+            raise ProtocolFailure("The host result selection integrity_checked must be a boolean")
+        for key in ("revision", "detail"):
+            if selection[key] is not None and not isinstance(selection[key], str):
+                raise ProtocolFailure(f"The host result selection {key} must be text or null")
+        if state == "selected":
+            if not selection["revision"]:
+                raise ProtocolFailure("The selected host result has no revision")
+            active_revision = selection["revision"]
+        elif selection["integrity_checked"] is not False:
+            raise ProtocolFailure("An unselected host result cannot claim checked integrity")
+        if state in ("absent", "unobserved") and selection["revision"] is not None:
+            raise ProtocolFailure("The absent or unobserved selection cannot claim a revision")
+    if report is not None and (
+        report["archived_revision"] != saved_revision
+        or report["archive_commit"] != archive_commit
+        or report["active_revision"] != active_revision
+    ):
+        raise ProtocolFailure("The host result revisions disagree with its observation")
+    return selection
+
+
 def _validate_host_payload(
     payload: dict[str, object],
     exit_code: int,
@@ -617,12 +711,18 @@ def _validate_host_payload(
         effect_values[key] is not False for key in ("archive_advanced", "activated")
     ):
         raise ProtocolFailure("The host result effects disagree with its outcome")
-    verification = payload.get("verification")
-    if not isinstance(verification, dict):
-        raise ProtocolFailure("The host result verification is invalid")
-    verification_values = cast(dict[str, object], verification)
-    if verification_values.get("result") not in ("passed", "failed", "not_checked"):
-        raise ProtocolFailure("The host result verification is invalid")
+    verification = _validate_verification(payload["verification"])
+    selection = _validate_observation(payload["observation"], payload)
+    if request.operation == "status" and request.name is None:
+        entries = payload.get("entries")
+        if not isinstance(entries, list):
+            raise ProtocolFailure("The host status listing must contain entries")
+        for entry in cast(list[object], entries):
+            values = _report_object(entry, {"name", "url", "observation"}, "status entry")
+            if not isinstance(values["name"], str) or not isinstance(values["url"], str):
+                raise ProtocolFailure("The host status entry name and URL must be text")
+            if _validate_observation(values["observation"]) is None:
+                raise ProtocolFailure("The host status entry must contain an observation")
     warnings = payload.get("warnings")
     if not isinstance(warnings, list) or not all(
         isinstance(item, str) for item in cast(list[object], warnings)
@@ -657,6 +757,49 @@ def _validate_host_payload(
         raise ProtocolFailure("The host usage failure returned operational exit 1")
     if exit_code == 2 and error_values.get("phase") != "usage":
         raise ProtocolFailure("The host exit 2 does not describe invalid usage")
+    if exit_code == 0 and request.operation in {"publish", "restore", "verify"}:
+        if verification["result"] != "passed":
+            raise ProtocolFailure("The successful host command has not passed verification")
+        if (
+            selection is None
+            or selection["state"] != "selected"
+            or not selection["integrity_checked"]
+        ):
+            raise ProtocolFailure("The successful host command has no integrity-checked selection")
+        if verification["revision"] != payload["active_revision"]:
+            raise ProtocolFailure(
+                "The successful host verification does not match the selected revision"
+            )
+        if (
+            not verification["checked_at"]
+            or verification["probe_location"] != "host"
+            or verification["files_checked"] == 0
+            or not {
+                "local_export",
+                "directory_url",
+                "index_html",
+                "all_files",
+                "missing_path",
+            }.issubset(cast(list[str], verification["scope"]))
+        ):
+            raise ProtocolFailure(
+                "The successful host verification lacks complete delivery evidence"
+            )
+        if request.operation in {"publish", "restore"}:
+            if (
+                payload["requested_revision"] != payload["active_revision"]
+                or payload["archive_commit"] is None
+            ):
+                raise ProtocolFailure(
+                    "The successful mutation does not select its requested revision"
+                )
+            if (
+                outcome == "published"
+                and payload["archived_revision"] != payload["requested_revision"]
+            ):
+                raise ProtocolFailure(
+                    "The published host result does not archive its requested revision"
+                )
     return cast(ExitCode, exit_code)
 
 
