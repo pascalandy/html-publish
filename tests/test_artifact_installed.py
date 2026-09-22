@@ -56,10 +56,11 @@ class InstalledArtifactTest(unittest.TestCase):
                 f"publish_done = pathlib.Path({str(publish_done)!r})\n"
                 f"result = subprocess.run([{cli!r}, *sys.argv[1:]], capture_output=True)\n"
                 "if delay.exists() and 'status' in sys.argv:\n"
+                "    time.sleep(2)\n"
                 "    status_done.write_text(str(result.returncode))\n"
                 "if delay.exists() and 'publish' in sys.argv:\n"
                 "    publish_done.write_text(str(result.returncode))\n"
-                "    time.sleep(6)\n"
+                "    time.sleep(10)\n"
                 "if flag.exists() and any(x in sys.argv for x in ('publish', 'restore')):\n"
                 "    flag.unlink()\n"
                 "    print('lost publisher response')\n"
@@ -484,11 +485,12 @@ class InstalledArtifactTest(unittest.TestCase):
                 "--receipt",
                 str(budget_receipt),
                 "--command-seconds",
-                "3",
+                "5",
                 code=1,
             )
             elapsed = time.monotonic() - started
-            self.assertLess(elapsed, 4.5)
+            self.assertGreater(elapsed, 2)
+            self.assertLess(elapsed, 6.4)
             self.assertEqual(status_done.read_text(), "0", budget_failure)
             self.assertEqual(publish_done.read_text(), "0", budget_failure)
             self.assertEqual(budget_failure["publisher_calls"], 2)
