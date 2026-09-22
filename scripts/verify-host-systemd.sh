@@ -21,8 +21,10 @@ stage() {
 stage "$stage_name"
 
 as_user() {
-	sudo -u "$account" env \
+	sudo -u "$account" env -i \
 		HOME="$home_dir" \
+		USER="$account" \
+		LOGNAME="$account" \
 		XDG_RUNTIME_DIR="/run/user/$uid" \
 		DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
 		UV_TOOL_DIR="$home_dir/tools" \
@@ -89,7 +91,7 @@ PY
 		if sudo -u "$account" test -f "$home_dir/receipt.json"; then
 			test "$(sudo -u "$account" cat "$home_dir/receipt.json")" = receipt-preserved || result=1
 		fi
-		test "$(loginctl show-user "$account" -p Linger --value)" = no || result=1
+		sudo test ! -e "/var/lib/systemd/linger/$account" || result=1
 		sudo timeout 15 systemctl stop "user@${uid}.service" || result=1
 		sudo timeout 15 systemctl stop "user-runtime-dir@${uid}.service" || true
 	fi
@@ -105,8 +107,8 @@ uid=$(id -u "$account")
 stage start-user-manager
 sudo timeout 30 systemctl start "user@${uid}.service"
 stage check-user-bus-and-linger
-test -S "/run/user/$uid/bus"
-test "$(loginctl show-user "$account" -p Linger --value)" = no
+as_user test -S "/run/user/$uid/bus"
+sudo test ! -e "/var/lib/systemd/linger/$account"
 
 wait_health() {
 	local body deadline=$((SECONDS + 10))
