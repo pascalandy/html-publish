@@ -6,7 +6,7 @@ This guide operates the private `html-publish` MVP on `om1`. The deployment keep
 
 The working machine needs this checkout, `uv`, Git, `ssh`, and `scp`. SSH must resolve `pascal@om1.donkey-arcturus.ts.net` with strict host-key checking and noninteractive authentication
 
-`om1` needs a clean checkout of this repository, the reviewed dotfiles `html-publish-install` command, `uv`, Git, Python, Tailscale, and a user systemd instance. The [installed verification record](evidence/deployment/2026-09-22-om1-installed.md) names the exact source, installer, wheel, and remaining gates. The [earlier deployment record](evidence/deployment/2026-09-21-om1-controlled-mvp.md) retains its original scope
+`om1` needs a clean checkout of this repository, the reviewed dotfiles `html-publish-install` command, `uv`, Git, Python, Tailscale, and a user systemd instance. The [installed verification record](evidence/deployment/2026-09-22-om1-installed.md) names the exact source, installer, wheel, and proof limits. The [installed skills and authoring record](evidence/skills/2026-09-22-installed-skills-and-authoring.md) owns the managed skill identity, receipt workflow, authoring cutover, and their proof limits. The [earlier deployment record](evidence/deployment/2026-09-21-om1-controlled-mvp.md) retains its original scope
 
 ## Install or upgrade
 
@@ -273,5 +273,5 @@ Return to the reviewed checkout with the same `html-publish-install --source ...
 - User linger was enabled separately on 2026-09-22 after the installed preservation checks. A later user reboot produced bounded postboot startup and delivery evidence. No observer captured the outage or recovery. See the [postboot evidence](evidence/deployment/2026-09-22-om1-installed.md#postboot-evidence-after-user-reboot)
 - A lost SSH connection can leave its private `incoming` directory for operator inspection. The client deadline cannot prove that remote publication stopped
 - Application rollback changes the application release pointer; it does not restore publication content. Publication restore is available through the installed CLI
-- Durable receipts, remote backup, and the browser and second-device fault matrices remain deferred. Browser and second-device success transitions are recorded. Controlled SSH and SCP fixtures cover transport failures and timeouts, and separate private stores cover installed-executable faults
+- Remote backup and the browser and second-device fault matrices remain deferred. Browser and second-device success transitions are recorded. Controlled SSH and SCP fixtures cover transport failures and timeouts, and separate private stores cover installed-executable faults
 - The workflow is a controlled private MVP and is not production-ready

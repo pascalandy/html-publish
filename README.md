@@ -189,6 +189,12 @@ uv run html-publish --config publisher.json --json status \
   --name release-notes --host-check
 ```
 
+## Migrate authoring workflows
+
+Moving an artifact from Postplan to `html-publish` creates a new private URL. The old Postplan URL and public access are not preserved
+
+If the rollout fails, keep the local artifact as the source of truth. This workflow has no external fallback. Do not delete old pages or content archives as part of this cutover. Retain them independently of the new private publication
+
 ## Current boundary
 
 The MVP implements the first vertical slice of the [publisher architecture](docs/architecture.md)
@@ -204,4 +210,4 @@ The MVP implements the first vertical slice of the [publisher architecture](docs
 - Full-body HTTP verification for the directory URL, every file, removed paths, and a missing-path sentinel
 - Host diagnostics for configuration, DNS, and route drift without repair
 
-Durable receipts, the authoring-skill cutover, om1 persistence evidence, and broad browser and concurrency matrices remain later tickets. The controlled `om1` deployment is an MVP and is not production-ready
+The [installed deployment record](docs/evidence/deployment/2026-09-22-om1-installed.md) covers `om1` persistence. The [installed skills and authoring record](docs/evidence/skills/2026-09-22-installed-skills-and-authoring.md) covers durable receipts and the authoring cutover. Remote backup and broad browser and concurrency fault matrices remain later work. The controlled `om1` deployment is an MVP and is not production-ready
