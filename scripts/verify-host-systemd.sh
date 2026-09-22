@@ -5,6 +5,9 @@ wheel=$1
 uv_bin=$2
 account=htmlpubverify
 home_dir=/home/$account
+wheel_dir=$home_dir/ci-wheel
+staged_wheel=$wheel_dir/$(basename -- "$wheel")
+wheel_hash=
 unit=html-publish-ci.service
 port=49317
 evidence=${RUNNER_TEMP:?}/html-publish-host-evidence
@@ -91,6 +94,18 @@ PY
 		if sudo -u "$account" test -f "$home_dir/receipt.json"; then
 			test "$(sudo -u "$account" cat "$home_dir/receipt.json")" = receipt-preserved || result=1
 		fi
+		if as_user test -f "$staged_wheel"; then
+			staged_hash=$(as_user sha256sum "$staged_wheel" | cut -d ' ' -f 1)
+			if test -n "$wheel_hash" && test "$staged_hash" = "$wheel_hash"; then
+				as_user rm -- "$staged_wheel" || result=1
+			else
+				echo "Refusing cleanup of changed staged wheel: $staged_wheel" >&2
+				result=1
+			fi
+		fi
+		if as_user test -d "$wheel_dir"; then
+			as_user rmdir -- "$wheel_dir" || result=1
+		fi
 		sudo test ! -e "/var/lib/systemd/linger/$account" || result=1
 		sudo timeout 15 systemctl stop "user@${uid}.service" || result=1
 		sudo timeout 15 systemctl stop "user-runtime-dir@${uid}.service" || true
@@ -128,8 +143,16 @@ archive_hash() {
 	find "$home_dir/archive.git" -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum
 }
 
+stage stage-owned-wheel
+wheel_hash=$(sha256sum "$wheel" | cut -d ' ' -f 1)
+printf '%s  %s\n' "$wheel_hash" "$(basename -- "$wheel")" >"$evidence/wheel.sha256"
+account_group=$(id -gn "$account")
+sudo install -d -m 700 -o "$account" -g "$account_group" "$wheel_dir"
+sudo install -m 600 -o "$account" -g "$account_group" "$wheel" "$staged_wheel"
+staged_hash=$(as_user sha256sum "$staged_wheel" | cut -d ' ' -f 1)
+test "$staged_hash" = "$wheel_hash"
 stage install-durable-tool
-as_user "$uv_bin" tool install --from "$wheel" html-publish
+as_user "$uv_bin" tool install --from "$staged_wheel" html-publish
 cli=$home_dir/bin/html-publish
 as_user "$cli" --version >"$evidence/version.txt"
 
@@ -191,5 +214,4 @@ stage capture-service-evidence
 printf 'before=%s after=%s\n' "$pid_before" "$pid_after" >"$evidence/pids.txt"
 as_user systemctl --user show "$unit" --property=LoadState,FragmentPath,DropInPaths,UnitFileState,ActiveState,MainPID >"$evidence/manager.txt"
 sudo cp "$unit_path" "$evidence/unit.service"
-sha256sum "$wheel" >"$evidence/wheel.sha256"
 test "$(sudo -u "$account" cat "$home_dir/receipt.json")" = receipt-preserved
