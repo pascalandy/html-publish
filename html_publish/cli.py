@@ -490,10 +490,10 @@ def main(argv: list[str] | None = None) -> int:
         if parsed.config is None:
             raise UsageFailure("--config is required")
         config = load_config(parsed.config)
-        _git.check_supported_version(Deadline.start(min(5.0, config.limits.command_seconds)))
         deadline = Deadline.start(config.limits.command_seconds)
-        store = PublicationStore(config, deadline)
         with _command_alarm(config.limits.command_seconds):
+            _git.check_supported_version(deadline)
+            store = PublicationStore(config, deadline)
             if parsed.operation == "plan":
                 report = store.plan(
                     parsed.name,

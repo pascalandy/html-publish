@@ -10,7 +10,7 @@ from typing import BinaryIO, cast
 
 from html_publish.model import Deadline, PublishError
 
-MINIMUM_GIT_VERSION = (2, 22)
+MINIMUM_GIT_VERSION = (2, 36)
 
 
 @dataclass(frozen=True)
