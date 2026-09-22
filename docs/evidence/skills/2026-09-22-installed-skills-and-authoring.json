@@ -1,0 +1,202 @@
+{
+  "schema_version": 1,
+  "date": "2026-09-22",
+  "scope": "Managed installed skills, issue 7 installed publication workflow, issue 8 authoring cutover, and temporary reboot-job cleanup",
+  "source": {
+    "checkout_revision": "2954f40ca450f4d790ab999c6663b099805470c8",
+    "tree": "67618c8b1681014224e7281616922187b761a196",
+    "clean": true,
+    "merged_tree_equal": true,
+    "cutover_reviewed_head": "ff78f01d32ec2b554360ece01ca16004108b3765",
+    "merged_commits": {
+      "receipt_skill_pr_124": "e8557871a7a1c0b809072b818d351c9a3da6a155",
+      "authoring_cutover_pr_125": "3db5160fc6bc00d1ee54768c438f476fee217823",
+      "config_guide_pr_127": "7ccad792e5a3a9eef351210be6d2dba86533d6b8"
+    }
+  },
+  "installation": {
+    "targets": [
+      ".codex/skills",
+      ".claude/skills",
+      ".pi/agent/skills",
+      ".config/opencode/skills"
+    ],
+    "files_per_target": 4,
+    "all_bytes_match": true,
+    "native_discovery": {
+      "codex": 1,
+      "pi": 1
+    },
+    "client_config": {
+      "path": "/home/pascal/.config/html-publish/client.json",
+      "sha256": "37cf59053b35465c6bb84dd27185e41b98dd92a6905241642f38aeb29eeef95c",
+      "mode": "0600",
+      "uid": 1000
+    }
+  },
+  "issue7": {
+    "status": "passed",
+    "installation_checks": 21,
+    "fresh_trial_checks": 49,
+    "fresh_sessions": 2,
+    "helper_calls": 4,
+    "publisher_calls_per_helper": 1,
+    "receipts_persisted": true,
+    "delivery_verification": "passed",
+    "file": {
+      "url": "https://om1.donkey-arcturus.ts.net:8444/html-publish/issue7-20260922-file/",
+      "initial_revision": "3cac69b4d2ed640907063f35f0c58dba1d6d10e2",
+      "final_revision": "d7468f1fbaa2d37a3857baa5b7cbc7f85341146f",
+      "final_sha256": "5f37e5b059445e5e3a5e21fcfb9814036ce55c56b0427aa863233ee4c4591a7e",
+      "bytes": 279
+    },
+    "directory": {
+      "url": "https://om1.donkey-arcturus.ts.net:8444/html-publish/issue7-20260922-site/",
+      "initial_revision": "335583522927e0032c4972f6a92bbc6719ed614f",
+      "final_revision": "244574be686cd44e9bcdcc121f1fc9d33d6a3717",
+      "index_sha256": "81c8844787ddc3ca358a6815c6df80229b284d3616c12e4599a44f1ff4ff3b2d",
+      "index_bytes": 329,
+      "stylesheet_sha256": "1d970cf5a30689fd0240174168dc9937752e3c8a501fccac0a20b344e01bfb47",
+      "stylesheet_bytes": 130
+    },
+    "browser": {
+      "t3_content_read": true,
+      "t3_screenshot_succeeded": false,
+      "t3_screenshot_error": "PreviewAutomationExecutionError",
+      "chromium_screenshot_sha256": "807f7d0b2a3449b0ff26fa4e95959f5ef61137d534c724fe342d05d518c824ad"
+    },
+    "limits": {
+      "same_host_http_only": true,
+      "live_fault_injection": false,
+      "operating_system_process_launches_traced": false,
+      "independent_harness_transcript_inspected": false
+    }
+  },
+  "issue8": {
+    "status": "passed",
+    "apply_snapshots": {
+      "html_mode_and_communication": "5f0585df38c2416b8c7c9dc4341efe1a",
+      "html_publish": "7a3217019c36423abbf89d41e6c01816"
+    },
+    "skills": [
+      "html-mode",
+      "html-communication",
+      "html-publish"
+    ],
+    "canonical_files": 21,
+    "all_four_install_targets_match": true,
+    "native_discovery": {
+      "codex": 3,
+      "pi": 3
+    },
+    "installation_checks": 40,
+    "live_trial_checks": 31,
+    "checklist": {
+      "url": "https://om1.donkey-arcturus.ts.net:8444/html-publish/issue8-20260922-checklist/",
+      "association_id": "15a7f38f977b4703bb259744aca48cf4",
+      "initial_revision": "0139245a8d2aa5a75bd6b00d44ce9251b235a4d6",
+      "final_revision": "cf6c6050d720d50c0b54d0f8a98cf71c1f17a2d8"
+    },
+    "slides": {
+      "url": "https://om1.donkey-arcturus.ts.net:8444/html-publish/issue8-20260922-slides/",
+      "accepted_revision": "d287e7a1d5138ea62f8c6dbb93222679f9e4c44d",
+      "external_dependency": "https://cdn.jsdelivr.net/npm/reveal.js@6.0.2/",
+      "offline_availability_claimed": false
+    },
+    "new_copy": {
+      "url": "https://om1.donkey-arcturus.ts.net:8444/html-publish/issue8-20260922-new/",
+      "association_id": "53ebacd6d4cd4064bf296d460fb63daf",
+      "accepted_revision": "cf6c6050d720d50c0b54d0f8a98cf71c1f17a2d8"
+    },
+    "local_only": {
+      "outcome": "local_only",
+      "publisher_calls": 0,
+      "receipt_persisted": false,
+      "url": null
+    },
+    "browser": {
+      "desktop_and_mobile": true,
+      "screenshots_inspected": [
+        "checklist_desktop_expanded.png",
+        "checklist_mobile_expanded.png",
+        "slides_desktop_initial.png",
+        "slides_mobile_initial.png"
+      ],
+      "checklist_screenshot_edition": "First edition",
+      "console_errors": 0,
+      "page_errors": 0,
+      "request_failures": 0,
+      "t3_screenshot_succeeded": false,
+      "t3_mobile_resize_succeeded": false,
+      "slides_endpoint": {
+        "elapsed_ms": 1011.3,
+        "progress": 1,
+        "slide_index": 1,
+        "slide_number": "2 / 2",
+        "hash": "#/ready-for-review",
+        "progress_bar_width": 1280
+      }
+    },
+    "failure_handoffs": {
+      "controlled_capture_checks": 18,
+      "cases": 4,
+      "publisher_or_recovery_calls": 0,
+      "classifications_and_identities_correct_on_first_pass": true,
+      "command_examples_correct_on_first_pass": false,
+      "correction": "All recovery examples now require the matching original client configuration",
+      "corrected_response_checks": 22
+    },
+    "authoring_fixtures_complete": true,
+    "independent_review_complete": true,
+    "issue8_criteria_passed": 8
+  },
+  "cleanup": {
+    "observed_at": "2026-09-22T15:16:18.835351+00:00",
+    "temporary_recorder_disabled": true,
+    "retired_unit_sha256": "c768109f83984bc0f664fb880dbc80b210bb64adb68ccfde004280c7ea4f82cb",
+    "mac_label_removed": true,
+    "mac_lookup_exit": 113,
+    "publisher_active": true,
+    "publisher_enabled": true,
+    "publisher_pid": 1347,
+    "historical_records_changed": false
+  },
+  "raw_roots": {
+    "issue7_review": "/home/pascal/.local/state/codex/orchestrate/html-publish-20260922/store/review-installed-skill",
+    "authoring_review": "/home/pascal/.local/state/codex/orchestrate/html-publish-20260922/store/review-installed-authoring",
+    "qa": "/home/pascal/.local/state/html-publish-release-qa/20260922",
+    "reboot": "/home/pascal/.local/state/html-publish-issue6/20260922-44b6da0"
+  },
+  "raw_sha256": {
+    "issue7_review": {
+      "verdict.md": "43bd7880e9587f790ca09603f1c7292a65d2a47b224790d93199386805a23e72",
+      "installation.json": "dd21d68fa7d4800c9592d4d0063b97cef5ac7387da810be2f373e00e6cecc44e",
+      "fresh-trial.json": "b4aa694e77df96e26034f52d981d933dccdda9aaef496b3cf071b33f7f7fa2b6",
+      "evidence-applicability.json": "d8a84b8483ab3312080951e44d3923b16206a3b811902e45637fb9eb1169b6db"
+    },
+    "qa": {
+      "fresh-session-provenance.json": "311af2961711c7bb947b81592018a6ca42b1e814e2136bb848107b02b7f0cad5",
+      "issue7-observer/browser.json": "7233bb3f1910c78ecaf6e45029230cb9d52a502b8008ca106daf58dc08e41f59",
+      "issue7-observer/browser-snapshot-retry.json": "cb4d14f18bea587e45f7ec4b2b5b72f7189c1ccdad31f4ea572aac0502169a10",
+      "issue7-observer/chromium-result.json": "356a6309f62cf418d23a2e725b6a4e880223fdac2cb54761444162f8d6762761",
+      "authoring-session-provenance.json": "342ac8b8dc7925684bf1a454c12e76aa94b5433bf238b7d3f5e0cacd5951a468",
+      "issue8-browser/results.json": "3569b42a636faa682ca2232af7073a33817e928a9f1ccb156cb63f1d51f5ced2",
+      "issue8-browser/visual-endpoint-results.json": "f45598577d39af3eb0adbd1f8741a9cb4f3850e7274bc442538bba9222063f34",
+      "issue8-t3.json": "56aea2591deb52d1f9eda51ab9663cc3f3d34b6a3eea5a5e2714c81782549220",
+      "issue8-handoffs/corrected-report.md": "ec1027a9184119d9f97f0c0ddefdd9a69f334450dd090168ac4d39185414f02b",
+      "issue8-handoffs/corrected-responses.json": "29fb51ef90b66409b768e3de6ded197e1cc138c12e3c7cef3461b3c319910f36"
+    },
+    "authoring_review": {
+      "verdict.md": "74abbbd2bb668b2e8385c6e2904c50f42884ab14f115e06f2203d1ca22429679",
+      "installation.json": "9bfda712a23816fecdc11a480f718367f1a8522d4c2a0aef0bdfb13fa52318fa",
+      "live-trial.json": "5583148ecf6238c8f8ea6d270c83268c068d12a162c0860dc5a86845e6472d2b",
+      "failure-capture-verification.json": "036c6ad48c3584cbd2e930ffa480cdd31088cb4f905af62faa42079150108407",
+      "response-review.json": "009bd8e0b56deee1aa2952e7c2eb2ee0ca3443c52c1597eeda01c97263202bf8",
+      "browser-evidence.json": "2b9bf7a08227bb3cee2944537c3311d010ee535845c68609e35eccb89d9a7ec3"
+    },
+    "reboot": {
+      "postboot-coordinator/cleanup.json": "57df9e4ac5334f894a96dfb1837ad2e75f60dc6af179ff44f679ba38c1d662f7"
+    }
+  },
+  "production_ready": false
+}
