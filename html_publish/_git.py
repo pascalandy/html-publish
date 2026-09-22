@@ -176,7 +176,7 @@ def hash_files(
             "A staged path cannot be sent to Git safely",
             "fix_input",
         )
-    payload = b"\n".join(os.fsencode(path) for path in paths) + b"\n"
+    payload = b"\n".join(b"./" + os.fsencode(path) for path in paths) + b"\n"
     output = command(
         git_dir,
         ["hash-object", "-w", "--stdin-paths", "--no-filters"],
