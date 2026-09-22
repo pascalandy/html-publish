@@ -1,0 +1,817 @@
+{
+  "issue": "https://github.com/pascalandy/html-publish/issues/36",
+  "date": "2026-09-22",
+  "baseline_commit": "c6b77012293a48a76925b28d6fa044fde72df56b",
+  "candidate_commit": "e9631a176923046572d900c87ffaa5f88979823d",
+  "wheel_sha256": {
+    "baseline": "334fe119a9f2d6110f991c2abe5a6e9c3ffee096722950d054fef42c8a22633a",
+    "candidate": "0cfbe0c47d5f8ce7af5c9e2973235ebdb93bc7ecd2dd3eaf1221c5b3c6909304"
+  },
+  "fixture": {
+    "layout": "flat directory with index.html and numbered text files",
+    "index_bytes": 44,
+    "text_file_bytes": 39,
+    "total_bytes": {
+      "1": 44,
+      "100": 3905,
+      "2000": 78005
+    },
+    "source": "scripts/bench_capture.py",
+    "target": "https://example.invalid/pages/ for plan; isolated loopback HTTP for publish"
+  },
+  "plan": {
+    "linux": {
+      "baseline": {
+        "platform": "Linux-7.2.5-4-omarchy-x86_64-with-glibc2.44",
+        "machine": "x86_64",
+        "fixture_parent": "/tmp",
+        "git_version": "git version 2.55.0",
+        "python_version": "Python 3.13.15",
+        "warmup_runs": 1,
+        "timed_runs": 7,
+        "source_cache": "warm after fixture generation and warmup",
+        "results": [
+          {
+            "files": 1,
+            "object_format": "sha1",
+            "seconds": [
+              0.053931304999423446,
+              0.0548902039990935,
+              0.055385413998010335,
+              0.05417133100127103,
+              0.0540584869995655,
+              0.054058639998402214,
+              0.05345205900084693
+            ],
+            "median_seconds": 0.054058639998402214,
+            "revision": "f753930fb45c9bb900249f77cc608c18db134908",
+            "git_calls": {
+              "total": 4,
+              "hash_object": 1,
+              "mktree": 1
+            }
+          },
+          {
+            "files": 1,
+            "object_format": "sha256",
+            "seconds": [
+              0.05466522200003965,
+              0.062036336999881314,
+              0.05996968700128491,
+              0.060916014001122676,
+              0.05740860700097983,
+              0.0544669899973087,
+              0.05349648500123294
+            ],
+            "median_seconds": 0.05740860700097983,
+            "revision": "b6010f045992e5641517b8720a358db31701eb4967659b10580b7e6acf1487f0",
+            "git_calls": {
+              "total": 4,
+              "hash_object": 1,
+              "mktree": 1
+            }
+          },
+          {
+            "files": 100,
+            "object_format": "sha1",
+            "seconds": [
+              0.1461901000002399,
+              0.14230145100009395,
+              0.143941962000099,
+              0.14178016299774754,
+              0.14167964499938535,
+              0.14297824499954004,
+              0.13900018700223882
+            ],
+            "median_seconds": 0.14230145100009395,
+            "revision": "e5e54b5b99ae367df500ea4c643d324f16d89e98",
+            "git_calls": {
+              "total": 103,
+              "hash_object": 100,
+              "mktree": 1
+            }
+          },
+          {
+            "files": 100,
+            "object_format": "sha256",
+            "seconds": [
+              0.16338173300027847,
+              0.16004376899945782,
+              0.14544913899953826,
+              0.1409530220007582,
+              0.13968161899902043,
+              0.13712023599873646,
+              0.15111770599833108
+            ],
+            "median_seconds": 0.14544913899953826,
+            "revision": "784393d79413ccfb7b6bbb81e80baacbda18a98aad06c09dad39f940ac604380",
+            "git_calls": {
+              "total": 103,
+              "hash_object": 100,
+              "mktree": 1
+            }
+          },
+          {
+            "files": 2000,
+            "object_format": "sha1",
+            "seconds": [
+              1.8599285679993045,
+              1.8118073090008693,
+              1.8516525340019143,
+              1.8582310380006675,
+              1.844066607998684,
+              1.820228748001682,
+              1.8483095539995702
+            ],
+            "median_seconds": 1.8483095539995702,
+            "revision": "8802122594a98d5556dda88ba9ccd6571b785134",
+            "git_calls": {
+              "total": 2003,
+              "hash_object": 2000,
+              "mktree": 1
+            }
+          },
+          {
+            "files": 2000,
+            "object_format": "sha256",
+            "seconds": [
+              1.8072658689998207,
+              1.7949717390001751,
+              1.8204059029994824,
+              1.8685797809994256,
+              1.8413941789985984,
+              1.8095399359990552,
+              1.8196748400005163
+            ],
+            "median_seconds": 1.8196748400005163,
+            "revision": "0b9b53b817941f101d5176dcd508583ac4ac035ebbf8366c92b2134077f34905",
+            "git_calls": {
+              "total": 2003,
+              "hash_object": 2000,
+              "mktree": 1
+            }
+          }
+        ]
+      },
+      "candidate": {
+        "platform": "Linux-7.2.5-4-omarchy-x86_64-with-glibc2.44",
+        "machine": "x86_64",
+        "fixture_parent": "/tmp",
+        "git_version": "git version 2.55.0",
+        "python_version": "Python 3.13.15",
+        "warmup_runs": 1,
+        "timed_runs": 7,
+        "source_cache": "warm after fixture generation and warmup",
+        "results": [
+          {
+            "files": 1,
+            "object_format": "sha1",
+            "seconds": [
+              0.05426150899802451,
+              0.06165630199757288,
+              0.054229954002948944,
+              0.05520663599963882,
+              0.052931341000657994,
+              0.05027530499864952,
+              0.052728037000633776
+            ],
+            "median_seconds": 0.054229954002948944,
+            "revision": "f753930fb45c9bb900249f77cc608c18db134908",
+            "git_calls": {
+              "total": 4,
+              "hash_object": 1,
+              "mktree": 1
+            }
+          },
+          {
+            "files": 1,
+            "object_format": "sha256",
+            "seconds": [
+              0.053567951999866636,
+              0.055751181000232464,
+              0.05441363700083457,
+              0.057213048999983585,
+              0.0564350620006735,
+              0.05544726600055583,
+              0.05855701899781707
+            ],
+            "median_seconds": 0.055751181000232464,
+            "revision": "b6010f045992e5641517b8720a358db31701eb4967659b10580b7e6acf1487f0",
+            "git_calls": {
+              "total": 4,
+              "hash_object": 1,
+              "mktree": 1
+            }
+          },
+          {
+            "files": 100,
+            "object_format": "sha1",
+            "seconds": [
+              0.06063967800218961,
+              0.05797590099973604,
+              0.062111033003020566,
+              0.056450399999448564,
+              0.058712658003059914,
+              0.06327960300041013,
+              0.05560286299805739
+            ],
+            "median_seconds": 0.058712658003059914,
+            "revision": "e5e54b5b99ae367df500ea4c643d324f16d89e98",
+            "git_calls": {
+              "total": 4,
+              "hash_object": 1,
+              "mktree": 1
+            }
+          },
+          {
+            "files": 100,
+            "object_format": "sha256",
+            "seconds": [
+              0.056717154002399184,
+              0.05747494900060701,
+              0.05599511499895016,
+              0.05671062100009294,
+              0.058277132997318404,
+              0.057674714997119736,
+              0.055424205998861
+            ],
+            "median_seconds": 0.056717154002399184,
+            "revision": "784393d79413ccfb7b6bbb81e80baacbda18a98aad06c09dad39f940ac604380",
+            "git_calls": {
+              "total": 4,
+              "hash_object": 1,
+              "mktree": 1
+            }
+          },
+          {
+            "files": 2000,
+            "object_format": "sha1",
+            "seconds": [
+              0.14892842399785877,
+              0.1513548830007494,
+              0.15051084399965475,
+              0.15024214900040533,
+              0.17212098299933132,
+              0.15410744000109844,
+              0.16516880299968761
+            ],
+            "median_seconds": 0.1513548830007494,
+            "revision": "8802122594a98d5556dda88ba9ccd6571b785134",
+            "git_calls": {
+              "total": 4,
+              "hash_object": 1,
+              "mktree": 1
+            }
+          },
+          {
+            "files": 2000,
+            "object_format": "sha256",
+            "seconds": [
+              0.18799516299986863,
+              0.1786538969972753,
+              0.16609894599969266,
+              0.1752582720000646,
+              0.17010991899951478,
+              0.16212312800053041,
+              0.15614577200176427
+            ],
+            "median_seconds": 0.17010991899951478,
+            "revision": "0b9b53b817941f101d5176dcd508583ac4ac035ebbf8366c92b2134077f34905",
+            "git_calls": {
+              "total": 4,
+              "hash_object": 1,
+              "mktree": 1
+            }
+          }
+        ]
+      }
+    },
+    "mac": {
+      "baseline": {
+        "platform": "macOS-26.6.2-arm64-arm-64bit",
+        "machine": "arm64",
+        "fixture_parent": "/tmp/html-publish-perf-base-mac.e9IHPf",
+        "git_version": "git version 2.54.0 (Apple Git-157)",
+        "python_version": "Python 3.12.13",
+        "warmup_runs": 1,
+        "timed_runs": 7,
+        "source_cache": "warm after fixture generation and warmup",
+        "results": [
+          {
+            "files": 1,
+            "object_format": "sha1",
+            "seconds": [
+              0.08420758321881294,
+              0.08478912501595914,
+              0.08388858288526535,
+              0.08524829195812345,
+              0.08288612496107817,
+              0.08448225003667176,
+              0.082223666831851
+            ],
+            "median_seconds": 0.08420758321881294,
+            "revision": "f753930fb45c9bb900249f77cc608c18db134908",
+            "git_calls": {
+              "total": 4,
+              "hash_object": 1,
+              "mktree": 1
+            }
+          },
+          {
+            "files": 1,
+            "object_format": "sha256",
+            "seconds": [
+              0.08267129096202552,
+              0.0848849171306938,
+              0.10047212499193847,
+              0.08243704214692116,
+              0.08384191710501909,
+              0.08499129209667444,
+              0.0842563749756664
+            ],
+            "median_seconds": 0.0842563749756664,
+            "revision": "b6010f045992e5641517b8720a358db31701eb4967659b10580b7e6acf1487f0",
+            "git_calls": {
+              "total": 4,
+              "hash_object": 1,
+              "mktree": 1
+            }
+          },
+          {
+            "files": 100,
+            "object_format": "sha1",
+            "seconds": [
+              1.3519693340640515,
+              1.366067917086184,
+              1.354024332948029,
+              1.3568805002141744,
+              1.3589482088573277,
+              1.3631724580191076,
+              1.3540972920600325
+            ],
+            "median_seconds": 1.3568805002141744,
+            "revision": "e5e54b5b99ae367df500ea4c643d324f16d89e98",
+            "git_calls": {
+              "total": 103,
+              "hash_object": 100,
+              "mktree": 1
+            }
+          },
+          {
+            "files": 100,
+            "object_format": "sha256",
+            "seconds": [
+              1.3571018329821527,
+              1.3620737500023097,
+              1.3436777500901371,
+              1.3513565000612289,
+              1.352393584093079,
+              1.3565959590487182,
+              1.4312092079780996
+            ],
+            "median_seconds": 1.3565959590487182,
+            "revision": "784393d79413ccfb7b6bbb81e80baacbda18a98aad06c09dad39f940ac604380",
+            "git_calls": {
+              "total": 103,
+              "hash_object": 100,
+              "mktree": 1
+            }
+          },
+          {
+            "files": 2000,
+            "object_format": "sha1",
+            "seconds": [
+              25.980792582966387,
+              25.976184458006173,
+              26.059514249907807,
+              26.081676125060767,
+              26.037664958043024,
+              26.0336323750671,
+              26.30880029196851
+            ],
+            "median_seconds": 26.037664958043024,
+            "revision": "8802122594a98d5556dda88ba9ccd6571b785134",
+            "git_calls": {
+              "total": 2003,
+              "hash_object": 2000,
+              "mktree": 1
+            }
+          },
+          {
+            "files": 2000,
+            "object_format": "sha256",
+            "seconds": [
+              26.1296082502231,
+              26.282950999913737,
+              26.139440666884184,
+              26.03168729203753,
+              26.103523541009054,
+              26.03063233406283,
+              27.290418915916234
+            ],
+            "median_seconds": 26.1296082502231,
+            "revision": "0b9b53b817941f101d5176dcd508583ac4ac035ebbf8366c92b2134077f34905",
+            "git_calls": {
+              "total": 2003,
+              "hash_object": 2000,
+              "mktree": 1
+            }
+          }
+        ]
+      },
+      "candidate": {
+        "platform": "macOS-26.6.2-arm64-arm-64bit",
+        "machine": "arm64",
+        "fixture_parent": "/tmp/html-publish-perf-post-mac.SwvBCO",
+        "git_version": "git version 2.54.0 (Apple Git-157)",
+        "python_version": "Python 3.12.13",
+        "warmup_runs": 1,
+        "timed_runs": 7,
+        "source_cache": "warm after fixture generation and warmup",
+        "results": [
+          {
+            "files": 1,
+            "object_format": "sha1",
+            "seconds": [
+              0.08827866590581834,
+              0.08755058306269348,
+              0.08938287501223385,
+              0.08769020903855562,
+              0.08907608385197818,
+              0.08797824988141656,
+              0.08911283290944993
+            ],
+            "median_seconds": 0.08827866590581834,
+            "revision": "f753930fb45c9bb900249f77cc608c18db134908",
+            "git_calls": {
+              "total": 4,
+              "hash_object": 1,
+              "mktree": 1
+            }
+          },
+          {
+            "files": 1,
+            "object_format": "sha256",
+            "seconds": [
+              0.08865462499670684,
+              0.08734395797364414,
+              0.0892804169561714,
+              0.08705800003372133,
+              0.08841929212212563,
+              0.09006670885719359,
+              0.08781912503764033
+            ],
+            "median_seconds": 0.08841929212212563,
+            "revision": "b6010f045992e5641517b8720a358db31701eb4967659b10580b7e6acf1487f0",
+            "git_calls": {
+              "total": 4,
+              "hash_object": 1,
+              "mktree": 1
+            }
+          },
+          {
+            "files": 100,
+            "object_format": "sha1",
+            "seconds": [
+              0.616636082995683,
+              0.5881899169180542,
+              0.5997090828604996,
+              0.5859412911813706,
+              0.5778543341439217,
+              0.5788507908582687,
+              0.5606389590539038
+            ],
+            "median_seconds": 0.5859412911813706,
+            "revision": "e5e54b5b99ae367df500ea4c643d324f16d89e98",
+            "git_calls": {
+              "total": 4,
+              "hash_object": 1,
+              "mktree": 1
+            }
+          },
+          {
+            "files": 100,
+            "object_format": "sha256",
+            "seconds": [
+              0.5801564168650657,
+              0.6164780829567462,
+              0.5798082079272717,
+              0.5934666669927537,
+              0.611590625019744,
+              0.6114121251739562,
+              0.686051124939695
+            ],
+            "median_seconds": 0.6114121251739562,
+            "revision": "784393d79413ccfb7b6bbb81e80baacbda18a98aad06c09dad39f940ac604380",
+            "git_calls": {
+              "total": 4,
+              "hash_object": 1,
+              "mktree": 1
+            }
+          },
+          {
+            "files": 2000,
+            "object_format": "sha1",
+            "seconds": [
+              11.47250279202126,
+              11.47753004101105,
+              11.076056082965806,
+              11.45386483403854,
+              11.524132292019203,
+              11.701169457985088,
+              11.614347625058144
+            ],
+            "median_seconds": 11.47753004101105,
+            "revision": "8802122594a98d5556dda88ba9ccd6571b785134",
+            "git_calls": {
+              "total": 4,
+              "hash_object": 1,
+              "mktree": 1
+            }
+          },
+          {
+            "files": 2000,
+            "object_format": "sha256",
+            "seconds": [
+              11.565901750000194,
+              11.679001250071451,
+              11.599444249877706,
+              11.589512790786102,
+              12.473105375189334,
+              12.169982040999457,
+              12.588885125005618
+            ],
+            "median_seconds": 11.679001250071451,
+            "revision": "0b9b53b817941f101d5176dcd508583ac4ac035ebbf8366c92b2134077f34905",
+            "git_calls": {
+              "total": 4,
+              "hash_object": 1,
+              "mktree": 1
+            }
+          }
+        ]
+      }
+    }
+  },
+  "publish": {
+    "linux": {
+      "baseline": {
+        "platform": "Linux-7.2.5-4-omarchy-x86_64-with-glibc2.44",
+        "git_version": "git version 2.55.0",
+        "python_version": "Python 3.13.15",
+        "files": 100,
+        "warmup_runs": 1,
+        "timed_runs": 5,
+        "seconds": [
+          0.8252818219989422,
+          0.8277304049988743,
+          0.8491334629979974,
+          0.8214648920002219,
+          0.8496605139989697
+        ],
+        "median_seconds": 0.8277304049988743,
+        "revision": "89310a68474c96806fce601378ffc2c1156bd088",
+        "git_calls": {
+          "total": 519,
+          "hash_object": 400,
+          "cat_file": 100
+        },
+        "http": "full CLI verification plus served index and asset bytes"
+      },
+      "candidate": {
+        "platform": "Linux-7.2.5-4-omarchy-x86_64-with-glibc2.44",
+        "git_version": "git version 2.55.0",
+        "python_version": "Python 3.13.15",
+        "files": 100,
+        "warmup_runs": 1,
+        "timed_runs": 5,
+        "seconds": [
+          0.7853495020026457,
+          0.7475484800015693,
+          0.7201696330012055,
+          0.7405490909986838,
+          0.7589363949991821
+        ],
+        "median_seconds": 0.7475484800015693,
+        "revision": "89310a68474c96806fce601378ffc2c1156bd088",
+        "git_calls": {
+          "total": 420,
+          "hash_object": 301,
+          "cat_file": 100
+        },
+        "http": "full CLI verification plus served index and asset bytes"
+      }
+    },
+    "mac": {
+      "baseline": {
+        "platform": "macOS-26.6.2-arm64-arm-64bit",
+        "git_version": "git version 2.54.0 (Apple Git-157)",
+        "python_version": "Python 3.12.13",
+        "files": 100,
+        "warmup_runs": 1,
+        "timed_runs": 5,
+        "seconds": [
+          5.997680083150044,
+          5.868190624983981,
+          5.7980366251431406,
+          6.0096125840209424,
+          6.078541374998167
+        ],
+        "median_seconds": 5.997680083150044,
+        "revision": "89310a68474c96806fce601378ffc2c1156bd088",
+        "git_calls": {
+          "total": 519,
+          "hash_object": 400,
+          "cat_file": 100
+        },
+        "http": "full CLI verification plus served index and asset bytes"
+      },
+      "candidate": {
+        "platform": "macOS-26.6.2-arm64-arm-64bit",
+        "git_version": "git version 2.54.0 (Apple Git-157)",
+        "python_version": "Python 3.12.13",
+        "files": 100,
+        "warmup_runs": 1,
+        "timed_runs": 5,
+        "seconds": [
+          5.182837750064209,
+          5.274170208023861,
+          5.089558917097747,
+          5.108695667004213,
+          4.90450191590935
+        ],
+        "median_seconds": 5.108695667004213,
+        "revision": "89310a68474c96806fce601378ffc2c1156bd088",
+        "git_calls": {
+          "total": 420,
+          "hash_object": 301,
+          "cat_file": 100
+        },
+        "http": "full CLI verification plus served index and asset bytes"
+      }
+    }
+  },
+  "loopback": {
+    "first_publication_sha1": {
+      "feature": "first-publication",
+      "run_id": "perf-final-linux-20260922",
+      "records": [
+        {
+          "command": [
+            "/tmp/html-publish-verify/perf-final-linux-20260922/instance/venv/bin/html-publish",
+            "--config",
+            "/tmp/html-publish-verify/perf-final-linux-20260922/instance/publisher.json",
+            "--json",
+            "plan",
+            "--name",
+            "release-notes",
+            "--source",
+            "/tmp/html-publish-verify/perf-final-linux-20260922/instance/page-a.html",
+            "--target",
+            "http://127.0.0.1:51379/"
+          ],
+          "stdout": "{\"schema_version\":1,\"operation\":\"plan\",\"request_id\":null,\"outcome\":\"planned\",\"target\":\"http://127.0.0.1:51379/\",\"name\":\"release-notes\",\"url\":\"http://127.0.0.1:51379/release-notes/\",\"expected_revision\":null,\"requested_revision\":\"e3b2ab47cc6a8e3b9f769ad7dee84b2543f62e1d\",\"archived_revision\":null,\"archive_commit\":null,\"active_revision\":null,\"effects\":{\"archive_advanced\":false,\"activated\":false},\"verification\":{\"result\":\"not_checked\",\"revision\":null,\"checked_at\":null,\"probe_location\":null,\"files_checked\":0,\"bytes_checked\":0,\"scope\":[],\"detail\":null},\"warnings\":[],\"error\":null,\"observation\":{\"saved\":null,\"selection\":{\"state\":\"absent\",\"revision\":null,\"integrity_checked\":false,\"detail\":null}},\"prediction\":\"create\",\"file_count\":1,\"byte_count\":52,\"differences\":{\"added\":[\"index.html\"],\"changed\":[],\"deleted\":[]},\"limits\":{\"max_bytes\":104857600,\"max_files\":2000}}\n",
+          "stderr": "",
+          "exit_code": 0
+        },
+        {
+          "command": [
+            "/tmp/html-publish-verify/perf-final-linux-20260922/instance/venv/bin/html-publish",
+            "--config",
+            "/tmp/html-publish-verify/perf-final-linux-20260922/instance/publisher.json",
+            "--json",
+            "publish",
+            "--name",
+            "release-notes",
+            "--source",
+            "/tmp/html-publish-verify/perf-final-linux-20260922/instance/page-a.html",
+            "--target",
+            "http://127.0.0.1:51379/",
+            "--request-id",
+            "perf-first-publication"
+          ],
+          "stdout": "{\"schema_version\":1,\"operation\":\"publish\",\"request_id\":\"perf-first-publication\",\"outcome\":\"published\",\"target\":\"http://127.0.0.1:51379/\",\"name\":\"release-notes\",\"url\":\"http://127.0.0.1:51379/release-notes/\",\"expected_revision\":null,\"requested_revision\":\"e3b2ab47cc6a8e3b9f769ad7dee84b2543f62e1d\",\"archived_revision\":\"e3b2ab47cc6a8e3b9f769ad7dee84b2543f62e1d\",\"archive_commit\":\"c1c7aad3b3534898190f082e9cfcd04184b5e822\",\"active_revision\":\"e3b2ab47cc6a8e3b9f769ad7dee84b2543f62e1d\",\"effects\":{\"archive_advanced\":true,\"activated\":true},\"verification\":{\"result\":\"passed\",\"revision\":\"e3b2ab47cc6a8e3b9f769ad7dee84b2543f62e1d\",\"checked_at\":\"2026-09-22T21:13:27.463164+00:00\",\"probe_location\":\"host\",\"files_checked\":1,\"bytes_checked\":104,\"scope\":[\"local_export\",\"directory_url\",\"index_html\",\"all_files\",\"missing_path\"],\"detail\":null},\"warnings\":[],\"error\":null,\"observation\":{\"saved\":{\"revision\":\"e3b2ab47cc6a8e3b9f769ad7dee84b2543f62e1d\",\"archive_commit\":\"c1c7aad3b3534898190f082e9cfcd04184b5e822\"},\"selection\":{\"state\":\"selected\",\"revision\":\"e3b2ab47cc6a8e3b9f769ad7dee84b2543f62e1d\",\"integrity_checked\":true,\"detail\":null}}}\n",
+          "stderr": "",
+          "exit_code": 0
+        },
+        {
+          "command": [
+            "/tmp/html-publish-verify/perf-final-linux-20260922/instance/venv/bin/html-publish",
+            "--config",
+            "/tmp/html-publish-verify/perf-final-linux-20260922/instance/publisher.json",
+            "--json",
+            "status",
+            "--name",
+            "release-notes"
+          ],
+          "stdout": "{\"schema_version\":1,\"operation\":\"status\",\"request_id\":null,\"outcome\":\"observed\",\"target\":\"http://127.0.0.1:51379/\",\"name\":\"release-notes\",\"url\":\"http://127.0.0.1:51379/release-notes/\",\"expected_revision\":null,\"requested_revision\":null,\"archived_revision\":\"e3b2ab47cc6a8e3b9f769ad7dee84b2543f62e1d\",\"archive_commit\":\"c1c7aad3b3534898190f082e9cfcd04184b5e822\",\"active_revision\":\"e3b2ab47cc6a8e3b9f769ad7dee84b2543f62e1d\",\"effects\":{\"archive_advanced\":false,\"activated\":false},\"verification\":{\"result\":\"not_checked\",\"revision\":null,\"checked_at\":null,\"probe_location\":null,\"files_checked\":0,\"bytes_checked\":0,\"scope\":[],\"detail\":null},\"warnings\":[],\"error\":null,\"observation\":{\"saved\":{\"revision\":\"e3b2ab47cc6a8e3b9f769ad7dee84b2543f62e1d\",\"archive_commit\":\"c1c7aad3b3534898190f082e9cfcd04184b5e822\"},\"selection\":{\"state\":\"selected\",\"revision\":\"e3b2ab47cc6a8e3b9f769ad7dee84b2543f62e1d\",\"integrity_checked\":false,\"detail\":null}}}\n",
+          "stderr": "",
+          "exit_code": 0
+        }
+      ],
+      "http": {
+        "directory": {
+          "url": "http://127.0.0.1:51379/release-notes/",
+          "status": 200,
+          "body_hex": "3c21646f63747970652068746d6c3e3c7469746c653e5061676520413c2f7469746c653e3c68313e5061676520413c2f68313e0a"
+        },
+        "index": {
+          "url": "http://127.0.0.1:51379/release-notes/index.html",
+          "status": 200,
+          "body_hex": "3c21646f63747970652068746d6c3e3c7469746c653e5061676520413c2f7469746c653e3c68313e5061676520413c2f68313e0a"
+        },
+        "slashless": {
+          "status": 301,
+          "location": "release-notes/"
+        },
+        "missing": {
+          "url": "http://127.0.0.1:51379/release-notes/missing.html",
+          "status": 404
+        }
+      }
+    },
+    "publication_sha256": {
+      "records": [
+        {
+          "command": [
+            "/tmp/html-publish-verify/perf-sha256-linux-20260922/instance/venv/bin/html-publish",
+            "--config",
+            "/tmp/html-publish-verify/perf-sha256-linux-20260922/instance/publisher.json",
+            "--json",
+            "plan",
+            "--name",
+            "hash-proof",
+            "--source",
+            "/tmp/html-publish-verify/perf-sha256-linux-20260922/instance/site-sha256",
+            "--target",
+            "http://127.0.0.1:55227/"
+          ],
+          "stdout": "{\"schema_version\":1,\"operation\":\"plan\",\"request_id\":null,\"outcome\":\"planned\",\"target\":\"http://127.0.0.1:55227/\",\"name\":\"hash-proof\",\"url\":\"http://127.0.0.1:55227/hash-proof/\",\"expected_revision\":null,\"requested_revision\":\"0ccee0c8c65e127671b0792f30f831bfa904b787aaa7750a16679c83522c4ca5\",\"archived_revision\":null,\"archive_commit\":null,\"active_revision\":null,\"effects\":{\"archive_advanced\":false,\"activated\":false},\"verification\":{\"result\":\"not_checked\",\"revision\":null,\"checked_at\":null,\"probe_location\":null,\"files_checked\":0,\"bytes_checked\":0,\"scope\":[],\"detail\":null},\"warnings\":[],\"error\":null,\"observation\":{\"saved\":null,\"selection\":{\"state\":\"absent\",\"revision\":null,\"integrity_checked\":false,\"detail\":null}},\"prediction\":\"create\",\"file_count\":3,\"byte_count\":80,\"differences\":{\"added\":[\"assets/site.css\",\"café space.bin\",\"index.html\"],\"changed\":[],\"deleted\":[]},\"limits\":{\"max_bytes\":104857600,\"max_files\":2000}}\n",
+          "stderr": "",
+          "exit_code": 0
+        },
+        {
+          "command": [
+            "/tmp/html-publish-verify/perf-sha256-linux-20260922/instance/venv/bin/html-publish",
+            "--config",
+            "/tmp/html-publish-verify/perf-sha256-linux-20260922/instance/publisher.json",
+            "--json",
+            "publish",
+            "--name",
+            "hash-proof",
+            "--source",
+            "/tmp/html-publish-verify/perf-sha256-linux-20260922/instance/site-sha256",
+            "--target",
+            "http://127.0.0.1:55227/"
+          ],
+          "stdout": "{\"schema_version\":1,\"operation\":\"publish\",\"request_id\":null,\"outcome\":\"published\",\"target\":\"http://127.0.0.1:55227/\",\"name\":\"hash-proof\",\"url\":\"http://127.0.0.1:55227/hash-proof/\",\"expected_revision\":null,\"requested_revision\":\"0ccee0c8c65e127671b0792f30f831bfa904b787aaa7750a16679c83522c4ca5\",\"archived_revision\":\"0ccee0c8c65e127671b0792f30f831bfa904b787aaa7750a16679c83522c4ca5\",\"archive_commit\":\"cbaa58f04463c14fd871fd0fd371c31945d75633eaf0bc4e884e89394087e1ce\",\"active_revision\":\"0ccee0c8c65e127671b0792f30f831bfa904b787aaa7750a16679c83522c4ca5\",\"effects\":{\"archive_advanced\":true,\"activated\":true},\"verification\":{\"result\":\"passed\",\"revision\":\"0ccee0c8c65e127671b0792f30f831bfa904b787aaa7750a16679c83522c4ca5\",\"checked_at\":\"2026-09-22T21:17:19.808235+00:00\",\"probe_location\":\"host\",\"files_checked\":3,\"bytes_checked\":118,\"scope\":[\"local_export\",\"directory_url\",\"index_html\",\"all_files\",\"missing_path\"],\"detail\":null},\"warnings\":[],\"error\":null,\"observation\":{\"saved\":{\"revision\":\"0ccee0c8c65e127671b0792f30f831bfa904b787aaa7750a16679c83522c4ca5\",\"archive_commit\":\"cbaa58f04463c14fd871fd0fd371c31945d75633eaf0bc4e884e89394087e1ce\"},\"selection\":{\"state\":\"selected\",\"revision\":\"0ccee0c8c65e127671b0792f30f831bfa904b787aaa7750a16679c83522c4ca5\",\"integrity_checked\":true,\"detail\":null}}}\n",
+          "stderr": "",
+          "exit_code": 0
+        },
+        {
+          "command": [
+            "/tmp/html-publish-verify/perf-sha256-linux-20260922/instance/venv/bin/html-publish",
+            "--config",
+            "/tmp/html-publish-verify/perf-sha256-linux-20260922/instance/publisher.json",
+            "--json",
+            "verify",
+            "--name",
+            "hash-proof"
+          ],
+          "stdout": "{\"schema_version\":1,\"operation\":\"verify\",\"request_id\":null,\"outcome\":\"verified\",\"target\":\"http://127.0.0.1:55227/\",\"name\":\"hash-proof\",\"url\":\"http://127.0.0.1:55227/hash-proof/\",\"expected_revision\":null,\"requested_revision\":null,\"archived_revision\":\"0ccee0c8c65e127671b0792f30f831bfa904b787aaa7750a16679c83522c4ca5\",\"archive_commit\":\"cbaa58f04463c14fd871fd0fd371c31945d75633eaf0bc4e884e89394087e1ce\",\"active_revision\":\"0ccee0c8c65e127671b0792f30f831bfa904b787aaa7750a16679c83522c4ca5\",\"effects\":{\"archive_advanced\":false,\"activated\":false},\"verification\":{\"result\":\"passed\",\"revision\":\"0ccee0c8c65e127671b0792f30f831bfa904b787aaa7750a16679c83522c4ca5\",\"checked_at\":\"2026-09-22T21:17:19.901561+00:00\",\"probe_location\":\"host\",\"files_checked\":3,\"bytes_checked\":118,\"scope\":[\"local_export\",\"directory_url\",\"index_html\",\"all_files\",\"missing_path\"],\"detail\":null},\"warnings\":[],\"error\":null,\"observation\":{\"saved\":{\"revision\":\"0ccee0c8c65e127671b0792f30f831bfa904b787aaa7750a16679c83522c4ca5\",\"archive_commit\":\"cbaa58f04463c14fd871fd0fd371c31945d75633eaf0bc4e884e89394087e1ce\"},\"selection\":{\"state\":\"selected\",\"revision\":\"0ccee0c8c65e127671b0792f30f831bfa904b787aaa7750a16679c83522c4ca5\",\"integrity_checked\":true,\"detail\":null}}}\n",
+          "stderr": "",
+          "exit_code": 0
+        },
+        {
+          "command": [
+            "/tmp/html-publish-verify/perf-sha256-linux-20260922/instance/venv/bin/html-publish",
+            "--config",
+            "/tmp/html-publish-verify/perf-sha256-linux-20260922/instance/publisher.json",
+            "--json",
+            "status",
+            "--name",
+            "hash-proof"
+          ],
+          "stdout": "{\"schema_version\":1,\"operation\":\"status\",\"request_id\":null,\"outcome\":\"observed\",\"target\":\"http://127.0.0.1:55227/\",\"name\":\"hash-proof\",\"url\":\"http://127.0.0.1:55227/hash-proof/\",\"expected_revision\":null,\"requested_revision\":null,\"archived_revision\":\"0ccee0c8c65e127671b0792f30f831bfa904b787aaa7750a16679c83522c4ca5\",\"archive_commit\":\"cbaa58f04463c14fd871fd0fd371c31945d75633eaf0bc4e884e89394087e1ce\",\"active_revision\":\"0ccee0c8c65e127671b0792f30f831bfa904b787aaa7750a16679c83522c4ca5\",\"effects\":{\"archive_advanced\":false,\"activated\":false},\"verification\":{\"result\":\"not_checked\",\"revision\":null,\"checked_at\":null,\"probe_location\":null,\"files_checked\":0,\"bytes_checked\":0,\"scope\":[],\"detail\":null},\"warnings\":[],\"error\":null,\"observation\":{\"saved\":{\"revision\":\"0ccee0c8c65e127671b0792f30f831bfa904b787aaa7750a16679c83522c4ca5\",\"archive_commit\":\"cbaa58f04463c14fd871fd0fd371c31945d75633eaf0bc4e884e89394087e1ce\"},\"selection\":{\"state\":\"selected\",\"revision\":\"0ccee0c8c65e127671b0792f30f831bfa904b787aaa7750a16679c83522c4ca5\",\"integrity_checked\":false,\"detail\":null}}}\n",
+          "stderr": "",
+          "exit_code": 0
+        }
+      ],
+      "served": {
+        "index.html": {
+          "status": 200,
+          "body_hex": "3c21646f63747970652068746d6c3e3c68313e5348412d3235362070726f6f663c2f68313e0a"
+        },
+        "assets/site.css": {
+          "status": 200,
+          "body_hex": "626f64797b636f6c6f723a77686974653b6261636b67726f756e643a626c61636b7d0a"
+        },
+        "café space.bin": {
+          "status": 200,
+          "body_hex": "00ff6c696e650a"
+        }
+      },
+      "revision": "0ccee0c8c65e127671b0792f30f831bfa904b787aaa7750a16679c83522c4ca5"
+    }
+  }
+}
