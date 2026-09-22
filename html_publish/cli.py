@@ -325,7 +325,7 @@ def _parser(json_version: bool = False) -> Parser:
         examples=("html-publish artifact publish ./page.html --new release-notes",),
         effects=("writes a private receipt", "calls the configured publisher"),
     )
-    _globals(artifact)
+    _globals(artifact, version)
     artifact_commands = artifact.add_subparsers(dest="artifact_action", required=True)
     artifact_publish = register_command(
         artifact_commands,
@@ -355,7 +355,7 @@ def _parser(json_version: bool = False) -> Parser:
         action="store_true",
         help="inspect source without loading config or publishing",
     )
-    _globals(artifact_publish)
+    _globals(artifact_publish, version)
     artifact_retry = register_command(
         artifact_commands,
         "retry",
@@ -364,7 +364,7 @@ def _parser(json_version: bool = False) -> Parser:
         effects=("inspects uncertain state", "may retry the original mutation"),
     )
     artifact_retry.add_argument("--receipt", required=True, help="private receipt directory")
-    _globals(artifact_retry)
+    _globals(artifact_retry, version)
     artifact_status = register_command(
         artifact_commands,
         "status",
@@ -380,7 +380,7 @@ def _parser(json_version: bool = False) -> Parser:
     artifact_status.add_argument(
         "--local-only", action="store_true", help="read receipt without config or host access"
     )
-    _globals(artifact_status)
+    _globals(artifact_status, version)
     artifact_restore = register_command(
         artifact_commands,
         "restore",
@@ -401,7 +401,7 @@ def _parser(json_version: bool = False) -> Parser:
     artifact_restore.add_argument(
         "--replaces-attempt", help="stored conflicting attempt ID; requires --reviewed-revision"
     )
-    _globals(artifact_restore)
+    _globals(artifact_restore, version)
 
     schema = register_command(
         commands,

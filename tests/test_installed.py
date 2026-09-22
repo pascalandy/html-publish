@@ -140,6 +140,15 @@ class InstalledWorkflowTest(unittest.TestCase):
                     json.loads(discovery(executable, "publish", "--version", "--json").stdout),
                     version,
                 )
+                if executable == values["CLI"]:
+                    self.assertEqual(
+                        json.loads(
+                            discovery(
+                                executable, "artifact", "status", "--version", "--json"
+                            ).stdout
+                        ),
+                        version,
+                    )
                 self.assertEqual(
                     json.loads(
                         discovery(
