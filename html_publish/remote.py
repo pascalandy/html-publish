@@ -196,29 +196,47 @@ def _parser() -> Parser:
   html-publish-remote status --limit 20
   html-publish-remote verify --name release-notes""",
     )
-    parser.add_argument("--host", type=_host, default=DEFAULT_HOST)
-    parser.add_argument("--remote-executable", default=DEFAULT_EXECUTABLE)
-    parser.add_argument("--remote-config", default=DEFAULT_CONFIG)
-    parser.add_argument("--target", default=DEFAULT_TARGET)
+    parser.add_argument(
+        "--host", type=_host, default=DEFAULT_HOST, help="SSH destination as user@host"
+    )
+    parser.add_argument(
+        "--remote-executable", default=DEFAULT_EXECUTABLE, help="host html-publish executable path"
+    )
+    parser.add_argument(
+        "--remote-config", default=DEFAULT_CONFIG, help="host publisher JSON configuration path"
+    )
+    parser.add_argument(
+        "--target",
+        default=DEFAULT_TARGET,
+        help="publication base URL matching the host configuration",
+    )
     parser.add_argument(
         "--incoming-root",
         type=_remote_path,
         default=PurePosixPath(DEFAULT_INCOMING_ROOT),
+        help="private host directory for unique plan and publish upload stages",
     )
     parser.add_argument(
         "--connect-timeout",
         type=_connect_timeout,
         default=DEFAULT_CONNECT_TIMEOUT,
+        help="SSH connection budget in seconds, capped by remaining command time "
+        "(default: %(default)s)",
     )
     parser.add_argument(
         "--command-seconds",
         type=_positive_seconds,
         default=DEFAULT_COMMAND_SECONDS,
+        help="total client budget for capture, transport, and cleanup in seconds "
+        "(default: %(default)s)",
     )
     commands = parser.add_subparsers(dest="operation", required=True)
 
-    for operation in ("plan", "publish"):
-        command = commands.add_parser(operation)
+    for operation, help_text in (
+        ("plan", "capture and inspect without publication changes"),
+        ("publish", "archive, activate, and verify a finished artifact"),
+    ):
+        command = commands.add_parser(operation, help=help_text)
         command.add_argument("--name", required=True, type=_name)
         command.add_argument("--source", required=True, type=Path)
         command.add_argument("--expected-revision")
@@ -227,6 +245,7 @@ def _parser() -> Parser:
 
     status = commands.add_parser(
         "status",
+        help="observe one publication or a paged list",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""continuation example:
   html-publish-remote status --after '<continuation>' --limit 20""",
@@ -238,11 +257,12 @@ def _parser() -> Parser:
     status.add_argument("--limit", type=_positive_limit, default=100)
     status.add_argument("--host-check", action="store_true")
 
-    verify = commands.add_parser("verify")
+    verify = commands.add_parser("verify", help="check selected files and host HTTP delivery")
     verify.add_argument("--name", required=True, type=_name)
 
     history = commands.add_parser(
         "history",
+        help="list per-name history and optional text differences",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""continuation example:
   html-publish-remote history --name release-notes --after '<continuation>' --limit 5""",
@@ -252,7 +272,9 @@ def _parser() -> Parser:
     history.add_argument("--limit", type=_positive_limit, default=20)
     history.add_argument("--diff", dest="diff_revision")
 
-    restore = commands.add_parser("restore")
+    restore = commands.add_parser(
+        "restore", help="select an archived revision under a revision guard"
+    )
     restore.add_argument("--name", required=True, type=_name)
     restore.add_argument("--archive-commit", required=True)
     restore.add_argument("--expected-revision")

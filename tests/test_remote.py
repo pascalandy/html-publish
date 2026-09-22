@@ -529,6 +529,20 @@ class RemoteCliTest(unittest.TestCase):
         self.assert_no_live_children()
 
     def test_help_explains_continuation(self) -> None:
+        root_help = self.run_remote("--help")
+        self.assertEqual(root_help.returncode, 0)
+        normalized = " ".join(root_help.stdout.split())
+        for description in (
+            "capture and inspect without publication changes",
+            "archive, activate, and verify a finished artifact",
+            "observe one publication or a paged list",
+            "check selected files and host HTTP delivery",
+            "list per-name history and optional text differences",
+            "select an archived revision under a revision guard",
+            "SSH destination as user@host",
+            "total client budget for capture, transport, and cleanup",
+        ):
+            self.assertIn(description, normalized)
         for operation in ("status", "history"):
             result = self.run_remote(operation, "--help")
             self.assertEqual(result.returncode, 0)
