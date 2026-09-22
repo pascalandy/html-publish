@@ -108,7 +108,9 @@ The public CLI has six commands; executable help owns exact syntax:
 - `publish`: capture, guard, archive, activate, and verify as one operation.
 - `status`: bounded, read-only local state; without a name, list observations with explicit
   pagination. No network by default and no assertion of byte integrity from metadata alone.
-  An explicit host-check option diagnoses configuration, DNS, and route drift without repair.
+  An explicit host-check option diagnoses configuration, DNS, and route drift without repair. A
+  named host check validates the selected export against the archived path set and bytes before
+  it reports revision-bound delivery verification. Local corruption leaves the route unchecked.
 - `verify`: explicitly validate the selected export and probe delivery, without activating
   anything.
 - `history`: bounded per-name reachable history, restore identifiers, and changed-path summaries.
@@ -137,7 +139,8 @@ and `error`.
   failure. Report an orphaned Git lock explicitly; do not remove lock files based only on age.
 - Missing or unobserved facts are null, never guessed. Bound default lists to 100 entries and
   history to 20; return totals, truncation, and continuation information rather than silent
-  omissions. Text differences default off and cap at 64 KiB when requested.
+  omissions. Text differences default off and cap the final UTF-8 encoded text at 64 KiB when
+  requested.
 - Publish/restore outcomes are `published|unchanged|error`; plan is `planned|error`, status and
   history are `observed|error`, and verify is `verified|error`. Exit 0 means success, 1
   operational failure, 2 invalid usage. Degraded status exits 1; saved-versus-active divergence
@@ -193,6 +196,10 @@ URL. Percent-encode path segments exactly once; redirects may remain only within
 and publication path boundary, with a finite hop limit. Use full-body requests with identity
 encoding, not HEAD or 304 responses, as byte evidence. Never follow links found inside the
 artifact.
+
+A standalone verification failure preserves the safely observed saved and selected state. A
+delivery attempt that fails reports `failed` for the selected revision. A failure before the
+delivery attempt reports `not_checked`; local corruption does not claim successful verification.
 
 Check a deliberately missing URL to reject SPA fallback. During revision, check removed paths
 known from the previous active tree; paths now legitimately used as directories are not required

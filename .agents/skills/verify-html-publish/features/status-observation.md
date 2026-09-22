@@ -29,7 +29,7 @@ Preconditions:
 
 ## Gotchas
 
-- Status never verifies the served URL. A `selected` state proves the link shape and archive membership, not delivery. Pair it with a `curl` when the proof needs the user-visible page.
+- Plain status without `--host-check` never verifies the served URL. A `selected` state proves the link shape and archive membership, not delivery. Pair it with a `curl` when the proof needs the user-visible page, or follow the host-diagnostics recipe for an explicit check.
 - An unknown name is not an error. Exit 0 with `absent` is the expected result.
 - The list is paged with a default limit of 100. Walk it with repeated `--after` calls keyed on the last name when more pages exist.
 - `--limit` accepts 1 through 100 only. Anything else exits 2 with a usage error before the store is touched.

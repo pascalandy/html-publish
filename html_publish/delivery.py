@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import contextlib
 import secrets
+import socket
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Sequence
 from email.message import Message
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Protocol, cast
@@ -113,29 +115,39 @@ def _open(
 
 def _compare(response: _Response, expected: Path, deadline: Deadline) -> int:
     compared = 0
-    with expected.open("rb") as source:
-        while True:
-            deadline.remaining()
-            actual_chunk = response.read1(64 * 1024)
-            deadline.remaining()
-            if not actual_chunk:
-                if source.read(1):
+    try:
+        with expected.open("rb") as source:
+            while True:
+                deadline.remaining()
+                actual_chunk = response.read1(64 * 1024)
+                deadline.remaining()
+                if not actual_chunk:
+                    if source.read(1):
+                        raise PublishError(
+                            "delivery_failure",
+                            "verify",
+                            f"Delivered bytes differ from the committed file: {expected.name}",
+                            "inspect",
+                        )
+                    return compared
+                expected_chunk = source.read(len(actual_chunk))
+                if actual_chunk != expected_chunk:
                     raise PublishError(
                         "delivery_failure",
                         "verify",
                         f"Delivered bytes differ from the committed file: {expected.name}",
                         "inspect",
                     )
-                return compared
-            expected_chunk = source.read(len(actual_chunk))
-            if actual_chunk != expected_chunk:
-                raise PublishError(
-                    "delivery_failure",
-                    "verify",
-                    f"Delivered bytes differ from the committed file: {expected.name}",
-                    "inspect",
-                )
-            compared += len(actual_chunk)
+                compared += len(actual_chunk)
+    except PublishError:
+        raise
+    except OSError as error:
+        raise PublishError(
+            "delivery_failure",
+            "verify",
+            f"The delivery response for {expected.name} could not be read: {error}",
+            "retry",
+        ) from error
 
 
 def _path_url(root: str, relative: str) -> str:
@@ -153,6 +165,7 @@ def verify(
     site: StoredSite,
     deadline: Deadline,
     timeout_cap: float,
+    removed: Sequence[str] = (),
 ) -> Verification:
     root_url = publication_url(base_url, name)
     bytes_checked = 0
@@ -207,7 +220,32 @@ def verify(
                 "fix_route",
             )
 
+    checked_removed = 0
+    for path in removed:
+        removed_url = _path_url(root_url, path)
+        response, status, _headers, final_url = _open(removed_url, root_url, deadline, timeout_cap)
+        with contextlib.closing(response):
+            if status == 200:
+                raise PublishError(
+                    "delivery_failure",
+                    "verify",
+                    f"A removed path is still served: {final_url}",
+                    "inspect",
+                )
+            if status not in {404, 410}:
+                raise PublishError(
+                    "delivery_failure",
+                    "verify",
+                    f"A removed path returned HTTP {status}: {final_url}",
+                    "fix_route",
+                )
+            checked_removed += 1
+
     from datetime import UTC, datetime
+
+    scope = ["local_export", "directory_url", "index_html", "all_files", "missing_path"]
+    if checked_removed:
+        scope.append("removed_paths")
 
     return Verification(
         result="passed",
@@ -216,5 +254,31 @@ def verify(
         probe_location="host",
         files_checked=len(site.entries),
         bytes_checked=bytes_checked,
-        scope=("local_export", "directory_url", "index_html", "all_files", "missing_path"),
+        scope=tuple(scope),
     )
+
+
+def resolve_host(base_url: str) -> dict[str, object]:
+    parsed = urllib.parse.urlparse(base_url)
+    hostname = parsed.hostname
+    if not hostname:
+        return {"dns_error": "The configured base URL has no hostname"}
+    try:
+        infos = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
+    except OSError as error:
+        return {"dns_error": str(error)}
+    return {"dns_resolved": sorted({info[4][0] for info in infos})}
+
+
+def reachability_probe(base_url: str, deadline: Deadline, timeout_cap: float) -> dict[str, object]:
+    request = urllib.request.Request(
+        base_url,
+        headers={"Accept-Encoding": "identity", "Cache-Control": "no-cache"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=deadline.remaining(timeout_cap)) as response:
+            return {"http_status": response.status}
+    except urllib.error.HTTPError as error:
+        return {"http_status": error.code}
+    except (OSError, urllib.error.URLError) as error:
+        return {"http_error": str(error)}

@@ -34,6 +34,9 @@ from html_publish.store import PublicationStore
 NAME_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 
 
+OPERATIONS = frozenset({"plan", "publish", "status", "verify", "history", "restore"})
+
+
 class UsageFailure(Exception):
     pass
 
@@ -114,7 +117,27 @@ def _parser() -> Parser:
     status.add_argument("--name", type=_name)
     status.add_argument("--after", type=_name)
     status.add_argument("--limit", type=_positive_int, default=100)
+    status.add_argument("--host-check", action="store_true", default=argparse.SUPPRESS)
     status.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+
+    verify = commands.add_parser("verify", help="validate the selected export and probe delivery")
+    verify.add_argument("--name", required=True, type=_name)
+    verify.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+
+    history = commands.add_parser("history", help="list bounded publication history for a name")
+    history.add_argument("--name", required=True, type=_name)
+    history.add_argument("--limit", type=_positive_int, default=20)
+    history.add_argument("--after")
+    history.add_argument("--diff", dest="diff_revision")
+    history.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+
+    restore = commands.add_parser("restore", help="select a saved revision at a reachable commit")
+    restore.add_argument("--name", required=True, type=_name)
+    restore.add_argument("--archive-commit", required=True)
+    restore.add_argument("--target", required=True)
+    restore.add_argument("--expected-revision", type=Revision)
+    restore.add_argument("--request-id")
+    restore.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     return parser
 
 
@@ -445,7 +468,7 @@ def report_dict(report: Report) -> dict[str, object]:
 
 
 def _usage_report(operation: str | None, failure: Failure) -> dict[str, object]:
-    selected_operation = operation if operation in {"plan", "publish", "status"} else "usage"
+    selected_operation = operation if operation in OPERATIONS else "usage"
     return {
         "schema_version": 1,
         "operation": selected_operation,
@@ -473,7 +496,7 @@ def _print_report(report: Report, json_output: bool) -> int:
         print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
     elif report.error:
         print(f"html-publish: {report.error.message}", file=sys.stderr)
-    elif report.operation == "publish":
+    elif report.operation in {"publish", "restore"}:
         assert report.url is not None
         print(report.url)
     else:
@@ -484,7 +507,7 @@ def _print_report(report: Report, json_output: bool) -> int:
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     json_output = "--json" in arguments
-    operation = next((value for value in arguments if value in {"plan", "publish", "status"}), None)
+    operation = next((value for value in arguments if value in OPERATIONS), None)
     try:
         parsed = _parser().parse_args(arguments)
         if parsed.config is None:
@@ -509,8 +532,27 @@ def main(argv: list[str] | None = None) -> int:
                     parsed.expected_revision,
                     parsed.request_id,
                 )
+            elif parsed.operation == "verify":
+                report = store.verify_page(parsed.name)
+            elif parsed.operation == "history":
+                report = store.history(
+                    parsed.name, parsed.limit, parsed.after, parsed.diff_revision
+                )
+            elif parsed.operation == "restore":
+                report = store.restore(
+                    parsed.name,
+                    parsed.archive_commit,
+                    parsed.target,
+                    parsed.expected_revision,
+                    parsed.request_id,
+                )
             else:
-                report = store.status(parsed.name, parsed.after, parsed.limit)
+                report = store.status(
+                    parsed.name,
+                    parsed.after,
+                    parsed.limit,
+                    getattr(parsed, "host_check", False),
+                )
         return _print_report(report, parsed.json)
     except UsageFailure as error:
         failure = Failure("invalid_usage", "usage", str(error), "fix_arguments")
@@ -520,13 +562,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"html-publish: {error}", file=sys.stderr)
         return 2
     except PublishError as error:
-        error_operation: Literal["plan", "publish", "status"]
-        if operation == "plan":
-            error_operation = "plan"
-        elif operation == "publish":
-            error_operation = "publish"
-        else:
-            error_operation = "status"
+        error_operation: Literal["plan", "publish", "status", "verify", "history", "restore"]
+        error_operation = cast(
+            Literal["plan", "publish", "status", "verify", "history", "restore"],
+            operation if operation in OPERATIONS else "status",
+        )
         report = Report(
             error_operation,
             "error",

@@ -108,6 +108,13 @@ class StatusEntry:
 
 
 @dataclass(frozen=True)
+class HistoryEntry:
+    archive_commit: Commit
+    revision: Revision
+    changes: Mapping[str, list[str]]
+
+
+@dataclass(frozen=True)
 class Effects:
     archive_advanced: bool | None = False
     activated: bool | None = False
@@ -136,8 +143,8 @@ class Failure:
 
 @dataclass(frozen=True)
 class Report:
-    operation: Literal["plan", "publish", "status"]
-    outcome: Literal["planned", "published", "unchanged", "observed", "error"]
+    operation: Literal["plan", "publish", "status", "verify", "history", "restore"]
+    outcome: Literal["planned", "published", "unchanged", "observed", "verified", "error"]
     target: str | None
     name: Name | None
     url: str | None

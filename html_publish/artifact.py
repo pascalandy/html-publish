@@ -159,6 +159,9 @@ def _warnings(index: Path) -> tuple[str, ...]:
     return tuple(warnings)
 
 
+warnings_for = _warnings
+
+
 def capture(
     source: Path,
     workspace: Path,

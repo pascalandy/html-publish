@@ -12,8 +12,13 @@ from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from html_publish import _git
-from html_publish.artifact import capture
-from html_publish.delivery import publication_url, verify
+from html_publish.artifact import capture, warnings_for
+from html_publish.delivery import (
+    publication_url,
+    reachability_probe,
+    resolve_host,
+    verify,
+)
 from html_publish.model import (
     CapturedSite,
     Commit,
@@ -22,6 +27,7 @@ from html_publish.model import (
     Effects,
     Failure,
     FileEntry,
+    HistoryEntry,
     LocalState,
     Name,
     PublishError,
@@ -36,6 +42,8 @@ from html_publish.model import (
 )
 
 ARCHIVE_REF = "refs/heads/published"
+_PublishingOperation = Literal["publish", "restore"]
+_DIFF_CAP_BYTES = 64 * 1024
 _PublicationDecision = Literal["create", "update", "unchanged"]
 
 
@@ -335,6 +343,24 @@ class PublicationStore:
         )
         return any(self._page_tree_at(commit, name) == str(revision) for commit in commits)
 
+    def _page_commits(self, name: Name) -> tuple[str, ...]:
+        head = self._head()
+        if head is None:
+            return ()
+        output = (
+            _git.command(
+                self.config.archive,
+                ["rev-list", head, "--", f"{name}/site"],
+                self.deadline,
+            )
+            .decode()
+            .splitlines()
+        )
+        return tuple(output)
+
+    def _tree_paths(self, revision: str) -> dict[str, str]:
+        return {str(entry.path): entry.blob for entry in self._site(revision).entries}
+
     def _release_paths(self, root: Path) -> tuple[str, ...]:
         paths: list[str] = []
 
@@ -535,10 +561,16 @@ class PublicationStore:
         except Exception as error:
             if isinstance(error, PublishError):
                 raise
+            usage = sum(
+                item.stat(follow_symlinks=False).st_size
+                for item in stage.rglob("*")
+                if item.is_file()
+            )
             raise PublishError(
                 "export_failure",
                 "export",
-                f"The committed release could not be materialized in {stage}: {error}",
+                f"The committed release could not be materialized in {stage}"
+                f" ({usage} bytes): {error}",
                 "inspect",
             ) from error
         return release
@@ -558,6 +590,7 @@ class PublicationStore:
         revision: Revision,
         release: Path,
         site: StoredSite,
+        removed: tuple[str, ...] = (),
     ) -> Verification:
         try:
             return verify(
@@ -568,6 +601,7 @@ class PublicationStore:
                 site,
                 self.deadline,
                 self.config.limits.verification_seconds,
+                removed=removed,
             )
         except PublishError as error:
             if error.failure.phase == "verify":
@@ -579,6 +613,149 @@ class PublicationStore:
                 error.failure.next_action,
                 error.failure.required_inputs,
             ) from error
+
+    def _publish_captured(
+        self,
+        operation: _PublishingOperation,
+        name: Name,
+        captured: CapturedSite,
+        target: str,
+        expected_revision: Revision | None,
+        request_id: str | None,
+    ) -> Report:
+        effects = Effects()
+        verification = Verification()
+        try:
+            with self._lock(create=True):
+                state = self._state(name, full=True)
+                decision = _decide_publication(state, captured.revision, expected_revision)
+                if isinstance(decision, Failure):
+                    raise PublishError(
+                        decision.code,
+                        decision.phase,
+                        decision.message,
+                        decision.next_action,
+                        decision.required_inputs,
+                    )
+                previous_paths: set[str] = set()
+                if (
+                    decision == "update"
+                    and state.selection.kind == "selected"
+                    and state.selection.revision is not None
+                ):
+                    previous_paths = set(self._tree_paths(str(state.selection.revision)))
+                if decision == "unchanged":
+                    assert state.selection.kind == "selected"
+                    assert state.selection.release is not None
+                    site = self._site(str(captured.revision))
+                    verification = self._verify(
+                        name,
+                        captured.revision,
+                        state.selection.release,
+                        site,
+                    )
+                    return Report(
+                        operation,
+                        "unchanged",
+                        target,
+                        name,
+                        publication_url(target, name),
+                        request_id,
+                        expected_revision,
+                        captured.revision,
+                        state,
+                        effects,
+                        verification,
+                        captured.warnings,
+                    )
+                saved = state.saved
+                if saved is None or saved.site.revision != captured.revision:
+                    expected_head = self._head()
+                    saved = self._save(name, captured, expected_head)
+                    effects = Effects(True, False)
+                release = self._materialize(saved.site)
+                staged_link = self.config.runtime / "staging" / f"link-{uuid.uuid4().hex}"
+                public_link = self.config.runtime / "public" / str(name)
+                os.symlink(f"../releases/{saved.site.revision}", staged_link)
+                _fsync_directory(staged_link.parent)
+                try:
+                    os.replace(staged_link, public_link)
+                except OSError as error:
+                    raise PublishError(
+                        "activation_failure",
+                        "activate",
+                        f"The public selection could not be replaced: {error}",
+                        "inspect",
+                    ) from error
+                effects = Effects(effects.archive_advanced, True)
+                try:
+                    _fsync_directory(public_link.parent)
+                except OSError as error:
+                    raise PublishError(
+                        "persistence_failure",
+                        "activate",
+                        f"The selected publication could not be persisted: {error}",
+                        "inspect",
+                    ) from error
+                selected = self._state(name, full=True)
+                active_paths = {str(entry.path) for entry in saved.site.entries}
+                removed = tuple(
+                    path
+                    for path in sorted(previous_paths - active_paths)
+                    if not any(new_path.startswith(f"{path}/") for new_path in active_paths)
+                )
+                verification = self._verify(
+                    name,
+                    saved.site.revision,
+                    release,
+                    saved.site,
+                    removed=removed,
+                )
+                return Report(
+                    operation,
+                    "published",
+                    target,
+                    name,
+                    publication_url(target, name),
+                    request_id,
+                    expected_revision,
+                    captured.revision,
+                    selected,
+                    effects,
+                    verification,
+                    captured.warnings,
+                )
+        except (OSError, PublishError) as error:
+            failure = (
+                error.failure
+                if isinstance(error, PublishError)
+                else Failure("operation_failure", "unknown", str(error), "inspect")
+            )
+            state = self._observe_after_error(name)
+            if failure.code == "git_timeout" and failure.phase == "archive":
+                effects = Effects(None, effects.activated)
+            if failure.phase == "verify":
+                verification = Verification(
+                    "failed",
+                    state.selection.revision,
+                    probe_location="host",
+                    detail=failure.message,
+                )
+            return Report(
+                operation,
+                "error",
+                target,
+                name,
+                publication_url(target, name),
+                request_id,
+                expected_revision,
+                captured.revision,
+                state,
+                effects,
+                verification,
+                captured.warnings,
+                failure,
+            )
 
     def plan(
         self,
@@ -664,126 +841,17 @@ class PublicationStore:
         expected_revision: Revision | None,
         request_id: str | None,
     ) -> Report:
-        effects = Effects()
         captured: CapturedSite | None = None
-        verification = Verification()
         try:
             self._check_target(target)
             self._check_source_separation(source)
             object_format = self._archive_format()
-            with tempfile.TemporaryDirectory(prefix="html-publish-capture-") as temporary:
-                captured = capture(
-                    source,
-                    Path(temporary),
-                    object_format,
-                    self.config.limits,
-                    self.deadline,
-                )
-                with self._lock(create=True):
-                    state = self._state(name, full=True)
-                    decision = _decide_publication(
-                        state,
-                        captured.revision,
-                        expected_revision,
-                    )
-                    if isinstance(decision, Failure):
-                        raise PublishError(
-                            decision.code,
-                            decision.phase,
-                            decision.message,
-                            decision.next_action,
-                            decision.required_inputs,
-                        )
-                    if decision == "unchanged":
-                        assert state.selection.kind == "selected"
-                        assert state.selection.release is not None
-                        site = self._site(str(captured.revision))
-                        verification = self._verify(
-                            name,
-                            captured.revision,
-                            state.selection.release,
-                            site,
-                        )
-                        return Report(
-                            "publish",
-                            "unchanged",
-                            target,
-                            name,
-                            publication_url(target, name),
-                            request_id,
-                            expected_revision,
-                            captured.revision,
-                            state,
-                            effects,
-                            verification,
-                            captured.warnings,
-                        )
-                    saved = state.saved
-                    if saved is None or saved.site.revision != captured.revision:
-                        expected_head = self._head()
-                        saved = self._save(name, captured, expected_head)
-                        effects = Effects(True, False)
-                    release = self._materialize(saved.site)
-                    staged_link = self.config.runtime / "staging" / f"link-{uuid.uuid4().hex}"
-                    public_link = self.config.runtime / "public" / str(name)
-                    os.symlink(f"../releases/{saved.site.revision}", staged_link)
-                    _fsync_directory(staged_link.parent)
-                    try:
-                        os.replace(staged_link, public_link)
-                    except OSError as error:
-                        raise PublishError(
-                            "activation_failure",
-                            "activate",
-                            f"The public selection could not be replaced: {error}",
-                            "inspect",
-                        ) from error
-                    effects = Effects(effects.archive_advanced, True)
-                    try:
-                        _fsync_directory(public_link.parent)
-                    except OSError as error:
-                        raise PublishError(
-                            "persistence_failure",
-                            "activate",
-                            f"The selected publication could not be persisted: {error}",
-                            "inspect",
-                        ) from error
-                    selected = self._state(name, full=True)
-                    verification = self._verify(
-                        name,
-                        saved.site.revision,
-                        release,
-                        saved.site,
-                    )
-                    return Report(
-                        "publish",
-                        "published",
-                        target,
-                        name,
-                        publication_url(target, name),
-                        request_id,
-                        expected_revision,
-                        captured.revision,
-                        selected,
-                        effects,
-                        verification,
-                        captured.warnings,
-                    )
         except (OSError, PublishError) as error:
             failure = (
                 error.failure
                 if isinstance(error, PublishError)
                 else Failure("operation_failure", "unknown", str(error), "inspect")
             )
-            state = self._observe_after_error(name)
-            if failure.code == "git_timeout" and failure.phase == "archive":
-                effects = Effects(None, effects.activated)
-            if failure.phase == "verify":
-                verification = Verification(
-                    "failed",
-                    state.selection.revision,
-                    probe_location="host",
-                    detail=failure.message,
-                )
             return Report(
                 "publish",
                 "error",
@@ -792,19 +860,435 @@ class PublicationStore:
                 publication_url(target, name),
                 request_id,
                 expected_revision,
-                captured.revision if captured else None,
-                state,
-                effects,
-                verification,
-                captured.warnings if captured else (),
-                failure,
+                error=failure,
+            )
+        with tempfile.TemporaryDirectory(prefix="html-publish-capture-") as temporary:
+            try:
+                captured = capture(
+                    source,
+                    Path(temporary),
+                    object_format,
+                    self.config.limits,
+                    self.deadline,
+                )
+            except (OSError, PublishError) as error:
+                failure = (
+                    error.failure
+                    if isinstance(error, PublishError)
+                    else Failure("operation_failure", "unknown", str(error), "inspect")
+                )
+                return Report(
+                    "publish",
+                    "error",
+                    target,
+                    name,
+                    publication_url(target, name),
+                    request_id,
+                    expected_revision,
+                    captured.revision if captured else None,
+                    error=failure,
+                )
+            return self._publish_captured(
+                "publish",
+                name,
+                captured,
+                target,
+                expected_revision,
+                request_id,
             )
 
-    def status(self, name: Name | None, after: Name | None, limit: int) -> Report:
+    def verify_page(self, name: Name) -> Report:
+        state: LocalState | None = None
+        verification = Verification()
+        delivery_attempted = False
         try:
             with self._lock(create=False):
+                state = self._state(name, full=True)
+                selection = state.selection
+                if selection.kind == "degraded":
+                    raise PublishError(
+                        "state_degraded",
+                        "verify",
+                        selection.detail or "The selected export is degraded",
+                        "inspect",
+                    )
+                if selection.kind == "unobserved":
+                    raise PublishError(
+                        "state_unobserved",
+                        "verify",
+                        selection.detail or "Selected state could not be observed",
+                        "inspect",
+                    )
+                if (
+                    selection.kind != "selected"
+                    or selection.release is None
+                    or selection.revision is None
+                ):
+                    raise PublishError(
+                        "nothing_selected",
+                        "verify",
+                        "No active publication is selected for this name",
+                        "publish",
+                    )
+                site = self._site(str(selection.revision))
+                delivery_attempted = True
+                verification = self._verify(name, selection.revision, selection.release, site)
+                return Report(
+                    "verify",
+                    "verified",
+                    self.config.base_url,
+                    name,
+                    publication_url(self.config.base_url, name),
+                    state=state,
+                    verification=verification,
+                )
+        except (OSError, PublishError) as error:
+            failure = (
+                error.failure
+                if isinstance(error, PublishError)
+                else Failure("observation_failure", "verify", str(error), "inspect")
+            )
+            if state is None:
+                state = self._observe_after_error(name)
+            if delivery_attempted:
+                verification = Verification(
+                    "failed",
+                    state.selection.revision,
+                    probe_location="host",
+                    scope=("local_export",),
+                    detail=failure.message,
+                )
+            return Report(
+                "verify",
+                "error",
+                self.config.base_url,
+                name,
+                publication_url(self.config.base_url, name),
+                state=state,
+                verification=verification,
+                error=failure,
+            )
+
+    def _entry_changes(
+        self,
+        name: Name,
+        newer: str,
+        older: str | None,
+    ) -> dict[str, list[str]]:
+        new_paths = self._tree_paths(newer)
+        old_paths = self._tree_paths(older) if older is not None else {}
+        return {
+            "added": sorted(new_paths.keys() - old_paths.keys()),
+            "changed": sorted(
+                path
+                for path in new_paths.keys() & old_paths.keys()
+                if new_paths[path] != old_paths[path]
+            ),
+            "deleted": sorted(old_paths.keys() - new_paths.keys()),
+        }
+
+    def history(
+        self,
+        name: Name,
+        limit: int,
+        after: str | None,
+        diff_revision: str | None,
+    ) -> Report:
+        try:
+            commits = self._page_commits(name)
+            if after is not None:
+                if after not in commits:
+                    raise PublishError(
+                        "unreachable_revision",
+                        "history",
+                        "The continuation commit is not in the reachable page history",
+                        "inspect",
+                        ("archive_commit",),
+                    )
+                commits = commits[commits.index(after) + 1 :]
+            window = commits[: limit + 1]
+            truncated = len(window) > limit
+            shown = window[:limit]
+            entries: list[HistoryEntry] = []
+            for index, commit in enumerate(shown):
+                revision = self._page_tree_at(commit, name)
+                if revision is None:
+                    raise PublishError(
+                        "archive_corrupt",
+                        "history",
+                        f"The page tree is missing at {commit}",
+                        "inspect",
+                    )
+                older_commit = window[index + 1] if index + 1 < len(window) else None
+                older = self._page_tree_at(older_commit, name) if older_commit is not None else None
+                changes = self._entry_changes(name, revision, older)
+                entries.append(HistoryEntry(Commit(commit), Revision(revision), changes))
+            details: dict[str, object] = {
+                "total": len(commits),
+                "truncated": truncated,
+                "continuation": shown[-1] if truncated and shown else None,
+                "entries": [
+                    {
+                        "archive_commit": entry.archive_commit,
+                        "archived_revision": entry.revision,
+                        "changes": dict(entry.changes),
+                    }
+                    for entry in entries
+                ],
+            }
+            if diff_revision is not None:
+                head = self._head()
+                if head is None or not self._reachable(name, Revision(diff_revision)):
+                    raise PublishError(
+                        "unreachable_revision",
+                        "history",
+                        "The diff revision is not reachable for this name",
+                        "inspect",
+                        ("archived_revision",),
+                    )
+                latest = self._page_tree_at(head, name)
+                if latest is None:
+                    raise PublishError(
+                        "archive_corrupt",
+                        "history",
+                        f"The page tree is missing at {head}",
+                        "inspect",
+                    )
+                raw = _git.command(
+                    self.config.archive,
+                    ["diff", "--no-color", "--unified=3", diff_revision, latest],
+                    self.deadline,
+                )
+                text = raw.decode("utf-8", "replace")
+                encoded_text = text.encode("utf-8")
+                truncated_diff = len(encoded_text) > _DIFF_CAP_BYTES
+                if truncated_diff:
+                    text = encoded_text[:_DIFF_CAP_BYTES].decode("utf-8", "ignore")
+                details["diff"] = {
+                    "from": diff_revision,
+                    "to": latest,
+                    "truncated": truncated_diff,
+                    "text": text,
+                }
+            return Report(
+                "history",
+                "observed",
+                self.config.base_url,
+                name,
+                publication_url(self.config.base_url, name),
+                details=details,
+            )
+        except (OSError, PublishError) as error:
+            failure = (
+                error.failure
+                if isinstance(error, PublishError)
+                else Failure("observation_failure", "history", str(error), "inspect")
+            )
+            return Report(
+                "history",
+                "error",
+                self.config.base_url,
+                name,
+                publication_url(self.config.base_url, name),
+                error=failure,
+            )
+
+    def restore(
+        self,
+        name: Name,
+        archive_commit: str,
+        target: str,
+        expected_revision: Revision | None,
+        request_id: str | None,
+    ) -> Report:
+        captured: CapturedSite | None = None
+        try:
+            self._check_target(target)
+            commits = self._page_commits(name)
+            if archive_commit not in commits:
+                raise PublishError(
+                    "unreachable_revision",
+                    "restore",
+                    "The restore commit is not reachable in the page history for this name",
+                    "inspect",
+                    ("archive_commit",),
+                )
+            revision = self._page_tree_at(archive_commit, name)
+            if revision is None:
+                raise PublishError(
+                    "unreachable_revision",
+                    "restore",
+                    "The restore commit has no site for this name",
+                    "inspect",
+                    ("archive_commit",),
+                )
+        except (OSError, PublishError) as error:
+            failure = (
+                error.failure
+                if isinstance(error, PublishError)
+                else Failure("operation_failure", "restore", str(error), "inspect")
+            )
+            return Report(
+                "restore",
+                "error",
+                target,
+                name,
+                publication_url(target, name),
+                request_id,
+                expected_revision,
+                error=failure,
+            )
+        site = self._site(revision)
+        with tempfile.TemporaryDirectory(prefix="html-publish-restore-") as temporary:
+            try:
+                root = Path(temporary) / "site"
+                root.mkdir()
+                total_bytes = 0
+                for entry in site.entries:
+                    destination = root.joinpath(*PurePosixPath(str(entry.path)).parts)
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    _git.export_blob(self.config.archive, entry.blob, destination, self.deadline)
+                    os.chmod(destination, 0o644)
+                    total_bytes += entry.size
+                captured = CapturedSite(
+                    root,
+                    site.entries,
+                    Revision(revision),
+                    total_bytes,
+                    warnings_for(root / "index.html"),
+                )
+            except (OSError, PublishError) as error:
+                failure = (
+                    error.failure
+                    if isinstance(error, PublishError)
+                    else Failure("operation_failure", "restore", str(error), "inspect")
+                )
+                return Report(
+                    "restore",
+                    "error",
+                    target,
+                    name,
+                    publication_url(target, name),
+                    request_id,
+                    expected_revision,
+                    Revision(revision),
+                    error=failure,
+                )
+            return self._publish_captured(
+                "restore",
+                name,
+                captured,
+                target,
+                expected_revision,
+                request_id,
+            )
+
+    def _staging_usage(self) -> dict[str, object] | None:
+        staging = self.config.runtime / "staging"
+        if not staging.is_dir():
+            return None
+        items = [item for item in staging.iterdir() if not item.name.startswith(".")]
+        if not items:
+            return None
+        return {
+            "entries": len(items),
+            "bytes": sum(
+                item.stat(follow_symlinks=False).st_size
+                for item in staging.rglob("*")
+                if item.is_file()
+            ),
+        }
+
+    def _host_checks(
+        self,
+        name: Name | None,
+        state: LocalState | None,
+    ) -> tuple[dict[str, object], Verification, Failure | None]:
+        checks: dict[str, object] = resolve_host(self.config.base_url)
+        verification = Verification()
+        if name is None:
+            if "dns_error" in checks:
+                checks["route"] = "unreachable"
+                return checks, verification, None
+            checks.update(
+                reachability_probe(
+                    self.config.base_url,
+                    self.deadline,
+                    self.config.limits.verification_seconds,
+                )
+            )
+            checks["route"] = "ok" if "http_status" in checks else "unreachable"
+            return checks, verification, None
+        selection = state.selection if state is not None else Selection("absent")
+        if selection.kind != "selected" or selection.release is None or selection.revision is None:
+            checks["route"] = "not_checked"
+            return checks, verification, None
+        site = self._site(str(selection.revision))
+        try:
+            self._validate_release(selection.release, site)
+        except PublishError as error:
+            verification = Verification(
+                "failed",
+                selection.revision,
+                probe_location="local",
+                scope=("local_export",),
+                detail=error.failure.message,
+            )
+            checks["route"] = "not_checked"
+            return checks, verification, error.failure
+        if "dns_error" in checks:
+            checks["route"] = "unreachable"
+            return checks, verification, None
+        try:
+            verification = self._verify(name, selection.revision, selection.release, site)
+            checks["route"] = "ok"
+        except PublishError as error:
+            verification = Verification(
+                "failed",
+                selection.revision,
+                probe_location="host",
+                scope=("local_export",),
+                detail=error.failure.message,
+            )
+            checks["route"] = "drift"
+        return checks, verification, None
+
+    def status(
+        self,
+        name: Name | None,
+        after: Name | None,
+        limit: int,
+        host_check: bool = False,
+    ) -> Report:
+        try:
+            with self._lock(create=False):
+                staging = self._staging_usage()
                 if name is not None:
                     state = self._state(name, full=False)
+                    verification = Verification()
+                    details: dict[str, object] = {}
+                    status_error: Failure | None = None
+                    selection = state.selection
+                    if selection.kind == "degraded":
+                        status_error = Failure(
+                            "state_degraded",
+                            "status",
+                            selection.detail or "The selected export is degraded",
+                            "inspect",
+                        )
+                    elif selection.kind == "unobserved":
+                        status_error = Failure(
+                            "state_unobserved",
+                            "status",
+                            selection.detail or "Selected state could not be observed",
+                            "inspect",
+                        )
+                    if host_check:
+                        checks, verification, host_failure = self._host_checks(name, state)
+                        details["host_checks"] = checks
+                        status_error = status_error or host_failure
+                    if staging is not None:
+                        details["staging"] = staging
                     return Report(
                         "status",
                         "observed",
@@ -812,6 +1296,9 @@ class PublicationStore:
                         name,
                         publication_url(self.config.base_url, name),
                         state=state,
+                        verification=verification,
+                        error=status_error,
+                        details=details,
                     )
                 names: set[str] = set()
                 head = self._head()
@@ -836,18 +1323,25 @@ class PublicationStore:
                     StatusEntry(Name(candidate), self._state(Name(candidate), full=False))
                     for candidate in selected_names
                 )
+                details = {
+                    "total": len(names),
+                    "truncated": len(ordered) > limit,
+                    "continuation": selected_names[-1] if len(ordered) > limit else None,
+                    "staging": staging,
+                }
+                verification = Verification()
+                if host_check:
+                    checks, verification, _ = self._host_checks(None, None)
+                    details["host_checks"] = checks
                 return Report(
                     "status",
                     "observed",
                     self.config.base_url,
                     None,
                     None,
-                    details={
-                        "total": len(names),
-                        "truncated": len(ordered) > limit,
-                        "continuation": selected_names[-1] if len(ordered) > limit else None,
-                    },
+                    details=details,
                     status_entries=entries,
+                    verification=verification,
                 )
         except (OSError, PublishError) as error:
             failure = (
