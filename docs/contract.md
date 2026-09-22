@@ -219,10 +219,10 @@ revision's paths.
 #2 must prove ordinary browser navigation/reload for HTML **and assets**, including same-size,
 same-timestamp revisions, replayed old conditional validators, deletion, and A -> B -> A restore.
 A cache-busting request or an unconditional byte probe alone is insufficient freshness evidence.
-Native Serve is selected only if it passes. Otherwise use one loopback Caddy deployment with an
-explicit route-scoped freshness policy; a simple candidate is `Cache-Control: no-store` plus
-preventing stale conditional responses on that route. The actual configuration must pass the
-probe.
+Native Serve is selected only if it passes. Otherwise use the read-only loopback delivery helper
+or one loopback Caddy deployment with an explicit route-scoped freshness policy. A simple
+candidate is `Cache-Control: no-store` plus preventing stale conditional responses on that route.
+The selected configuration must pass every required probe.
 
 Trusted pages share the configured origin and its browser privileges. Tailnet policy, not slugs,
 controls readers. Directory listings remain acceptable. External assets may contact external
