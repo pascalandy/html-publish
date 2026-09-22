@@ -1003,6 +1003,16 @@
     "agent_resume_promised": false,
     "limitation": "Frozen readiness observation with a finite observer lifetime; it does not prove a reboot or unattended agent continuation."
   },
+  "boot_recorder_failure": {
+    "succeeded": false,
+    "result_exists": false,
+    "error_at": "2026-09-22T14:50:33.797449+00:00",
+    "error": "fresh manifest capture required",
+    "manifest_age_seconds": 2509.818429,
+    "manifest_age_limit_seconds": 1800,
+    "publication_state_checked": false,
+    "contributes_to_postboot_success": false
+  },
   "postboot": {
     "reboot_actor": "user",
     "baseline_boot_id": "a256d54f-c198-4998-be7d-f2563c4da544",
@@ -1059,13 +1069,6 @@
       "review_verdict": "PASS for bounded operational restart evidence",
       "review_report_sha256": "deafc584240768c454e6db106aaa004c94ef1161e9e606d0250066a0411aa6c0",
       "second_reboot_required": false
-    },
-    "recorder": {
-      "succeeded": false,
-      "result_exists": false,
-      "error_at": "2026-09-22T14:50:33.797449+00:00",
-      "error": "fresh manifest capture required",
-      "manifest_age_seconds": 2509.818429
     },
     "limits": {
       "outage_observed": false,

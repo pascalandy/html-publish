@@ -2,7 +2,7 @@
 
 Date: 2026-09-22
 
-The installed application passed the six-command publication workflow, browser and second-device A to B to restored A checks, reinstall, application rollback, and return to the reviewed wheel. Separate private stores exercised three faults with that installed executable. A later user-performed reboot has bounded postboot evidence below. This record does not establish production readiness
+The installed application passed the six-command publication workflow, browser and second-device A to B to restored A checks, reinstall, application rollback, and return to the reviewed wheel. Separate private stores exercised three faults with that installed executable. A later user-performed reboot has bounded postboot evidence below. The expired recorder attempt is recorded separately from those successful checks. This record does not establish production readiness
 
 The [bounded machine record](2026-09-22-om1-installed.json) contains results, script hashes, raw-artifact hashes, and screenshot hashes. Raw evidence remains at `/home/pascal/.local/state/html-publish-issue6/20260922-44b6da0`. Unrelated publication names and paths are omitted and represented consistently as `existing-publication-1` and `existing-publication-2`. Full private configuration, unrelated service inventory, and response bodies remain local
 
@@ -141,7 +141,13 @@ At the preboot handoff, the remaining gates were
 - Complete installed skill activation separately
 - Keep power-loss resilience, remote backup, broader browser/client fault matrices, and production readiness unclaimed
 
-## Postboot evidence after user reboot
+## Expired recorder attempt
+
+The external `m4mini` observer ended at `2026-09-22T14:29:42.478051+00:00`, before the reboot. It timed out while waiting for an outage, and all six final baseline targets still matched. It did not record an outage or recovery
+
+The temporary boot recorder started at 14:50:33 UTC after the reboot. It stopped at the manifest freshness check with `fresh manifest capture required`. The frozen manifest was 2,509.818429 seconds old, beyond the recorder's 1,800-second limit. The recorder did not check publication state or create `boot-result/result.json`. Its original script, manifest, unit, stderr, and absent result remain preserved as failed-observation evidence. They do not contribute to the successful postboot checks
+
+## Successful postboot checks after user reboot
 
 Pascal later rebooted `om1`. The observed boot ID changed from `a256d54f-c198-4998-be7d-f2563c4da544` to `a6200a54-c87f-44df-8ca2-1afb0cf4f9d6`
 
@@ -154,8 +160,6 @@ Pascal later rebooted `om1`. The observed boot ID changed from `a256d54f-c198-49
 | Two-host HTTP comparison | All 12 checks matched from `om1` and `m4mini`, covering the publication HTML and CSS, publisher health, and the three unrelated endpoint baselines |
 | Browser | An ordinary reload kept the stable URL and displayed marker `ISSUE2-A-sources` with CSS state `'A'` |
 | Detached reconciliation | `late_postboot_reconciliation_pass` at 14:57:21 UTC from a systemd user unit, independent of the active agent process |
-
-The temporary boot recorder failed at 14:50:33 UTC with `fresh manifest capture required`. Its frozen manifest was 2,509.818429 seconds old, beyond the recorder's 30-minute limit. The earlier `m4mini` observer had already timed out at 14:29:42 UTC. Neither observer recorded an outage or recovery, and no successful boot-recorder result exists
 
 The planned `external=recovered` and `local=postboot_verified` handshake was not met. The independent review accepted the changed boot, automatic publisher startup, and later process-independent systemd audit as alternate evidence for the bounded operational restart requirement. This does not prove outage continuity, boot-recorder success, absence of a concurrent agent session, power-loss resilience, or production readiness. A second reboot is not required for this bounded result
 
