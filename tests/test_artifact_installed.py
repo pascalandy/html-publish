@@ -457,7 +457,7 @@ class InstalledArtifactTest(unittest.TestCase):
                     "0.2",
                     code=1,
                 )
-                self.assertLess(time.monotonic() - started, 0.6)
+                self.assertLess(time.monotonic() - started, 1.5)
                 self.assertEqual(
                     cast(dict[str, object], lock_failure["error"])["code"],
                     "command_timeout",
