@@ -1,0 +1,34 @@
+# Advisory planning
+
+Advisory planning lets a user inspect what a publish would do, including the predicted decision and the exact file differences, while writing nothing to the archive or the runtime.
+
+## Sub-features
+
+- `plan-no-writes` leaves no archive and no runtime behind on a fresh instance.
+- `plan-predicts` reports `create`, `update`, `unchanged`, or `conflict` for the request.
+- `plan-differences` lists added, changed, and deleted files between the active site and the request.
+
+## How to get to it (user POV)
+
+- Run `html-publish ... plan --name <name> --source <file> --target <base>` before publishing.
+- Add `--expected-revision` to preview a guarded replacement.
+
+## Driving it with shell and curl
+
+Preconditions:
+
+- The instance is healthy per doctor, and no page has been published in it yet.
+
+- **Plan on an empty store.** Run `HP plan --name release-notes --source "$PAGE_A" --target "$URL/"`. Exit 0, `outcome` is `planned`, `prediction` is `create`, `observation.selection.state` is `absent`, and `archived_revision` is null.
+- **Prove no writes.** Run `test ! -e "$(dirname "$CONFIG")/archive.git" && test ! -e "$(dirname "$CONFIG")/runtime" && echo clean`. It prints `clean`. No release exists to fetch over HTTP.
+- **Publish, then plan a change.** Publish page A as in first-publication, noting the active revision `$R1`. Then run `HP plan --name release-notes --source "$PAGE_B" --target "$URL/" --expected-revision "$R1"`. Exit 0, `prediction` is `update`, and `differences` is `{"added":[],"changed":["index.html"],"deleted":[]}` for a one-file source with changed bytes.
+- **Plan a stale expectation.** Run `HP plan --name release-notes --source "$PAGE_A" --target "$URL/" --expected-revision "$R1"` after page B is active. Exit 0, `outcome` is `planned`, `prediction` is `conflict`, and `error` is null. A plan predicts the conflict instead of failing.
+- **Confirm nothing changed.** Run `HP status --name release-notes`. The state matches the last real publish, and the served page is unchanged.
+- **Proof.** Save the transcript under `$ARTIFACTS/advisory-planning-<run_id>.txt`.
+
+## Gotchas
+
+- Plan details flatten to top-level report keys. Read `.prediction` and `.differences`, never `.details`.
+- `prediction` `conflict` is a successful plan with exit 0. It is information, not an error.
+- Plan captures the source and observes full local state under the lock, but its writes go to temporary storage only. The archive and runtime prove the no-writes claim, not the absence of output.
+- Planning does not exercise HTTP verification. A plan can predict `update` for a target that would fail delivery, so a plan never replaces a publish proof.
