@@ -1132,9 +1132,11 @@ def _run_process(command: Sequence[str], seconds: float, output_bytes: int) -> P
                 if remaining_time <= 0:
                     timed_out = True
                 else:
-                    if hasattr(os, "waitid") and hasattr(os, "WNOWAIT"):
-                        exited = os.waitid(
-                            os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT
+                    waitid: object = getattr(os, "waitid", None)
+                    wnowait: object = getattr(os, "WNOWAIT", None)
+                    if callable(waitid) and isinstance(wnowait, int):
+                        exited: object = waitid(
+                            os.P_PID, process.pid, os.WEXITED | os.WNOHANG | wnowait
                         )
                         if exited is not None:
                             break
