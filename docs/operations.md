@@ -10,7 +10,7 @@ The working machine needs this checkout, `uv`, Git, `ssh`, and `scp`. SSH must r
 
 ## Candidate checks and stable promotion
 
-`main` is the candidate line. There is no stable branch and no scheduled build. GitHub Actions starts only from a manual dispatch. A pull request update, a branch push, a schedule, or a stable tag starts nothing. Routine iteration relies on the local `just check` gate. The Checks workflow runs the same Linux and macOS jobs on demand from `main`
+`main` is the candidate line. There is no stable branch and no scheduled build. GitHub Actions starts only from a manual dispatch. A pull request update, a branch push, a schedule, or a stable tag starts nothing. Routine iteration relies on the local `just check` gate. The Checks workflow runs Ubuntu with Python 3.11 on demand from `main`. Enable macOS after the portable process helper from #41 lands. Enable artifact upload after `just check` creates the evidence files it would upload
 
 Add the Installed Linux host workflow to `main` only when its workflow file and the `scripts/verify-host-systemd.sh` implementation from #44 are both present on `main`. Until then the workflow stays on its pull request branch, keeps only its manual trigger, and cannot be dispatched
 
