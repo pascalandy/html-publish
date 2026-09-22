@@ -176,7 +176,7 @@ Under the lock, validate actual selected state before evaluating these ordered r
   is intentional: A -> B -> A permits a later expectation of A. There is no activation-event
   token.
 - Reuse the identical latest saved revision or construct a commit preserving all other pages,
-  using a private index, raw blobs, normalized modes, and conditional ref advancement. The first
+  using index-free raw tree construction, raw blobs, normalized modes, and conditional ref advancement. The first
   commit is parentless and creates the branch only if absent. External ref movement conflicts.
 - Export raw committed bytes into private staging. Validate the complete path set and every byte,
   including a reused release, before an atomic rename completes the immutable export.
