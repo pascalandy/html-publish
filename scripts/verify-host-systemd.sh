@@ -32,16 +32,19 @@ unit_path="$home_dir/.config/systemd/user/$unit"
 cleanup() {
 	result=$?
 	trap - EXIT
-	if test -f "$record" && test -f "$unit_path"; then
+	if sudo -u "$account" test -f "$record" && sudo -u "$account" test -f "$unit_path"; then
 		if sudo -u "$account" python3 - "$record" "$unit_path" <<'PY'; then
 import json, pathlib, sys
 record = json.loads(pathlib.Path(sys.argv[1]).read_text())
 unit = pathlib.Path(sys.argv[2])
 assert record['unit_path'] == str(unit)
 assert record['unit'] == unit.read_text()
+assert unit.stat().st_mode & 0o777 == 0o644
 assert record['route'] is None
 PY
-			if fragment=$(as_user systemctl --user show "$unit" --property=FragmentPath --value) && test "$fragment" = "$unit_path"; then
+			if fragment=$(as_user systemctl --user show "$unit" --property=FragmentPath --value) &&
+				test "$fragment" = "$unit_path" &&
+				test -z "$(as_user systemctl --user show "$unit" --property=DropInPaths --value)"; then
 				if as_user systemctl --user disable --now "$unit" && sudo rm -- "$unit_path" && as_user systemctl --user daemon-reload; then
 					sudo rm -- "$record" || result=1
 				else
@@ -68,6 +71,20 @@ PY
 }
 trap cleanup EXIT
 
+wait_health() {
+	local body deadline=$((SECONDS + 10))
+	while ((SECONDS < deadline)); do
+		if body=$(curl --silent --show-error --fail --max-time 1 "http://127.0.0.1:$port/_html-publish-health" 2>/dev/null) && test "$body" = ok; then
+			return 0
+		fi
+		sleep 0.2
+	done
+	as_user systemctl --user status "$unit" --no-pager >"$evidence/restart-status.txt" 2>&1 || true
+	as_user journalctl --user -u "$unit" -n 50 --no-pager >"$evidence/restart-journal.txt" 2>&1 || true
+	echo "The restarted user service did not answer health within 10 seconds" >&2
+	return 1
+}
+
 archive_hash() {
 	find "$home_dir/archive.git" -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum
 }
@@ -90,11 +107,11 @@ PY
 sudo -u "$account" sh -c 'printf "%s" "receipt-preserved" > "$HOME/receipt.json"'
 
 as_user "$cli" --config "$config" --json host setup --unit-name html-publish-ci --port "$port" >"$evidence/preview.json"
-test ! -e "$record"
-test ! -e "$unit_path"
+as_user test ! -e "$record"
+as_user test ! -e "$unit_path"
 as_user "$cli" --config "$config" --json host setup --unit-name html-publish-ci --port "$port" --apply >"$evidence/apply.json"
 jq -e '.outcome == "applied" and .effects.start == "changed"' "$evidence/apply.json"
-test ! -e "$home_dir/archive.git"
+as_user test ! -e "$home_dir/archive.git"
 test "$(sudo -u "$account" cat "$home_dir/receipt.json")" = receipt-preserved
 
 source_file=$home_dir/page.html
@@ -110,6 +127,7 @@ jq -e '.outcome == "unchanged"' "$evidence/repeat.json"
 test "$(as_user systemctl --user show "$unit" --property=MainPID --value)" = "$pid_before"
 
 as_user systemctl --user restart "$unit"
+wait_health
 pid_after=$(as_user systemctl --user show "$unit" --property=MainPID --value)
 test "$pid_after" -gt 0
 test "$pid_after" != "$pid_before"

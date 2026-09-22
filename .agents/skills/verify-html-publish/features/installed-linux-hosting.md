@@ -27,8 +27,9 @@ Preconditions:
 
 - **Foreground and preview.** Run `uv run python -m unittest -v tests.test_host`. It builds a wheel,
   installs it as an isolated uv tool, serves first and updated page bytes through `host serve`,
-  and checks SIGTERM exit. Its preview and collision checks use fake systemctl and Tailscale
-  executables. Label those checks simulated integrations.
+  and checks SIGTERM exit. Its setup checks use fake systemctl and Tailscale executables, including
+  a delayed listener and realistic HTTPS `TCP` plus `Web` state. Label those checks simulated
+  integrations.
 - **Service.** Review the `user-service` result from `.github/workflows/host-systemd.yml` on the
   tested commit. The job installs the wheel under a dedicated UID, applies setup, checks literal
   HTTP bytes, repeats setup without a PID change, restarts the real user unit, verifies a new PID,

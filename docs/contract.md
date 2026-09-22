@@ -476,6 +476,7 @@ the owned service before setup reports completion.
 An equal unit without that record is foreign. Existing drop-ins, masks, aliases, changed unit bytes,
 and changed publisher configuration block mutation. Repeat apply reports `unchanged` without a
 reload or restart. A record of completed and pending steps preserves partial effects across failure.
+After starting the user unit, setup waits up to ten seconds for the loopback health response.
 
 `--tailscale` explicitly adds one HTTPS Serve handler derived from the configured base URL. Setup
 requires an already-authenticated matching node and an unused non-overlapping route. It does not
@@ -484,6 +485,8 @@ without ownership is foreign. A pending route whose handler appeared during an i
 requires manual inspection because Serve has no handler ownership marker. Other ports and disjoint
 paths remain untouched. The host record and user unit live outside the publication archive, runtime,
 and receipts. A failed later step reports earlier effects and keeps its record for inspection.
+The selected HTTPS port may carry Tailscale's `TCP` HTTPS marker and disjoint web handlers.
+Non-HTTPS TCP handlers block setup. Setup attempts for different unit names share one user lock.
 
 Foreground HTTP and simulated systemctl or Tailscale checks do not prove a real service restart or
 private HTTPS. A service claim requires a disposable Linux account with a real user manager. A

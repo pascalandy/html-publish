@@ -130,6 +130,9 @@ unit, record, and optional Serve state. Preview writes nothing. Apply stores int
 effects under the user's XDG state directory. `host.py` mutates only its own unit, record, and exact
 Serve handler. It does not enter `PublicationStore` or change publication bytes. The controlled
 `om1` installer in `deploy.py` remains a separate source-checkout deployment path.
+Setup uses one lock in the host-record directory across unit names. It re-reads the selected config
+and installed package bytes before external writes. Serve status includes both a port's HTTPS `TCP`
+marker and its `Web` handlers; a new first handler may add both while existing sibling paths stay.
 
 `plan` and `publish` share one decision over the requested revision, expected revision, saved page, and active selection. The result is `create`, `update`, `unchanged`, or `conflict`. `plan` observes the full local state and computes the exact requested revision and file differences under the process lock, but it writes only to temporary storage.
 

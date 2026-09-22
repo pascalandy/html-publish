@@ -10,6 +10,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -21,7 +22,8 @@ from typing import cast
 from urllib.parse import unquote, urlsplit
 
 from html_publish import __version__
-from html_publish.model import Config
+from html_publish.configuration import read_document
+from html_publish.model import Config, PublishError
 
 _UNIT_NAME = re.compile(r"html-publish(?:-[a-z0-9]+(?:-[a-z0-9]+)*)?\Z")
 
@@ -321,15 +323,23 @@ def _tailscale(route: Route) -> dict[str, object]:
 
 def _route_handler(serve: dict[str, object], route: Route) -> str | None:
     allow_funnel: object = serve.get("AllowFunnel", {})
-    if isinstance(allow_funnel, dict) and cast(dict[str, object], allow_funnel).get(route.key):
+    if not isinstance(allow_funnel, dict):
+        raise HostError("tailscale_state", "Serve Funnel state is malformed")
+    funnel = cast(dict[str, object], allow_funnel)
+    if any(enabled and endpoint.endswith(f":{route.port}") for endpoint, enabled in funnel.items()):
         raise HostError("route_collision", "Funnel is enabled on the selected HTTPS port")
     tcp: object = serve.get("TCP", {})
-    if isinstance(tcp, dict) and cast(dict[str, object], tcp).get(str(route.port)):
-        raise HostError("route_collision", "Selected port already has a TCP Serve handler")
+    if not isinstance(tcp, dict):
+        raise HostError("tailscale_state", "Serve TCP state is malformed")
+    selected_tcp = cast(dict[str, object], tcp).get(str(route.port))
+    if selected_tcp is not None and selected_tcp != {"HTTPS": True}:
+        raise HostError("route_collision", "Selected port has a non-HTTPS TCP Serve handler")
     web: object = serve.get("Web", {})
     if not isinstance(web, dict):
         raise HostError("tailscale_state", "Serve Web state is malformed")
     web = cast(dict[str, object], web)
+    if selected_tcp is not None and route.key not in web:
+        raise HostError("route_collision", "Selected HTTPS port has no matching web handlers")
     for endpoint, value in web.items():
         if endpoint != route.key and endpoint.endswith(f":{route.port}"):
             raise HostError("route_collision", f"Selected HTTPS port has foreign host {endpoint}")
@@ -375,6 +385,15 @@ def _without_handler(serve: dict[str, object], route: Route) -> dict[str, object
                     web.pop(route.key, None)
         if not web:
             remaining.pop("Web", None)
+    web_after = cast(dict[str, object], remaining.get("Web", {}))
+    if not any(endpoint.endswith(f":{route.port}") for endpoint in web_after):
+        tcp_after = remaining.get("TCP")
+        if isinstance(tcp_after, dict):
+            tcp_after = cast(dict[str, object], tcp_after)
+            if tcp_after.get(str(route.port)) == {"HTTPS": True}:
+                tcp_after.pop(str(route.port), None)
+            if not tcp_after:
+                remaining.pop("TCP", None)
     return remaining
 
 
@@ -552,9 +571,55 @@ def _save_record(spec: HostSpec, record: dict[str, object]) -> None:
     _write(spec.record_path, json.dumps(record, sort_keys=True, indent=2) + "\n", 0o600)
 
 
+def _require_selected(spec: HostSpec) -> None:
+    try:
+        _, config = read_document("publisher", spec.config_path)
+    except PublishError as error:
+        raise HostError("config_drift", str(error)) from error
+    if not isinstance(config, Config):
+        raise HostError("config_drift", "Selected configuration is no longer a publisher")
+    current, _ = make_spec(
+        spec.config_path,
+        config,
+        spec.unit_name.removesuffix(".service"),
+        spec.port,
+        spec.route is not None,
+    )
+    if current != spec:
+        raise HostError(
+            "host_drift", "Selected config or installed executable changed during setup"
+        )
+
+
+def _probe_loopback(spec: HostSpec) -> None:
+    url = f"http://127.0.0.1:{spec.port}/_html-publish-health"
+    expires = time.monotonic() + 10
+    last_error = "listener did not answer"
+    while True:
+        remaining = expires - time.monotonic()
+        if remaining <= 0:
+            raise HostError(
+                "health_failed", f"Loopback health did not become ready at {url}: {last_error}"
+            )
+        try:
+            with urllib.request.urlopen(url, timeout=min(1, remaining)) as response:
+                if response.status != 200 or response.read() != b"ok\n":
+                    raise HostError(
+                        "health_failed", f"Loopback health response did not match at {url}"
+                    )
+                return
+        except urllib.error.HTTPError as error:
+            raise HostError(
+                "health_failed", f"Loopback health returned HTTP {error.code} at {url}"
+            ) from error
+        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            last_error = str(error)
+        time.sleep(min(0.2, max(0, expires - time.monotonic())))
+
+
 @contextmanager
 def _lock(spec: HostSpec) -> Generator[None, None, None]:
-    lock = spec.record_path.with_suffix(".lock")
+    lock = spec.record_path.parent / ".setup.lock"
     _safe_path(lock)
     lock.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     with lock.open("a+") as file:
@@ -579,6 +644,7 @@ def apply(spec: HostSpec, prerequisites: list[str]) -> dict[str, object]:
         )
     }
     with _lock(spec):
+        _require_selected(spec)
         plan = preview(spec, prerequisites)
         if plan["blockers"]:
             return {**plan, "outcome": "blocked", "effects": effects}
@@ -601,6 +667,7 @@ def apply(spec: HostSpec, prerequisites: list[str]) -> dict[str, object]:
             "pending": "unit",
         }
         try:
+            _require_selected(spec)
             _save_record(spec, record)
             effects["record"] = "changed"
             refresh_service = (
@@ -609,6 +676,7 @@ def apply(spec: HostSpec, prerequisites: list[str]) -> dict[str, object]:
                 or record.get("package_hash") != spec.package_hash
             )
             if refresh_service:
+                _require_selected(spec)
                 fresh = observe(spec)
                 if _blockers(spec, fresh, prerequisites):
                     raise HostError("host_drift", "Host resources changed before unit write")
@@ -621,6 +689,7 @@ def apply(spec: HostSpec, prerequisites: list[str]) -> dict[str, object]:
                     effects["unit"] = "unchanged"
                 record["unit"] = spec.unit
                 _save_record(spec, record)
+                _require_selected(spec)
                 fresh = observe(spec)
                 if _blockers(spec, fresh, prerequisites):
                     raise HostError("host_drift", "Host resources changed before daemon reload")
@@ -634,6 +703,7 @@ def apply(spec: HostSpec, prerequisites: list[str]) -> dict[str, object]:
                 effects["unit"] = "unchanged"
             current = _systemd(spec.unit_name)
             if current.get("UnitFileState") != "enabled":
+                _require_selected(spec)
                 fresh = observe(spec)
                 if _blockers(spec, fresh, prerequisites):
                     raise HostError("host_drift", "Host resources changed before enable")
@@ -653,6 +723,7 @@ def apply(spec: HostSpec, prerequisites: list[str]) -> dict[str, object]:
                     _save_record(spec, record)
             action = "restart" if current.get("ActiveState") == "active" else "start"
             if refresh_service or current.get("ActiveState") != "active":
+                _require_selected(spec)
                 fresh = observe(spec)
                 if _blockers(spec, fresh, prerequisites):
                     raise HostError("host_drift", "Host resources changed before start")
@@ -673,23 +744,29 @@ def apply(spec: HostSpec, prerequisites: list[str]) -> dict[str, object]:
             record["pending"] = "probe"
             _save_record(spec, record)
             effects["loopback_probe"] = "unknown"
-            with urllib.request.urlopen(
-                f"http://127.0.0.1:{spec.port}/_html-publish-health", timeout=5
-            ) as response:
-                if response.status != 200 or response.read() != b"ok\n":
-                    raise HostError("health_failed", "Loopback health response did not match")
+            try:
+                _probe_loopback(spec)
+            except HostError:
+                effects["loopback_probe"] = "failed"
+                raise
             effects["loopback_probe"] = "unchanged"
             record["package_hash"] = spec.package_hash
             record["pending"] = None
             _save_record(spec, record)
             if spec.route:
+                _require_selected(spec)
                 before = _tailscale(spec.route)
                 current_handler = _route_handler(before, spec.route)
+                if record.get("route_done") is True and current_handler != spec.route.proxy:
+                    raise HostError(
+                        "route_drift", "Owned Serve handler changed before final observation"
+                    )
                 if current_handler is not None and record.get("route_done") is not True:
                     raise HostError(
                         "route_collision", "Serve handler appeared before route mutation"
                     )
                 if current_handler is None:
+                    _require_selected(spec)
                     record["pending"] = "route"
                     _save_record(spec, record)
                     effects["tailscale_serve"] = "unknown"
