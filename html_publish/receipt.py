@@ -1003,40 +1003,70 @@ def _live_group_members(pgid: int) -> bool | None:
     return False
 
 
+def _stop_uninspectable_group(process: subprocess.Popen[bytes]) -> None:
+    for group_signal in (signal.SIGTERM, signal.SIGKILL):
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(process.pid, group_signal)
+        if group_signal == signal.SIGTERM:
+            time.sleep(0.2)
+    try:
+        process.wait(timeout=0.2)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            process.kill()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=0.2)
+
+
 def _stop_process_group(process: subprocess.Popen[bytes]) -> bool | None:
     if process.returncode is not None:
         return False if _live_group_members(process.pid) is False else None
     live = _live_group_members(process.pid)
-    if live is not True:
+    if live is None:
+        _stop_uninspectable_group(process)
+        return None
+    if live is False:
         process.wait(timeout=1)
-        return live
+        return False
     try:
         os.killpg(process.pid, signal.SIGTERM)
     except (ProcessLookupError, PermissionError):
         live = _live_group_members(process.pid)
+        if live is not False:
+            _stop_uninspectable_group(process)
+            return None
         process.wait(timeout=1)
-        return False if live is False else None
+        return False
     deadline = time.monotonic() + 0.2
     while time.monotonic() < deadline:
         live = _live_group_members(process.pid)
-        if live is not True:
+        if live is None:
+            _stop_uninspectable_group(process)
+            return None
+        if live is False:
             process.wait(timeout=1)
-            return True if live is False else None
+            return True
         time.sleep(0.01)
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError):
         live = _live_group_members(process.pid)
+        if live is not False:
+            _stop_uninspectable_group(process)
+            return None
         process.wait(timeout=1)
-        return True if live is False else None
+        return True
     deadline = time.monotonic() + 0.2
     while time.monotonic() < deadline:
         live = _live_group_members(process.pid)
-        if live is not True:
+        if live is None:
+            _stop_uninspectable_group(process)
+            return None
+        if live is False:
             process.wait(timeout=1)
-            return True if live is False else None
+            return True
         time.sleep(0.01)
-    process.wait(timeout=1)
+    _stop_uninspectable_group(process)
     return None
 
 
@@ -1118,8 +1148,7 @@ def _run_process(command: Sequence[str], seconds: float, output_bytes: int) -> P
         finally:
             try:
                 group_stopped = _stop_process_group(process)
-                assert process.returncode is not None
-                return_code = process.returncode
+                return_code = process.returncode if process.returncode is not None else -1
             finally:
                 selector.close()
                 for stream in streams:

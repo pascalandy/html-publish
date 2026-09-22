@@ -626,6 +626,48 @@ class HelperCliTest(ReceiptFixture):
         self.assertIsNone(cast(dict[str, object], payload["publisher"])["group_stopped"])
         self.assertIsNotNone(self.receipt(Path(str(source) + ".publish"))["pending"])
 
+    def test_running_publisher_is_stopped_when_group_inspection_fails(self) -> None:
+        marker = self.root / "publisher-survived"
+        self.fake.write_text(
+            "import signal, time\n"
+            "from pathlib import Path\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "time.sleep(1.4)\n"
+            f"Path({str(marker)!r}).write_text('survived')\n"
+        )
+        self.write_config(command_seconds=0.1)
+        source = self.root / "running.html"
+        source.write_text("running")
+
+        started = time.monotonic()
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--config",
+                str(self.config),
+                "publish",
+                str(source),
+                "--new",
+                "running",
+            ],
+            env={**os.environ, "PATH": str(self.root / "no-system-tools")},
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+        elapsed = time.monotonic() - started
+        time.sleep(1.5)
+
+        self.assertLess(elapsed, 1.0)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        payload = self.payload(result)
+        self.assertEqual(payload["outcome"], "uncertain")
+        self.assertIsNone(cast(dict[str, object], payload["publisher"])["group_stopped"])
+        self.assertIsNotNone(self.receipt(Path(str(source) + ".publish"))["pending"])
+        self.assertFalse(marker.exists())
+
     def test_timeout_terminates_descendant_process_group(self) -> None:
         marker = self.root / "child-finished"
         pid_file = self.root / "child.pid"

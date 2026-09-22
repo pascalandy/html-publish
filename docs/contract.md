@@ -339,7 +339,8 @@ that an already-started remote publisher stopped.
 Where non-reaping wait is available, the client keeps the direct process waitable while it
 checks live group members and stops the group, so its ID cannot be reused during escalation.
 It does not signal a group after reaping its leader. If group ownership or cleanup cannot be
-proved, the caller keeps the attempt unresolved and reports the cleanup state as unknown.
+proved, the caller keeps the attempt unresolved and reports the cleanup state as unknown. A
+failed process-table inspection still triggers bounded TERM and KILL of an anchored owned group.
 
 Before invocation, transport failure reports false mutation effects. A lost publish or restore
 result reports unknown effects and preserves request ID and expectation. Retain incoming source
