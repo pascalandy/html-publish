@@ -25,6 +25,8 @@ incompatible change to a field's meaning requires a schema version change.
 the low-level publisher operations. `html-publish-remote` forwards the same six
 operations and emits JSON by default. Both executables show help, version, and
 machine-readable command discovery without a configuration file or network access.
+The `html-publish artifact` group manages caller receipts through `publish`, `retry`, `status`,
+and `restore`; root help recommends it for durable publication.
 
 `--config`, `--json`, `--version`, and the publisher's `--command-seconds` may precede
 or follow a publisher operation. Remote connection and time-budget options may
@@ -159,7 +161,7 @@ guarantees.
 
 ## S4. Agent-facing CLI and results
 
-The public CLI has six commands; executable help owns exact syntax:
+The low-level publisher has six commands; executable help owns exact syntax:
 
 - `plan`: validate/capture using temporary storage only; show intended target, requested
   revision, observed active/archive state, create/update/no-op/conflict prediction, file/byte
@@ -340,16 +342,28 @@ a validated result adds a warning and staging path without changing known public
 Malformed or mismatched host reports fail the protocol check. Legitimate additive fields survive.
 Both local and remote execution use exit 0 for success, 1 for operational failure, and 2 for usage.
 
-Provide a small tested receipt helper alongside the skill; do not ask agents to reconstruct
-atomic file persistence from prose. It owns only caller association, not publication or recovery
-algorithms.
+The installed `html-publish artifact` group owns caller receipts. `artifact publish` creates a
+named association with `--new` or deliberately adopts one with `--adopt` and a reviewed revision;
+later calls use its receipt. `artifact retry` resumes one frozen attempt, `artifact status` records
+an observation or reads the receipt locally, and `artifact restore` starts a guarded restore from
+a reachable archive commit. The six root publisher commands and their JSON v1 result meanings
+remain unchanged. Artifact commands emit a separate JSON v1 handoff that reports receipt
+persistence, publisher effects, and delivery verification independently. The personal skill
+delegates to this installed workflow after its separate migration.
 
 The versioned receipt contains name, configured host/base URL, **accepted revision**, pending
 intent, and last observation. Before **every** dispatch, atomically save pending intent including
-a unique attempt ID, expected revision, and a reference to a private immutable attempt copy. Use
-that copy as the dispatched source and keep it outside the served input until the attempt is
-resolved. Echo the attempt ID as `request_id`. Only one unresolved mutation may own a receipt;
-late or mismatched results must not overwrite it.
+a unique attempt ID and expected revision. Publish intent includes a reference to a private
+immutable attempt copy. Use that copy as the dispatched source and keep it outside the served
+input until the attempt is resolved. Restore intent instead stores one immutable archive commit
+and needs no source snapshot. Echo the attempt ID as `request_id`. Only one unresolved mutation
+may own a receipt; late or mismatched results must not overwrite it.
+
+Existing version 1 receipts and their publish intents retain their exact format and binding
+fingerprint. A first restore atomically upgrades that receipt to version 2, whose pending intent
+is tagged `publish` or `restore`; it stays version 2 afterward. Inspection and ordinary publish
+do not upgrade version 1. An older personal helper rejects version 2, so callers must use the
+installed artifact commands after the first restore.
 
 **An observation is not approval to overwrite.** A conflict or read-only status may update the
 last observation but never advances the accepted revision. Advance that baseline only for the
