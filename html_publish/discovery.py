@@ -75,28 +75,5 @@ def command_schema(parser: argparse.ArgumentParser, executable: str) -> dict[str
     }
 
 
-def validate_version_request(parser: argparse.ArgumentParser, arguments: list[str]) -> None:
-    operation = next(action for action in parser._actions if action.dest == "operation")
-    commands = cast(dict[str, argparse.ArgumentParser], operation.choices)
-    flags = {flag: action for action in parser._actions for flag in action.option_strings}
-    remaining: list[str] = []
-    takes_value = False
-    command_seen = False
-    for argument in arguments:
-        if argument == "--version":
-            continue
-        if takes_value:
-            remaining.append(argument)
-            takes_value = False
-        elif not command_seen and argument in commands:
-            command_seen = True
-        else:
-            remaining.append(argument)
-            flag = argument.split("=", 1)[0]
-            takes_value = flag in flags and flags[flag].nargs != 0 and "=" not in argument
-    operation.required = False
-    parser.parse_args(remaining)
-
-
 def version_payload(executable: str) -> dict[str, object]:
     return {"schema_version": 1, "executable": executable, "version": __version__}

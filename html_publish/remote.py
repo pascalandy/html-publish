@@ -26,7 +26,6 @@ from html_publish.delivery import publication_url
 from html_publish.discovery import (
     command_schema,
     register_command,
-    validate_version_request,
     version_payload,
 )
 from html_publish.model import (
@@ -193,7 +192,7 @@ def _positive_limit(value: str) -> int:
     return parsed
 
 
-def _globals(parser: argparse.ArgumentParser, *, child: bool = False) -> None:
+def _globals(parser: argparse.ArgumentParser, version: str, *, child: bool = False) -> None:
     def default(value: object) -> object:
         return argparse.SUPPRESS if child else value
 
@@ -246,18 +245,23 @@ def _globals(parser: argparse.ArgumentParser, *, child: bool = False) -> None:
         help="write one JSON object to stdout (default for remote operations)",
     )
     parser.add_argument(
-        "--version", action="store_true", default=default(False), help="show installed version"
+        "--version", action="version", version=version, help="show installed version"
     )
 
 
-def _parser() -> Parser:
+def _parser(json_version: bool = False) -> Parser:
+    version = (
+        json.dumps(version_payload("html-publish-remote"), separators=(",", ":"))
+        if json_version
+        else f"html-publish-remote {__version__}"
+    )
     parser = Parser(
         prog="html-publish-remote",
         description="Run the six publisher operations through SSH. "
         "Publication results are JSON by default.",
         allow_abbrev=False,
     )
-    _globals(parser)
+    _globals(parser, version)
     commands = parser.add_subparsers(dest="operation", required=True)
 
     for operation, help_text in (
@@ -290,12 +294,17 @@ def _parser() -> Parser:
         )
         command.add_argument(
             "--expected-revision",
-            help="expected active revision to replace different content; "
-            "omit for a first publication or identical retry",
+            help=(
+                "expected active revision used for the prediction; "
+                "omit for a first publication or identical retry"
+                if operation == "plan"
+                else "expected active revision to replace different content; "
+                "omit for a first publication or identical retry"
+            ),
         )
         if operation == "publish":
             command.add_argument("--request-id", help="caller attempt ID echoed in the result")
-        _globals(command, child=True)
+        _globals(command, version, child=True)
 
     status = register_command(
         commands,
@@ -326,7 +335,7 @@ def _parser() -> Parser:
         action="store_true",
         help="also validate selected bytes and probe delivery for a named page",
     )
-    _globals(status, child=True)
+    _globals(status, version, child=True)
 
     verify = register_command(
         commands,
@@ -336,7 +345,7 @@ def _parser() -> Parser:
         effects=("reads saved bytes and host delivery", "does not activate"),
     )
     verify.add_argument("--name", required=True, type=_name, help="publication name")
-    _globals(verify, child=True)
+    _globals(verify, version, child=True)
 
     history = register_command(
         commands,
@@ -357,9 +366,12 @@ def _parser() -> Parser:
         help="page size, 1 to 100 (default: %(default)s)",
     )
     history.add_argument(
-        "--diff", dest="diff_revision", help="revision to compare with the next history entry"
+        "--diff",
+        dest="diff_revision",
+        help="reachable archived revision to compare with the latest page tree at HEAD "
+        "(UTF-8 diff text capped at 64 KiB)",
     )
-    _globals(history, child=True)
+    _globals(history, version, child=True)
 
     restore = register_command(
         commands,
@@ -383,7 +395,7 @@ def _parser() -> Parser:
     )
     restore.add_argument("--expected-revision", help="expected active revision for guarded restore")
     restore.add_argument("--request-id", help="caller attempt ID echoed in the result")
-    _globals(restore, child=True)
+    _globals(restore, version, child=True)
 
     schema = register_command(
         commands,
@@ -392,7 +404,7 @@ def _parser() -> Parser:
         examples=("html-publish-remote schema",),
         effects=("reads command definitions only",),
     )
-    _globals(schema, child=True)
+    _globals(schema, version, child=True)
     return parser
 
 
@@ -1167,13 +1179,7 @@ def _run_artifact(
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     try:
-        parser = _parser()
-        if "--version" in arguments and "--help" not in arguments:
-            validate_version_request(parser, arguments)
-            if "--json" in arguments:
-                return emit_json(version_payload("html-publish-remote"), 0)
-            print(f"html-publish-remote {__version__}")
-            return 0
+        parser = _parser("--json" in arguments)
         parsed = parser.parse_args(arguments)
         if parsed.operation == "schema":
             return emit_json(command_schema(parser, "html-publish-remote"), 0)

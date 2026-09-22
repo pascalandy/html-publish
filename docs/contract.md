@@ -29,10 +29,11 @@ machine-readable command discovery without a configuration file or network acces
 `--config`, `--json`, `--version`, and the publisher's `--command-seconds` may precede
 or follow a publisher operation. Remote connection and time-budget options may
 precede or follow a remote operation. Long option names require exact spelling;
-abbreviations are invalid usage. `--help` always writes human-readable help, even
-with `--json`. `--version` writes plain text unless `--json` is present, in which
-case it writes one version object to stdout. `schema` writes one JSON discovery
-object generated from the active argument parsers. Discovery has its own
+abbreviations are invalid usage. `--help` writes human-readable help, even with
+`--json`. `--version` stops argument parsing when encountered, so it does not
+require an operation's other arguments. It writes plain text unless `--json` is
+present, in which case it writes one version object to stdout. `schema` writes one
+JSON discovery object generated from the active argument parsers. Discovery has its own
 `schema_version` and identifies the executable version, command options, examples,
 and effects. It does not load configuration or contact a host.
 

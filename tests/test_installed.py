@@ -96,6 +96,22 @@ class InstalledWorkflowTest(unittest.TestCase):
                     [command["name"] for command in commands],
                     ["plan", "publish", "status", "verify", "history", "restore", "schema"],
                 )
+                plan = next(command for command in commands if command["name"] == "plan")
+                plan_expected = next(
+                    option
+                    for option in cast(list[dict[str, object]], plan["options"])
+                    if "--expected-revision" in cast(list[str], option["flags"])
+                )
+                self.assertIn("prediction", str(plan_expected["help"]))
+                self.assertNotIn("unguarded", str(plan_expected["help"]))
+                history = next(command for command in commands if command["name"] == "history")
+                diff_option = next(
+                    option
+                    for option in cast(list[dict[str, object]], history["options"])
+                    if "--diff" in cast(list[str], option["flags"])
+                )
+                self.assertIn("HEAD", str(diff_option["help"]))
+                self.assertIn("64 KiB", str(diff_option["help"]))
                 root_help = discovery(executable, "--help")
                 self.assertEqual(root_help.stderr, "")
                 for option in cast(list[dict[str, object]], schema["global_options"]):
@@ -119,6 +135,32 @@ class InstalledWorkflowTest(unittest.TestCase):
                 self.assertEqual(version["version"], schema["version"])
                 self.assertEqual(
                     json.loads(discovery(executable, "publish", "--version", "--json").stdout),
+                    version,
+                )
+                self.assertEqual(
+                    json.loads(
+                        discovery(
+                            executable,
+                            "--json",
+                            "--version",
+                            "status",
+                            "--name",
+                            "notes",
+                        ).stdout
+                    ),
+                    version,
+                )
+                self.assertEqual(
+                    json.loads(
+                        discovery(
+                            executable,
+                            "status",
+                            "--name",
+                            "notes",
+                            "--version",
+                            "--json",
+                        ).stdout
+                    ),
                     version,
                 )
                 self.assertEqual(

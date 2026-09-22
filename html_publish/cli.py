@@ -18,7 +18,6 @@ from html_publish.delivery import publication_url
 from html_publish.discovery import (
     command_schema,
     register_command,
-    validate_version_request,
     version_payload,
 )
 from html_publish.model import (
@@ -105,7 +104,7 @@ def _positive_seconds(value: str) -> float:
     return parsed
 
 
-def _globals(command: argparse.ArgumentParser) -> None:
+def _globals(command: argparse.ArgumentParser, version: str) -> None:
     command.add_argument(
         "--config",
         type=Path,
@@ -119,7 +118,7 @@ def _globals(command: argparse.ArgumentParser) -> None:
         help="write one JSON object to stdout",
     )
     command.add_argument(
-        "--version", action="store_true", default=argparse.SUPPRESS, help="show installed version"
+        "--version", action="version", version=version, help="show installed version"
     )
     command.add_argument(
         "--command-seconds",
@@ -130,7 +129,12 @@ def _globals(command: argparse.ArgumentParser) -> None:
     )
 
 
-def _parser() -> Parser:
+def _parser(json_version: bool = False) -> Parser:
+    version = (
+        json.dumps(version_payload("html-publish"), separators=(",", ":"))
+        if json_version
+        else f"html-publish {__version__}"
+    )
     parser = Parser(
         prog="html-publish",
         description="Publish private static HTML with a stable URL and local Git history. "
@@ -143,7 +147,9 @@ def _parser() -> Parser:
         help="publisher JSON configuration file (required for publication operations)",
     )
     parser.add_argument("--json", action="store_true", help="write one JSON object to stdout")
-    parser.add_argument("--version", action="store_true", help="show installed version")
+    parser.add_argument(
+        "--version", action="version", version=version, help="show installed version"
+    )
     parser.add_argument(
         "--command-seconds",
         type=_positive_seconds,
@@ -177,9 +183,10 @@ def _parser() -> Parser:
     plan.add_argument(
         "--expected-revision",
         type=Revision,
-        help="expected active revision; omit for an unguarded plan",
+        help="expected active revision used for the prediction; "
+        "omit for a first publication or identical retry",
     )
-    _globals(plan)
+    _globals(plan, version)
 
     publish = register_command(
         commands,
@@ -212,7 +219,7 @@ def _parser() -> Parser:
     publish.add_argument(
         "--request-id", help="caller attempt ID echoed in the result for reconciliation"
     )
-    _globals(publish)
+    _globals(publish, version)
 
     status = register_command(
         commands,
@@ -240,7 +247,7 @@ def _parser() -> Parser:
         action="store_true",
         help="also validate selected bytes and probe delivery for a named page",
     )
-    _globals(status)
+    _globals(status, version)
 
     verify = register_command(
         commands,
@@ -250,7 +257,7 @@ def _parser() -> Parser:
         effects=("reads saved bytes and HTTP delivery", "does not activate"),
     )
     verify.add_argument("--name", required=True, type=_name, help="publication name")
-    _globals(verify)
+    _globals(verify, version)
 
     history = register_command(
         commands,
@@ -265,9 +272,12 @@ def _parser() -> Parser:
     )
     history.add_argument("--after", help="opaque continuation from history for the same name")
     history.add_argument(
-        "--diff", dest="diff_revision", help="revision to compare with the next history entry"
+        "--diff",
+        dest="diff_revision",
+        help="reachable archived revision to compare with the latest page tree at HEAD "
+        "(UTF-8 diff text capped at 64 KiB)",
     )
-    _globals(history)
+    _globals(history, version)
 
     restore = register_command(
         commands,
@@ -295,7 +305,7 @@ def _parser() -> Parser:
     restore.add_argument(
         "--request-id", help="caller attempt ID echoed in the result for reconciliation"
     )
-    _globals(restore)
+    _globals(restore, version)
 
     schema = register_command(
         commands,
@@ -304,7 +314,7 @@ def _parser() -> Parser:
         examples=("html-publish schema",),
         effects=("reads command definitions only",),
     )
-    _globals(schema)
+    _globals(schema, version)
     return parser
 
 
@@ -703,13 +713,7 @@ def main(argv: list[str] | None = None) -> int:
     parsed: argparse.Namespace | None = None
     config: Config | None = None
     try:
-        parser = _parser()
-        if "--version" in arguments and "--help" not in arguments:
-            validate_version_request(parser, arguments)
-            if json_output:
-                return emit_json(version_payload("html-publish"), 0)
-            print(f"html-publish {__version__}")
-            return 0
+        parser = _parser(json_output)
         parsed = parser.parse_args(arguments)
         if parsed.operation == "schema":
             return emit_json(command_schema(parser, "html-publish"), 0)
