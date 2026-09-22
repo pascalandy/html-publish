@@ -1035,6 +1035,10 @@ class PublisherCliTest(unittest.TestCase):
         self.assertEqual(payload["error"]["code"], "invalid_usage")
         self.assertEqual(result.stderr, "")
 
+        summary = self.run_cli("publish", "--name", "missing-fields", "--report", "summary")
+        self.assertEqual(summary.returncode, 2)
+        self.assertEqual(self.payload(summary)["report"]["mode"], "summary")
+
     def test_usage_error_route_comes_from_command_not_argument_values(self) -> None:
         for name in ("doctor", "config", "status"):
             with self.subTest(name=name):
@@ -1471,9 +1475,42 @@ class PublisherCliTest(unittest.TestCase):
         self.assertEqual(
             base["warnings"], ["root_relative_reference", "base_href_analysis_limited"]
         )
-        index.write_bytes(b'<img src="missing.png">' + b"x" * (2 * 1024 * 1024))
+        index.write_bytes(
+            b'<img src="missing.png">' + b"x" * (2 * 1024 * 1024) + b'<base href="/assets/">'
+        )
         truncated = plan()
-        self.assertEqual(truncated["warnings"], ["missing_relative_asset", "html_scan_truncated"])
+        self.assertEqual(truncated["warnings"], ["html_scan_truncated"])
+
+    def test_relative_resource_urls_match_served_paths(self) -> None:
+        site = self.root / "resource-site"
+        site.mkdir()
+        (site / "present.png").write_bytes(b"PNG")
+        child = site / "child"
+        child.mkdir()
+        (child / "index.html").write_bytes(b"child")
+        (site / "index.html").write_bytes(
+            b'<iframe src="child"></iframe><img src="present.png ">'
+            b'<link rel="next" href="page2.html">'
+            b'<link rel="stylesheet" href="missing.css">'
+        )
+
+        result = self.run_cli(
+            "plan", "--name", "resources", "--source", str(site), "--target", self.base_url
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.payload(result)["warnings"], ["missing_relative_asset"])
+        self.assertEqual(
+            self.payload(result)["warning_details"],
+            [
+                {
+                    "code": "missing_relative_asset",
+                    "source_path": "index.html",
+                    "reference": "missing.css",
+                    "expected_path": "missing.css",
+                }
+            ],
+        )
 
     def test_status_of_an_absent_name_observes_nulls(self) -> None:
         result = self.run_cli("status", "--name", "nothing")

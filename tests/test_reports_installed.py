@@ -40,8 +40,14 @@ class InstalledReportsTest(unittest.TestCase):
             source = run / "instance/report-source"
             source.mkdir()
             (source / "present.css").write_bytes(b"body{color:white}\n")
+            (source / "present.png").write_bytes(b"PNG")
+            child = source / "child"
+            child.mkdir()
+            (child / "index.html").write_bytes(b"child page\n")
             first_html = (
                 b'<!doctype html><link href="present.css?v=1#top">'
+                b'<iframe src="child"></iframe><img src="present.png ">'
+                b'<link rel="next" href="page2.html">'
                 b'<img src="missing.png?size=1#view">'
                 b'<link href="/global.css"><script src="https://cdn.example/a.js"></script>'
                 b"<script>navigator.serviceWorker.register('/sw.js')</script>"
@@ -99,6 +105,16 @@ class InstalledReportsTest(unittest.TestCase):
                     text=True,
                 ).stdout.strip()
 
+            for executable in (cli, str(Path(cli).with_name("html-publish-remote"))):
+                discovered = subprocess.run(
+                    [executable, "schema"], check=True, capture_output=True, text=True
+                )
+                commands = json.loads(discovered.stdout)["commands"]
+                status = next(item for item in commands if item["name"] == "status")
+                option = next(item for item in status["options"] if "--report" in item["flags"])
+                self.assertEqual(option["choices"], ["detail", "summary"])
+                self.assertIn("summary", option["help"])
+
             plan_args = ("plan", "--name", "reports", "--source", str(source), "--target", target)
             detailed = root(*plan_args)
             summary = root(*plan_args, "--report", "summary")
@@ -122,6 +138,7 @@ class InstalledReportsTest(unittest.TestCase):
                 },
                 detailed["warning_details"],
             )
+            self.assertEqual(len(detailed["warning_details"]), 4)
             self.assertEqual(summary["warning_details"], [])
             self.assertEqual(
                 summary["report"]["collections"]["/warning_details"]["omitted"],
@@ -168,6 +185,13 @@ class InstalledReportsTest(unittest.TestCase):
                 values["URL"] + "/reports/present.css", timeout=3
             ) as response:
                 self.assertEqual(response.read(), b"body{color:white}\n")
+            with urllib.request.urlopen(values["URL"] + "/reports/child", timeout=3) as response:
+                self.assertEqual(response.url, values["URL"] + "/reports/child/")
+                self.assertEqual(response.read(), b"child page\n")
+            with urllib.request.urlopen(
+                values["URL"] + "/reports/present.png", timeout=3
+            ) as response:
+                self.assertEqual(response.read(), b"PNG")
             with self.assertRaises(urllib.error.HTTPError) as missing:
                 urllib.request.urlopen(values["URL"] + "/reports/missing.png", timeout=3)
             self.assertEqual(missing.exception.code, 404)

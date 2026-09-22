@@ -43,6 +43,7 @@ from html_publish.model import (
 
 DEFAULT_CONNECT_TIMEOUT = 10
 DEFAULT_COMMAND_SECONDS = 120.0
+REPORT_HELP = "report detail (default) or bounded summary with exact omission counts"
 
 NAME_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 HOST_PATTERN = re.compile(r"[A-Za-z0-9_.@-]+\Z")
@@ -311,7 +312,9 @@ def _parser(json_version: bool = False) -> Parser:
         )
         if operation == "publish":
             command.add_argument("--request-id", help="caller attempt ID echoed in the result")
-        command.add_argument("--report", choices=("detail", "summary"), default="detail")
+        command.add_argument(
+            "--report", choices=("detail", "summary"), default="detail", help=REPORT_HELP
+        )
         _globals(command, version, child=True)
 
     status = register_command(
@@ -343,7 +346,9 @@ def _parser(json_version: bool = False) -> Parser:
         action="store_true",
         help="also validate selected bytes and probe delivery for a named page",
     )
-    status.add_argument("--report", choices=("detail", "summary"), default="detail")
+    status.add_argument(
+        "--report", choices=("detail", "summary"), default="detail", help=REPORT_HELP
+    )
     _globals(status, version, child=True)
 
     verify = register_command(
@@ -354,7 +359,9 @@ def _parser(json_version: bool = False) -> Parser:
         effects=("reads saved bytes and host delivery", "does not activate"),
     )
     verify.add_argument("--name", required=True, type=_name, help="publication name")
-    verify.add_argument("--report", choices=("detail", "summary"), default="detail")
+    verify.add_argument(
+        "--report", choices=("detail", "summary"), default="detail", help=REPORT_HELP
+    )
     _globals(verify, version, child=True)
 
     history = register_command(
@@ -382,7 +389,9 @@ def _parser(json_version: bool = False) -> Parser:
         help="reachable archived revision to compare with the latest page tree at HEAD "
         "(UTF-8 diff text capped at 64 KiB)",
     )
-    history.add_argument("--report", choices=("detail", "summary"), default="detail")
+    history.add_argument(
+        "--report", choices=("detail", "summary"), default="detail", help=REPORT_HELP
+    )
     _globals(history, version, child=True)
 
     restore = register_command(
@@ -407,7 +416,9 @@ def _parser(json_version: bool = False) -> Parser:
     )
     restore.add_argument("--expected-revision", help="expected active revision for guarded restore")
     restore.add_argument("--request-id", help="caller attempt ID echoed in the result")
-    restore.add_argument("--report", choices=("detail", "summary"), default="detail")
+    restore.add_argument(
+        "--report", choices=("detail", "summary"), default="detail", help=REPORT_HELP
+    )
     _globals(restore, version, child=True)
 
     schema = register_command(
@@ -551,6 +562,9 @@ def _usage_payload(arguments: list[str], failure: Failure) -> dict[str, object]:
     operation = _operation(arguments)
     if operation is None:
         return usage_report(None, failure)
+    mode: ReportMode = (
+        "summary" if _argument_value(arguments, "--report") == "summary" else "detail"
+    )
     raw_name = _argument_value(arguments, "--name")
     try:
         name = Name(_name(raw_name)) if raw_name is not None else None
@@ -575,6 +589,7 @@ def _usage_payload(arguments: list[str], failure: Failure) -> dict[str, object]:
         name=name,
         request_id=request_id,
         expected_revision=Revision(expected_revision) if expected_revision is not None else None,
+        mode=mode,
     )
 
 
@@ -1260,8 +1275,9 @@ def _add_cleanup_warning(
     report = updated.get("report")
     if isinstance(report, dict):
         typed_report = cast(dict[str, object], report)
-        if typed_report.get("mode") == "summary":
-            counts = bound_report_text(transport, "detail", "summary")
+        mode = typed_report.get("mode")
+        if mode in ("detail", "summary"):
+            counts = bound_report_text(transport, "detail", mode)
             text_fields = typed_report.get("text")
             if counts is not None and isinstance(text_fields, dict):
                 cast(dict[str, object], text_fields)["/transport/detail"] = counts

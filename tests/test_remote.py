@@ -295,6 +295,47 @@ class RemoteCliTest(unittest.TestCase):
             self.assertEqual(invalid.returncode, 1)
             self.assertEqual(json.loads(invalid.stdout)["error"]["code"], "remote_protocol_failure")
 
+    def test_report_mode_survives_usage_errors_and_schema_lists_choices(self) -> None:
+        invalid = self.run_remote(
+            "status", "--name", "release-notes", "--report", "summary", "--limit", "0"
+        )
+        self.assertEqual(invalid.returncode, 2)
+        self.assertEqual(json.loads(invalid.stdout)["report"]["mode"], "summary")
+        schema = self.run_remote("schema")
+        self.assertEqual(schema.returncode, 0)
+        commands = json.loads(schema.stdout)["commands"]
+        status = next(item for item in commands if item["name"] == "status")
+        option = next(item for item in status["options"] if "--report" in item["flags"])
+        self.assertEqual(option["choices"], ["detail", "summary"])
+        self.assertIn("summary", option["help"])
+
+    def test_cleanup_warning_keeps_text_metadata_in_both_modes(self) -> None:
+        for mode in ("detail", "summary"):
+            with self.subTest(mode=mode):
+                payload = report(
+                    "publish", request_id="attempt-1", expected="rev-a", outcome="published"
+                )
+                payload["warning_details"] = []
+                payload["report"] = {
+                    "mode": mode,
+                    "collections": {"/warning_details": {"total": 0, "included": 0, "omitted": 0}},
+                    "text": {},
+                }
+                args = self.artifact_args() + (["--report", mode] if mode == "summary" else [])
+                result = self.run_remote(
+                    *args,
+                    environment=self.environment
+                    | {"FIXTURE_STDOUT": json.dumps(payload), "FIXTURE_CLEANUP_EXIT": "17"},
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                actual = json.loads(result.stdout)
+                self.assertEqual(actual["outcome"], "published")
+                self.assertEqual(actual["transport"]["detail"], "Cleanup exited 17")
+                self.assertEqual(
+                    actual["report"]["text"]["/transport/detail"],
+                    {"total_bytes": 17, "included_bytes": 17, "omitted_bytes": 0},
+                )
+
     def test_explicit_host_overrides_client_file_without_rewriting_it(self) -> None:
         client = self.root / "client.json"
         client.write_text(

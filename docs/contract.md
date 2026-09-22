@@ -163,9 +163,12 @@ guarantees.
 The static asset check reads at most the first 2 MiB of the captured `index.html` and compares
 literal resource URLs with the captured file manifest. It does not follow links or scan CSS,
 JavaScript, nested HTML, `srcset`, or computed URLs. A `<base href>` or a partial scan reports
-an analysis limitation rather than a speculative missing-file result. Existing `warnings` string
-codes remain stable; `warning_details` supplies source path, literal reference, and expected
-relative path where known.
+an analysis limitation without missing-file claims. URL attribute edge whitespace is ignored
+for lookup, while the warning retains the literal reference. A captured directory `index.html`
+satisfies its relative directory URL. Only resource-bearing `link` relations are checked for
+missing files; navigation relations are not assets. Existing `warnings` string codes remain
+stable; `warning_details` supplies source path, literal reference, and expected relative path
+where known.
 
 ## S4. Agent-facing CLI and results
 
@@ -202,6 +205,9 @@ current state rather than a saved report snapshot. Existing status/history page 
 totals keep their meanings. Summary caps diagnostic prose and records omitted UTF-8 bytes in
 `report.text`; code, phase, recovery action, effects, verification result, guard, target, and
 identity remain present.
+An explicit `--report summary` also selects summary metadata on JSON usage errors. Parser-derived
+schema discovery exposes the report modes and help text. Remote cleanup diagnostics update
+`report.text` in either mode.
 
 The common envelope includes `schema_version`, `operation`, optional echoed `request_id`,
 `outcome`, `target`, `name`, `url`, `expected_revision`, `requested_revision`,

@@ -163,6 +163,9 @@ RESOURCE_ATTRIBUTES = {
     "input": ("src",),
     "link": ("href",),
 }
+RESOURCE_LINK_RELS = frozenset(
+    {"stylesheet", "icon", "apple-touch-icon", "mask-icon", "preload", "modulepreload", "manifest"}
+)
 
 
 class _References(HTMLParser):
@@ -178,10 +181,9 @@ class _References(HTMLParser):
         resource_attributes = RESOURCE_ATTRIBUTES.get(tag, ())
         if tag == "input" and (attributes.get("type") or "").lower() != "image":
             resource_attributes = ()
-        if tag == "link" and (attributes.get("rel") or "").lower() in {
-            "canonical",
-            "alternate",
-        }:
+        if tag == "link" and not RESOURCE_LINK_RELS.intersection(
+            (attributes.get("rel") or "").lower().split()
+        ):
             resource_attributes = ()
         for attribute in ("src", "href", "poster"):
             value = attributes.get(attribute)
@@ -213,7 +215,7 @@ def warnings_for(
 
     for reference, is_resource in parser.references:
         try:
-            parsed = urlsplit(reference)
+            parsed = urlsplit(reference.strip(" \t\n\r\f"))
         except ValueError:
             continue
         if parsed.scheme or parsed.netloc:
@@ -223,12 +225,13 @@ def warnings_for(
         if parsed.path.startswith("/"):
             add("root_relative_reference", reference)
             continue
-        if not is_resource or not parsed.path or parsed.path.endswith("/") or parser.base_href:
+        if not is_resource or not parsed.path or parser.base_href or truncated:
             continue
         path = posixpath.normpath(unquote(parsed.path))
         if path == ".." or path.startswith("../") or path.startswith("/"):
             continue
-        if path not in known_paths:
+        index_path = "index.html" if path == "." else f"{path}/index.html"
+        if path not in known_paths and index_path not in known_paths:
             add("missing_relative_asset", reference, path)
     if re.search(r"serviceWorker|service-worker", text, re.IGNORECASE):
         add("service_worker")

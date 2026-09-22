@@ -78,6 +78,16 @@ def bound_report_text(
     }
 
 
+def _requested_report_mode(arguments: list[str]) -> ReportMode:
+    selected: str | None = None
+    for index, value in enumerate(arguments):
+        if value == "--report":
+            selected = arguments[index + 1] if index + 1 < len(arguments) else None
+        elif value.startswith("--report="):
+            selected = value.split("=", 1)[1]
+    return "summary" if selected == "summary" else "detail"
+
+
 class UsageFailure(Exception):
     pass
 
@@ -1297,7 +1307,7 @@ def main(argv: list[str] | None = None) -> int:
                     name=getattr(parsed, "name", None),
                     expected_revision=getattr(parsed, "expected_revision", None),
                     request_id=getattr(parsed, "request_id", None),
-                    mode=getattr(parsed, "report", "detail"),
+                    mode=getattr(parsed, "report", _requested_report_mode(arguments)),
                 ),
                 2,
             )
