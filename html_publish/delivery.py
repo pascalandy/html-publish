@@ -115,29 +115,39 @@ def _open(
 
 def _compare(response: _Response, expected: Path, deadline: Deadline) -> int:
     compared = 0
-    with expected.open("rb") as source:
-        while True:
-            deadline.remaining()
-            actual_chunk = response.read1(64 * 1024)
-            deadline.remaining()
-            if not actual_chunk:
-                if source.read(1):
+    try:
+        with expected.open("rb") as source:
+            while True:
+                deadline.remaining()
+                actual_chunk = response.read1(64 * 1024)
+                deadline.remaining()
+                if not actual_chunk:
+                    if source.read(1):
+                        raise PublishError(
+                            "delivery_failure",
+                            "verify",
+                            f"Delivered bytes differ from the committed file: {expected.name}",
+                            "inspect",
+                        )
+                    return compared
+                expected_chunk = source.read(len(actual_chunk))
+                if actual_chunk != expected_chunk:
                     raise PublishError(
                         "delivery_failure",
                         "verify",
                         f"Delivered bytes differ from the committed file: {expected.name}",
                         "inspect",
                     )
-                return compared
-            expected_chunk = source.read(len(actual_chunk))
-            if actual_chunk != expected_chunk:
-                raise PublishError(
-                    "delivery_failure",
-                    "verify",
-                    f"Delivered bytes differ from the committed file: {expected.name}",
-                    "inspect",
-                )
-            compared += len(actual_chunk)
+                compared += len(actual_chunk)
+    except PublishError:
+        raise
+    except OSError as error:
+        raise PublishError(
+            "delivery_failure",
+            "verify",
+            f"The delivery response for {expected.name} could not be read: {error}",
+            "retry",
+        ) from error
 
 
 def _path_url(root: str, relative: str) -> str:
