@@ -247,6 +247,45 @@ class PublisherCliTest(unittest.TestCase):
             with urllib.request.urlopen(url) as response:
                 self.assertEqual(response.read(), contents)
 
+    def test_quoted_filename_changes_revision_and_preserves_served_bytes(self) -> None:
+        source = self.root / "site"
+        source.mkdir()
+        (source / "index.html").write_bytes(b"<!doctype html><h1>quoted path</h1>\n")
+        (source / "README.md").write_bytes(b"unquoted file\n")
+        quoted = source / '"README.md"'
+        arguments = ("--name", "report", "--source", str(source), "--target", self.base_url)
+
+        for object_format in ("sha1", "sha256"):
+            with self.subTest(object_format=object_format):
+                config = self.config_payload()
+                config["object_format"] = object_format
+                self.config.write_text(json.dumps(config), encoding="utf-8")
+                quoted.write_bytes(b"quoted A\n")
+                before = self.run_cli("plan", *arguments)
+                self.assertEqual(before.returncode, 0, before.stderr)
+                quoted.write_bytes(b"quoted B\n")
+                after = self.run_cli("plan", *arguments)
+                self.assertEqual(after.returncode, 0, after.stderr)
+                self.assertNotEqual(
+                    self.payload(before)["requested_revision"],
+                    self.payload(after)["requested_revision"],
+                )
+
+        published = self.run_cli("publish", *arguments)
+        self.assertEqual(published.returncode, 0, published.stdout + published.stderr)
+        self.assertEqual(
+            self.payload(published)["active_revision"], self.payload(after)["requested_revision"]
+        )
+        self.assertEqual(self.payload(published)["verification"]["result"], "passed")
+        for name, expected in (
+            ("README.md", b"unquoted file\n"),
+            ('"README.md"', b"quoted B\n"),
+        ):
+            with urllib.request.urlopen(
+                self.base_url + "report/" + urllib.parse.quote(name)
+            ) as response:
+                self.assertEqual(response.read(), expected)
+
     def test_publish_file_and_identical_retry_use_one_commit(self) -> None:
         source = self.root / "report.html"
         body = b"<!doctype html><h1>first</h1>\n"
