@@ -991,13 +991,35 @@
     "agent_resume_promised": false,
     "limitation": "Frozen readiness observation with a finite observer lifetime; it does not prove a reboot or unattended agent continuation."
   },
+  "reader_scope": {
+    "observed_at_utc": "2026-09-22T14:12:56.758875Z",
+    "source_record": "/home/pascal/.local/state/codex/orchestrate/html-publish-20260922/state/reader-scope/record.json",
+    "record_sha256": "d3705f3ea5159a7ca1b6588e5618420f8bf4a6705de480fe72ad42fba0a0b34a",
+    "probe_sha256": "e9f3369c21724c9c8c068dcf56f9b6ea2c0d8ca7972184c707fc30817f108900",
+    "destination_port": 8444,
+    "visible_peer_count": 538,
+    "visible_peers_with_all_advertised_addresses_matching": 6,
+    "visible_peers_with_no_advertised_addresses_matching": 532,
+    "visible_peers_with_partial_matches": 0,
+    "tagged_peer_count": 532,
+    "matching_tagged_peer_count": 0,
+    "known_test_peers_match": ["mbp16", "m4mini"],
+    "source_selector_sha256": "383a8f9585357f3a134d750bf6acf6b1ce4550e6a0c5451bb3b722952f20a86e",
+    "record_reports_tailnet_only": true,
+    "record_reports_public_funnel": false,
+    "owner_mapping_inferred": false,
+    "stable_human_audience_established": false,
+    "authoritative_acl_intent_observed": false,
+    "future_or_unseen_peers_covered": false,
+    "scope": "Dated compiled-selector matches for visible peers, not a universal exclusion or per-peer connectivity test. Peer names and addresses are omitted except for the two documented clients."
+  },
   "limits": [
     "No reboot or power-loss proof",
     "No production-readiness claim",
     "No ETag emitted; ETag-only and combined-validator cases unavailable",
     "Faults use the installed executable with private stores and loopback fixtures, not failed live routes",
     "Read-only snapshots do not lock concurrent publication or installation writers",
-    "Other tailnet peers are not proven excluded; effective reader policy remains unresolved"
+    "Current visible-peer compiled-selector scope is recorded; authoritative ACL intent and exclusion of future or unseen peers remain unproved"
   ],
   "raw_sha256": {
     "installed": {
