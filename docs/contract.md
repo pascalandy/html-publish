@@ -9,6 +9,10 @@ The section numbers S1 through S10 match the issue text that preceded this file,
 references such as "S5" or "S7" stay valid.
 
 - [Publisher architecture](architecture.md) records how the modules realize this contract today.
+- The [README current boundary](../README.md#current-boundary) lists the commands implemented in
+  this MVP. `uv run html-publish --help` owns their current syntax.
+- The [dated acceptance audit](evidence/audit/2026-09-21-issues-2-3-4.md) separates contract
+  requirements, implemented behavior, and recorded evidence.
 - [Operations](operations.md) records the controlled `om1` deployment workflow.
 - [Evidence](evidence/) records acceptance results and remaining checks.
 
@@ -139,8 +143,9 @@ and `error`.
   operational failure, 2 invalid usage. Degraded status exits 1; saved-versus-active divergence
   alone does not.
 
-Additive optional fields are allowed; incompatible meanings require a schema version change. No
-separate API server or schema framework.
+Freeze representative JSON fixtures and error behavior in #3. Additive optional fields are
+allowed; incompatible meanings require a schema version change. No separate API server or schema
+framework.
 
 ## S5. One guarded transaction
 
