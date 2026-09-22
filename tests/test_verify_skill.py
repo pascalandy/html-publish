@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import time
@@ -24,13 +25,13 @@ class VerifySkillLifecycleTest(unittest.TestCase):
             started = self.run_helper("start", run_id)
             self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
             original_identity = identity.read_text(encoding="utf-8")
-            server_pid = int(original_identity.split()[0])
+            server_pid = json.loads(original_identity)["pid"]
 
             unrelated = subprocess.Popen(["sleep", "30"], start_new_session=True)
-            identity.write_text(
-                f"{unrelated.pid} {os.getpgid(unrelated.pid)} 0\n",
-                encoding="utf-8",
-            )
+            stale = json.loads(original_identity)
+            stale["pid"] = unrelated.pid
+            stale["token"] = "stale-owner"
+            identity.write_text(json.dumps(stale), encoding="utf-8")
 
             refused = self.run_helper("stop", run_id)
 

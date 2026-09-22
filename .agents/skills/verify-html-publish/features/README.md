@@ -5,8 +5,8 @@ This directory is the maintained source for verifying the user-facing behavior o
 ## Baseline preconditions
 
 - Start an isolated instance with `scripts/instance.sh start <run_id>` from the skill directory. See SKILL.md Launch.
-- Export `REPO_ROOT`, `RUN_ID`, `INSTANCE`, `CONFIG`, `URL`, `PORT`, and `ARTIFACTS` from the start output. Export `PAGE_A` and `PAGE_B` from the sources output.
-- Create the shell helper `HP() { uv run --project "$REPO_ROOT" html-publish --config "$CONFIG" --json "$@"; }` used by every recipe.
+- Export `REPO_ROOT`, `RUN_ID`, `INSTANCE`, `CONFIG`, `URL`, `PORT`, `ARTIFACTS`, and `CLI` from the start output. Export `PAGE_A` and `PAGE_B` from the sources output.
+- Create the shell helper `HP() { "$CLI" --config "$CONFIG" --json "$@"; }` used by every recipe. It drives the installed wheel, outside the source checkout.
 - The [README publish helper](../../../../README.md#publish-one-page) is the single source for accepted-revision updates. Recipes may inspect reports directly, but any carried baseline must pass the command-exit and successful-outcome gates from that helper. Never assign a baseline from `status`, an error report, or a mutation-to-`jq` pipeline.
 - Run `scripts/instance.sh doctor <run_id>` and require exit 0 before driving.
 - Never drive an instance that this verification run did not start. `allow_http` in the generated config is valid only for the loopback target `127.0.0.1`.
