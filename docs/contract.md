@@ -461,6 +461,35 @@ publication protocol. The read-only delivery helper and thin SSH execution helpe
 requirement to preserve Postplan-owned URLs: replacement produces new private URLs. Markdown is
 #9, after HTML cutover.
 
+## S11. Installed Linux host
+
+`host serve` reads the selected, validated publisher configuration and serves its `runtime/public`
+directory. It defaults to IPv4 loopback and stops on SIGINT or SIGTERM. Serving does not create
+publisher state or hold a publication lock.
+
+`host setup` previews an owned systemd user service. Preview reports its selected paths,
+executable, rendered unit, current state, blockers, and proposed effects without writing files or
+changing services. `--apply` is the only setup mutation. It requires a durable uv tool installation,
+an absent unit or one matching this installation's ownership record, and an IPv4 loopback listener.
+The record binds the selected configuration and installed package bytes; a package update restarts
+the owned service before setup reports completion.
+An equal unit without that record is foreign. Existing drop-ins, masks, aliases, changed unit bytes,
+and changed publisher configuration block mutation. Repeat apply reports `unchanged` without a
+reload or restart. A record of completed and pending steps preserves partial effects across failure.
+
+`--tailscale` explicitly adds one HTTPS Serve handler derived from the configured base URL. Setup
+requires an already-authenticated matching node and an unused non-overlapping route. It does not
+authenticate, enable HTTPS, change Funnel, or replace another handler. An equal existing handler
+without ownership is foreign. A pending route whose handler appeared during an interrupted command
+requires manual inspection because Serve has no handler ownership marker. Other ports and disjoint
+paths remain untouched. The host record and user unit live outside the publication archive, runtime,
+and receipts. A failed later step reports earlier effects and keeps its record for inspection.
+
+Foreground HTTP and simulated systemctl or Tailscale checks do not prove a real service restart or
+private HTTPS. A service claim requires a disposable Linux account with a real user manager. A
+private HTTPS claim requires an authenticated disposable node and a second tailnet client. Generic
+hosting remains an MVP until those gates pass; it is not a production deployment procedure.
+
 ## Technical references
 
 These describe primitives, not evidence that om1 passes the gates:

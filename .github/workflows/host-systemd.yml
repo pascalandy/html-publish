@@ -1,0 +1,25 @@
+name: Installed Linux host
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  user-service:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+      - run: uv build --wheel --out-dir dist
+      - name: Verify installed user service in a dedicated account
+        run: bash scripts/verify-host-systemd.sh "$PWD"/dist/*.whl "$(command -v uv)"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: installed-linux-host
+          path: ${{ runner.temp }}/html-publish-host-evidence/
+          if-no-files-found: warn

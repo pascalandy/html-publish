@@ -330,3 +330,41 @@ Return to the reviewed checkout with the same `html-publish-install --source ...
 - Application rollback changes the application release pointer; it does not restore publication content. Publication restore is available through the installed CLI
 - Remote backup and the browser and second-device fault matrices remain deferred. Browser and second-device success transitions are recorded. Controlled SSH and SCP fixtures cover transport failures and timeouts, and separate private stores cover installed-executable faults
 - The workflow is a controlled private MVP and is not production-ready
+
+## Installed Linux user service
+
+Use this path only with a separate Linux account or host approved for the setup. The existing
+`om1` installer above has its own release and recovery procedure. Install a wheel as a durable uv
+tool, then select an absolute publisher config:
+
+```sh
+uv tool install --from /absolute/path/html_publish-0.1.0-py3-none-any.whl html-publish
+html-publish --config /absolute/path/publisher.json host serve --port 4177
+html-publish --config /absolute/path/publisher.json --json host setup
+html-publish --config /absolute/path/publisher.json --json host setup --apply
+```
+
+`host serve` stops on SIGINT or SIGTERM. `host setup` previews by default. Apply writes a record at
+`$XDG_STATE_HOME/html-publish/hosts/<unit-name>.json`, or under `~/.local/state` when the variable is
+unset. It writes `<unit-name>.service` under `$XDG_CONFIG_HOME/systemd/user`, or under `~/.config`.
+The default unit name is `html-publish.service`. Use `--unit-name html-publish-<name>` to isolate a
+verification installation. Apply starts or restarts the user unit, checks loopback health, and
+returns each completed or uncertain effect. Repeat apply returns `unchanged` without a restart.
+
+Add `--tailscale` only when the publisher base URL is the authenticated node's HTTPS DNS name and
+an exact, non-overlapping Serve mount is free. Setup does not log in, enable tailnet HTTPS, alter
+Funnel, or change other handlers. Tailscale has no ownership marker for a handler. If a route
+command loses its result and the handler appears, inspect it manually before retry or removal.
+Other administrators must not edit Serve concurrently with setup because the CLI has no atomic
+handler comparison command.
+Controlled fake Tailscale checks do not prove private HTTPS. The isolated user-service job in
+`.github/workflows/host-systemd.yml` proves restart only after it passes on hosted Ubuntu. Private
+HTTPS still needs an already-authenticated disposable node and a second tailnet client.
+
+To remove the isolated verification installation, read its record first and compare the current
+unit bytes, mode, effective `FragmentPath`, and any recorded Serve handler. If they still match,
+stop and disable only its named unit, remove only its unit file, run `systemctl --user daemon-reload`,
+and remove only its host record. For a positively recorded route that still matches, use
+`tailscale serve --https=<recorded-port> --set-path=<recorded-mount> off` before removing the record.
+Leave the archive, runtime, receipts, config, and uv tool installation intact. The hosted Ubuntu
+script performs these scoped checks and removes no Serve route because its job is service-only.

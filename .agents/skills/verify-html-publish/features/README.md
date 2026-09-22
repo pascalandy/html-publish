@@ -52,4 +52,5 @@ Keep implementation details out of the map. Name only user paths, stable handles
 - [Verification](verification.md) covers healthy verification, delivery failure, local corruption, and preserved observed state.
 - [History and restore](history-and-restore.md) covers bounded history, encoded diff limits, guarded restore, and appended history.
 - [Host diagnostics](host-diagnostics.md) covers named and unnamed host checks, local corruption, and route drift.
+- [Installed Linux hosting](installed-linux-hosting.md) covers foreground serving, read-only setup preview, and isolated user-service proof.
 - [Recovery](recovery.md) covers persistence errors and retry state after real process termination.

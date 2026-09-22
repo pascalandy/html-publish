@@ -519,6 +519,64 @@ def _parser(json_version: bool = False) -> Parser:
     doctor.add_argument("--role", choices=("publisher", "client"), required=True)
     doctor.add_argument("--network", action="store_true", help="allow bounded SSH and HTTP reads")
     _globals(doctor, version)
+
+    host = register_command(
+        commands,
+        "host",
+        "serve or set up an installed Linux publisher",
+        examples=(
+            "html-publish --config publisher.json host serve",
+            "html-publish --config publisher.json host setup --apply",
+        ),
+        effects=(
+            "serve reads public pages",
+            "setup previews by default",
+            "setup --apply changes only owned host resources",
+        ),
+    )
+    _globals(host, version)
+    host_actions = host.add_subparsers(dest="host_action", required=True)
+    serve_command = register_command(
+        host_actions,
+        "serve",
+        "serve configured public pages in the foreground",
+        examples=("html-publish --config publisher.json host serve --port 4177",),
+        effects=("reads runtime/public", "binds to loopback by default"),
+    )
+    serve_command.add_argument(
+        "--bind", default="127.0.0.1", help="listen address (non-loopback exposes HTTP)"
+    )
+    serve_command.add_argument("--port", type=int, default=4177, help="listen port (default: 4177)")
+    _globals(serve_command, version)
+    setup_command = register_command(
+        host_actions,
+        "setup",
+        "preview or apply an owned Linux user service",
+        examples=(
+            "html-publish --config publisher.json --json host setup",
+            "html-publish --config publisher.json --json host setup --apply",
+        ),
+        effects=(
+            "preview reads only",
+            "--apply writes an ownership record and user unit",
+            "--tailscale adds one explicit Serve handler",
+        ),
+    )
+    setup_command.add_argument(
+        "--apply", action="store_true", help="apply the previewed host setup"
+    )
+    setup_command.add_argument(
+        "--tailscale",
+        action="store_true",
+        help="also configure the matching authenticated Tailscale Serve route",
+    )
+    setup_command.add_argument(
+        "--unit-name", default="html-publish", help="owned unit basename (default: html-publish)"
+    )
+    setup_command.add_argument(
+        "--port", type=int, default=4177, help="IPv4 loopback port (default: 4177)"
+    )
+    _globals(setup_command, version)
     return parser
 
 
@@ -1219,6 +1277,45 @@ def main(argv: list[str] | None = None) -> int:
             path, _ = selected_path("client", parsed.config)
             return receipt.run(parsed, path, started_at)
         config_path, _ = selected_path("publisher", parsed.config)
+        if parsed.operation == "host":
+            from html_publish.host import HostError, apply, make_spec, preview
+            from html_publish.server import ServerConfig, serve
+
+            config_path = config_path.absolute()
+            try:
+                config = load_config(config_path)
+                if parsed.host_action == "serve":
+                    if not 0 <= parsed.port <= 65535:
+                        raise UsageFailure("serve port must be between 0 and 65535")
+                    return serve(ServerConfig(config.runtime / "public", parsed.bind, parsed.port))
+                spec, prerequisites = make_spec(
+                    config_path, config, parsed.unit_name, parsed.port, parsed.tailscale
+                )
+                result = (
+                    apply(spec, prerequisites) if parsed.apply else preview(spec, prerequisites)
+                )
+            except (HostError, PublishError, OSError) as error:
+                if isinstance(error, HostError):
+                    code, next_action = error.code, error.next_action
+                elif isinstance(error, PublishError):
+                    code, next_action = error.failure.code, error.failure.next_action
+                else:
+                    code, next_action = "host_failed", "inspect"
+                result = {
+                    "schema_version": 1,
+                    "operation": f"host.{parsed.host_action}",
+                    "outcome": "error",
+                    "error": {
+                        "code": code,
+                        "message": str(error),
+                        "next_action": next_action,
+                    },
+                }
+            code = 0 if result["outcome"] in {"planned", "applied", "unchanged"} else 1
+            if parsed.json:
+                return emit_json(result, code)
+            print(json.dumps(result, indent=2), file=sys.stdout if code == 0 else sys.stderr)
+            return code
         config = load_config(config_path)
         command_seconds = parsed.command_seconds or config.limits.command_seconds
         deadline = Deadline.start(command_seconds)

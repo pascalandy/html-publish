@@ -5,6 +5,7 @@ import functools
 import http.server
 import io
 import os
+import signal
 import socket
 import socketserver
 import stat
@@ -13,6 +14,7 @@ import urllib.parse
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from types import FrameType
 from typing import BinaryIO
 
 _CONDITIONAL_HEADERS = (
@@ -197,17 +199,29 @@ def _parse_args(argv: Sequence[str] | None) -> ServerConfig:
     return ServerConfig(directory, bind, port)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    config = _parse_args(argv)
+def serve(config: ServerConfig) -> int:
     handler = functools.partial(PublicationRequestHandler, directory=str(config.directory))
     server = PublicationHTTPServer((config.bind, config.port), handler)
+    previous = {name: signal.getsignal(name) for name in (signal.SIGINT, signal.SIGTERM)}
+
+    def stop(_signal: int, _frame: FrameType | None) -> None:
+        raise KeyboardInterrupt
+
     try:
+        for name in previous:
+            signal.signal(name, stop)
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         server.server_close()
+        for name, handler_before in previous.items():
+            signal.signal(name, handler_before)
     return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    return serve(_parse_args(argv))
 
 
 if __name__ == "__main__":
