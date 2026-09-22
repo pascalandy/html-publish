@@ -10,6 +10,7 @@ Name = NewType("Name", str)
 Revision = NewType("Revision", str)
 Commit = NewType("Commit", str)
 RelativePath = NewType("RelativePath", str)
+Operation = Literal["plan", "publish", "status", "verify", "history", "restore"]
 
 
 def _empty_details() -> Mapping[str, object]:
@@ -143,7 +144,7 @@ class Failure:
 
 @dataclass(frozen=True)
 class Report:
-    operation: Literal["plan", "publish", "status", "verify", "history", "restore"]
+    operation: Operation
     outcome: Literal["planned", "published", "unchanged", "observed", "verified", "error"]
     target: str | None
     name: Name | None

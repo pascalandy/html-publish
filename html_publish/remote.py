@@ -3,19 +3,36 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import math
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from types import FrameType
 from typing import Literal, NoReturn, cast
+from urllib.parse import urlparse
 
 from html_publish.artifact import capture
-from html_publish.model import Deadline, Limits, PublishError
+from html_publish.cli import emit_json, report_dict, usage_report
+from html_publish.delivery import publication_url
+from html_publish.model import (
+    Deadline,
+    Effects,
+    Failure,
+    Limits,
+    Name,
+    Operation,
+    PublishError,
+    Report,
+    Revision,
+)
 
 DEFAULT_HOST = "pascal@om1.donkey-arcturus.ts.net"
 DEFAULT_EXECUTABLE = "/home/pascal/.local/share/html-publish/current/.venv/bin/html-publish"
@@ -23,14 +40,26 @@ DEFAULT_CONFIG = "/home/pascal/.config/html-publish/publisher.json"
 DEFAULT_TARGET = "https://om1.donkey-arcturus.ts.net:8444/html-publish/"
 DEFAULT_INCOMING_ROOT = "/home/pascal/.local/share/html-publish/incoming"
 DEFAULT_CONNECT_TIMEOUT = 10
+DEFAULT_COMMAND_SECONDS = 120.0
 
-Operation = Literal["plan", "publish", "status"]
 NAME_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 HOST_PATTERN = re.compile(r"[A-Za-z0-9_.@-]+\Z")
 REMOTE_PATH_PATTERN = re.compile(r"/[A-Za-z0-9._/-]+\Z")
 
+ExitCode = Literal[0, 1, 2]
+
 
 class UsageFailure(Exception):
+    pass
+
+
+class CommandExpired(Exception):
+    def __init__(self, started: bool = False) -> None:
+        super().__init__("The command deadline expired")
+        self.started = started
+
+
+class ProtocolFailure(Exception):
     pass
 
 
@@ -47,15 +76,17 @@ class RemoteSettings:
     target: str
     incoming_root: PurePosixPath
     connect_timeout: int
+    command_seconds: float
 
-    def ssh_options(self) -> tuple[str, ...]:
+    def ssh_options(self, deadline: Deadline) -> tuple[str, ...]:
+        connect_timeout = max(1, min(self.connect_timeout, math.ceil(deadline.remaining())))
         return (
             "-o",
             "BatchMode=yes",
             "-o",
             "StrictHostKeyChecking=yes",
             "-o",
-            f"ConnectTimeout={self.connect_timeout}",
+            f"ConnectTimeout={connect_timeout}",
             "-o",
             "ForwardAgent=no",
         )
@@ -73,10 +104,44 @@ class ArtifactRequest:
 @dataclass(frozen=True)
 class StatusRequest:
     operation: Literal["status"]
+    name: str | None
+    after: str | None
+    limit: int
+    host_check: bool
+
+
+@dataclass(frozen=True)
+class VerifyRequest:
+    operation: Literal["verify"]
     name: str
 
 
-Request = ArtifactRequest | StatusRequest
+@dataclass(frozen=True)
+class HistoryRequest:
+    operation: Literal["history"]
+    name: str
+    after: str | None
+    limit: int
+    diff_revision: str | None
+
+
+@dataclass(frozen=True)
+class RestoreRequest:
+    operation: Literal["restore"]
+    name: str
+    archive_commit: str
+    expected_revision: str | None
+    request_id: str
+
+
+Request = ArtifactRequest | StatusRequest | VerifyRequest | HistoryRequest | RestoreRequest
+
+
+@dataclass(frozen=True)
+class Invocation:
+    payload: dict[str, object]
+    exit_code: ExitCode
+    cleanup_allowed: bool
 
 
 def _name(value: str) -> str:
@@ -107,10 +172,29 @@ def _connect_timeout(value: str) -> int:
     return parsed
 
 
+def _positive_seconds(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError("command seconds must be positive")
+    return parsed
+
+
+def _positive_limit(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1 or parsed > 100:
+        raise argparse.ArgumentTypeError("limit must be between 1 and 100")
+    return parsed
+
+
 def _parser() -> Parser:
     parser = Parser(
-        prog="python -m html_publish.remote",
-        description="Capture a local artifact and run html-publish on the controlled om1 host",
+        prog="html-publish-remote",
+        description="Run the html-publish JSON contract through the controlled SSH transport",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""examples:
+  html-publish-remote publish --name release-notes --source ./release-notes.html
+  html-publish-remote status --limit 20
+  html-publish-remote verify --name release-notes""",
     )
     parser.add_argument("--host", type=_host, default=DEFAULT_HOST)
     parser.add_argument("--remote-executable", default=DEFAULT_EXECUTABLE)
@@ -126,6 +210,11 @@ def _parser() -> Parser:
         type=_connect_timeout,
         default=DEFAULT_CONNECT_TIMEOUT,
     )
+    parser.add_argument(
+        "--command-seconds",
+        type=_positive_seconds,
+        default=DEFAULT_COMMAND_SECONDS,
+    )
     commands = parser.add_subparsers(dest="operation", required=True)
 
     for operation in ("plan", "publish"):
@@ -136,8 +225,38 @@ def _parser() -> Parser:
         if operation == "publish":
             command.add_argument("--request-id")
 
-    status = commands.add_parser("status")
-    status.add_argument("--name", required=True, type=_name)
+    status = commands.add_parser(
+        "status",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""continuation example:
+  html-publish-remote status --after '<continuation>' --limit 20""",
+    )
+    status.add_argument("--name", type=_name)
+    status.add_argument(
+        "--after", type=_name, help="opaque continuation from the prior status page"
+    )
+    status.add_argument("--limit", type=_positive_limit, default=100)
+    status.add_argument("--host-check", action="store_true")
+
+    verify = commands.add_parser("verify")
+    verify.add_argument("--name", required=True, type=_name)
+
+    history = commands.add_parser(
+        "history",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""continuation example:
+  html-publish-remote history --name release-notes --after '<continuation>' --limit 5""",
+    )
+    history.add_argument("--name", required=True, type=_name)
+    history.add_argument("--after", help="opaque continuation from history for the same name")
+    history.add_argument("--limit", type=_positive_limit, default=20)
+    history.add_argument("--diff", dest="diff_revision")
+
+    restore = commands.add_parser("restore")
+    restore.add_argument("--name", required=True, type=_name)
+    restore.add_argument("--archive-commit", required=True)
+    restore.add_argument("--expected-revision")
+    restore.add_argument("--request-id")
     return parser
 
 
@@ -150,14 +269,40 @@ def _parse(arguments: list[str]) -> tuple[RemoteSettings, Request]:
         cast(str, parsed.target),
         cast(PurePosixPath, parsed.incoming_root),
         cast(int, parsed.connect_timeout),
+        cast(float, parsed.command_seconds),
     )
     operation = cast(Operation, parsed.operation)
-    name = cast(str, parsed.name)
     if operation == "status":
-        return settings, StatusRequest("status", name)
+        return settings, StatusRequest(
+            "status",
+            cast(str | None, parsed.name),
+            cast(str | None, parsed.after),
+            cast(int, parsed.limit),
+            cast(bool, parsed.host_check),
+        )
+    name = cast(str, parsed.name)
+    if operation == "verify":
+        return settings, VerifyRequest("verify", name)
+    if operation == "history":
+        return settings, HistoryRequest(
+            "history",
+            name,
+            cast(str | None, parsed.after),
+            cast(int, parsed.limit),
+            cast(str | None, parsed.diff_revision),
+        )
     request_id = cast(str | None, getattr(parsed, "request_id", None))
-    if operation == "publish" and request_id is None:
+    if operation in {"publish", "restore"} and request_id is None:
         request_id = f"remote-{uuid.uuid4().hex}"
+    if operation == "restore":
+        assert request_id is not None
+        return settings, RestoreRequest(
+            "restore",
+            name,
+            cast(str, parsed.archive_commit),
+            cast(str | None, parsed.expected_revision),
+            request_id,
+        )
     return settings, ArtifactRequest(
         operation,
         name,
@@ -167,45 +312,128 @@ def _parse(arguments: list[str]) -> tuple[RemoteSettings, Request]:
     )
 
 
-def _operation(arguments: list[str]) -> Operation | Literal["usage"]:
+def _operation(arguments: list[str]) -> Operation | None:
     for value in arguments:
-        if value in {"plan", "publish", "status"}:
+        if value in {"plan", "publish", "status", "verify", "history", "restore"}:
             return cast(Operation, value)
-    return "usage"
+    return None
 
 
-def _error_payload(
-    operation: Operation | Literal["usage"],
-    code: str,
-    phase: str,
-    message: str,
-    next_action: str,
-    publication_may_have_started: bool,
-    request_id: str | None = None,
+def _argument_value(arguments: list[str], option: str) -> str | None:
+    for index in range(len(arguments) - 1, -1, -1):
+        value = arguments[index]
+        if value.startswith(option + "="):
+            return value[len(option) + 1 :]
+        if value == option and index + 1 < len(arguments):
+            following = arguments[index + 1]
+            return following if not following.startswith("--") else None
+    return None
+
+
+def _usage_payload(arguments: list[str], failure: Failure) -> dict[str, object]:
+    operation = _operation(arguments)
+    if operation is None:
+        return usage_report(None, failure)
+    raw_name = _argument_value(arguments, "--name")
+    try:
+        name = Name(_name(raw_name)) if raw_name is not None else None
+    except argparse.ArgumentTypeError:
+        name = None
+    target = _argument_value(arguments, "--target") or DEFAULT_TARGET
+    try:
+        parsed_target = urlparse(target)
+        valid_target = parsed_target.scheme in {"http", "https"} and bool(parsed_target.hostname)
+    except ValueError:
+        valid_target = False
+    request_id = _argument_value(arguments, "--request-id")
+    expected_revision = _argument_value(arguments, "--expected-revision")
+    return usage_report(
+        operation,
+        failure,
+        target=target if valid_target else None,
+        name=name,
+        request_id=request_id,
+        expected_revision=Revision(expected_revision) if expected_revision is not None else None,
+    )
+
+
+def _request_id(request: Request) -> str | None:
+    if isinstance(request, (ArtifactRequest, RestoreRequest)):
+        return request.request_id
+    return None
+
+
+def _expected_revision(request: Request) -> str | None:
+    if isinstance(request, (ArtifactRequest, RestoreRequest)):
+        return request.expected_revision
+    return None
+
+
+def _failure_payload(
+    settings: RemoteSettings,
+    request: Request,
+    failure: Failure,
+    effects: Effects | None = None,
+    details: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
-    return {
-        "schema_version": 1,
-        "operation": operation,
-        "request_id": request_id,
-        "outcome": "error",
-        "publication_may_have_started": publication_may_have_started,
-        "error": {
-            "code": code,
-            "phase": phase,
-            "message": message,
-            "next_action": next_action,
-            "required_inputs": [],
-        },
-    }
+    name = request.name
+    expected_revision = _expected_revision(request)
+    return report_dict(
+        Report(
+            request.operation,
+            "error",
+            settings.target,
+            Name(name) if name is not None else None,
+            publication_url(settings.target, Name(name)) if name is not None else None,
+            request_id=_request_id(request),
+            expected_revision=Revision(expected_revision)
+            if expected_revision is not None
+            else None,
+            effects=effects or Effects(),
+            error=failure,
+            details=details or {},
+        )
+    )
 
 
-def _print_error(payload: dict[str, object], exit_code: int) -> int:
-    print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
-    return exit_code
+def _terminate_group(process: subprocess.Popen[bytes]) -> None:
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGKILL)
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        process.wait(timeout=0.2)
+    if process.stdout is not None:
+        process.stdout.close()
+    if process.stderr is not None:
+        process.stderr.close()
 
 
-def _run(command: list[str]) -> subprocess.CompletedProcess[bytes]:
-    return subprocess.run(command, capture_output=True, check=False)
+def _run(argv: list[str], deadline: Deadline) -> subprocess.CompletedProcess[bytes]:
+    def cancel(_signum: int, _frame: FrameType | None) -> NoReturn:
+        raise KeyboardInterrupt
+
+    try:
+        timeout = deadline.remaining()
+    except PublishError as error:
+        raise CommandExpired from error
+    process = subprocess.Popen(
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    previous = signal.signal(signal.SIGTERM, cancel)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        _terminate_group(process)
+        raise CommandExpired(started=True) from error
+    except BaseException:
+        _terminate_group(process)
+        raise
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+    _terminate_group(process)
+    return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
 
 
 def _write_stderr(data: bytes) -> None:
@@ -214,35 +442,16 @@ def _write_stderr(data: bytes) -> None:
         sys.stderr.buffer.flush()
 
 
-def _ssh(settings: RemoteSettings, remote_command: str) -> subprocess.CompletedProcess[bytes]:
-    return _run(["ssh", *settings.ssh_options(), settings.host, remote_command])
-
-
-def _transport_error(
-    request: Request,
-    phase: str,
-    result: subprocess.CompletedProcess[bytes] | OSError,
-) -> int:
-    request_id = request.request_id if isinstance(request, ArtifactRequest) else None
-    if isinstance(result, OSError):
-        detail = str(result)
-        exit_code = 1
-    else:
-        _write_stderr(result.stderr)
-        detail = f"exit {result.returncode}"
-        exit_code = result.returncode or 1
-    return _print_error(
-        _error_payload(
-            request.operation,
-            "transport_failure",
-            phase,
-            f"The remote transport failed before publication invocation: {detail}",
-            "retry",
-            False,
-            request_id,
-        ),
-        exit_code,
-    )
+def _ssh(
+    settings: RemoteSettings,
+    remote_command: str,
+    deadline: Deadline,
+) -> subprocess.CompletedProcess[bytes]:
+    try:
+        options = settings.ssh_options(deadline)
+    except PublishError as error:
+        raise CommandExpired from error
+    return _run(["ssh", *options, settings.host, remote_command], deadline)
 
 
 def _remote_arguments(
@@ -256,71 +465,348 @@ def _remote_arguments(
         settings.config,
         "--json",
         request.operation,
-        "--name",
-        request.name,
     ]
-    if isinstance(request, StatusRequest):
+    if isinstance(request, ArtifactRequest):
+        assert remote_source is not None
+        arguments.extend(
+            ["--name", request.name, "--source", str(remote_source), "--target", settings.target]
+        )
+        if request.expected_revision is not None:
+            arguments.extend(["--expected-revision", request.expected_revision])
+        if request.request_id is not None:
+            arguments.extend(["--request-id", request.request_id])
         return arguments
-    assert remote_source is not None
-    arguments.extend(["--source", str(remote_source), "--target", settings.target])
-    if request.expected_revision is not None:
-        arguments.extend(["--expected-revision", request.expected_revision])
-    if request.request_id is not None:
+    if isinstance(request, StatusRequest):
+        if request.name is not None:
+            arguments.extend(["--name", request.name])
+        if request.after is not None:
+            arguments.extend(["--after", request.after])
+        arguments.extend(["--limit", str(request.limit)])
+        if request.host_check:
+            arguments.append("--host-check")
+        return arguments
+    arguments.extend(["--name", request.name])
+    if isinstance(request, HistoryRequest):
+        arguments.extend(["--limit", str(request.limit)])
+        if request.after is not None:
+            arguments.extend(["--after", request.after])
+        if request.diff_revision is not None:
+            arguments.extend(["--diff", request.diff_revision])
+    elif isinstance(request, RestoreRequest):
+        arguments.extend(["--archive-commit", request.archive_commit, "--target", settings.target])
+        if request.expected_revision is not None:
+            arguments.extend(["--expected-revision", request.expected_revision])
         arguments.extend(["--request-id", request.request_id])
     return arguments
 
 
-def _relay_invocation(
+def _json_object(data: bytes) -> dict[str, object]:
+    try:
+        decoded = data.decode("utf-8")
+        raw: object = json.loads(decoded)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ProtocolFailure("The host did not return one valid UTF-8 JSON object") from error
+    if not isinstance(raw, dict):
+        raise ProtocolFailure("The host result must be one JSON object with string keys")
+    return cast(dict[str, object], raw)
+
+
+def _validate_host_payload(
+    payload: dict[str, object],
+    exit_code: int,
     settings: RemoteSettings,
     request: Request,
-    remote_command: str,
-) -> int:
-    request_id = request.request_id if isinstance(request, ArtifactRequest) else None
+) -> ExitCode:
+    required = {
+        "schema_version",
+        "operation",
+        "target",
+        "name",
+        "url",
+        "request_id",
+        "expected_revision",
+        "requested_revision",
+        "archived_revision",
+        "archive_commit",
+        "active_revision",
+        "outcome",
+        "effects",
+        "verification",
+        "warnings",
+        "error",
+        "observation",
+    }
+    if not required.issubset(payload):
+        raise ProtocolFailure("The host result is missing common envelope fields")
+    if exit_code not in {0, 1, 2}:
+        raise ProtocolFailure(f"The host returned unsupported exit code {exit_code}")
+    if type(payload.get("schema_version")) is not int or payload.get("schema_version") != 1:
+        raise ProtocolFailure("The host result has an unsupported schema version")
+    if payload.get("operation") != request.operation:
+        raise ProtocolFailure("The host result operation does not match the request")
+    if payload.get("target") != settings.target:
+        raise ProtocolFailure("The host result target does not match the request")
+    if payload.get("name") != request.name:
+        raise ProtocolFailure("The host result name does not match the request")
+    expected_url = publication_url(settings.target, Name(request.name)) if request.name else None
+    if payload.get("url") != expected_url:
+        raise ProtocolFailure("The host result URL does not match the request")
+    if payload.get("request_id") != _request_id(request):
+        raise ProtocolFailure("The host result request ID does not match the request")
+    if payload.get("expected_revision") != _expected_revision(request):
+        raise ProtocolFailure("The host result expectation does not match the request")
+    if any(
+        payload[key] is not None and not isinstance(payload[key], str)
+        for key in ("requested_revision", "archived_revision", "archive_commit", "active_revision")
+    ):
+        raise ProtocolFailure("The host result revision fields are invalid")
+    outcome = payload.get("outcome")
+    allowed_outcomes: dict[Operation, set[str]] = {
+        "plan": {"planned", "error"},
+        "publish": {"published", "unchanged", "error"},
+        "status": {"observed", "error"},
+        "verify": {"verified", "error"},
+        "history": {"observed", "error"},
+        "restore": {"published", "unchanged", "error"},
+    }
+    if not isinstance(outcome, str) or outcome not in allowed_outcomes[request.operation]:
+        raise ProtocolFailure("The host result outcome is invalid for the command")
+    effects = payload.get("effects")
+    if not isinstance(effects, dict):
+        raise ProtocolFailure("The host result effects are invalid")
+    effect_values = cast(dict[str, object], effects)
+    if any(
+        key not in effect_values
+        or (effect_values[key] is not None and type(effect_values[key]) is not bool)
+        for key in ("archive_advanced", "activated")
+    ):
+        raise ProtocolFailure("The host result effects are invalid")
+    if request.operation not in {"publish", "restore"} and any(
+        effect_values[key] is not False for key in ("archive_advanced", "activated")
+    ):
+        raise ProtocolFailure("The read-only host result claims mutation effects")
+    if exit_code == 0 and any(
+        effect_values[key] is None for key in ("archive_advanced", "activated")
+    ):
+        raise ProtocolFailure("The host success result has unknown effects")
+    if outcome == "published" and effect_values["activated"] is not True:
+        raise ProtocolFailure("The published host result does not report activation")
+    if (outcome == "unchanged" or exit_code == 2) and any(
+        effect_values[key] is not False for key in ("archive_advanced", "activated")
+    ):
+        raise ProtocolFailure("The host result effects disagree with its outcome")
+    verification = payload.get("verification")
+    if not isinstance(verification, dict):
+        raise ProtocolFailure("The host result verification is invalid")
+    verification_values = cast(dict[str, object], verification)
+    if verification_values.get("result") not in ("passed", "failed", "not_checked"):
+        raise ProtocolFailure("The host result verification is invalid")
+    warnings = payload.get("warnings")
+    if not isinstance(warnings, list) or not all(
+        isinstance(item, str) for item in cast(list[object], warnings)
+    ):
+        raise ProtocolFailure("The host result warnings are invalid")
+    error = payload.get("error")
+    if exit_code == 0 and (outcome == "error" or error is not None):
+        raise ProtocolFailure("The host success exit does not agree with its result")
+    if exit_code in {1, 2} and (
+        (outcome != "error" and not (request.operation == "status" and outcome == "observed"))
+        or not isinstance(error, dict)
+    ):
+        raise ProtocolFailure("The host error exit does not agree with its result")
+    error_values = cast(dict[str, object], error) if isinstance(error, dict) else {}
+    if error_values:
+        action = error_values.get("next_action")
+        if not all(isinstance(error_values.get(key), str) for key in ("code", "phase", "message")):
+            raise ProtocolFailure("The host result error is invalid")
+        if not isinstance(action, dict):
+            raise ProtocolFailure("The host result next action is invalid")
+        action_values = cast(dict[str, object], action)
+        required = action_values.get("required_inputs")
+        if (
+            not isinstance(action_values.get("kind"), str)
+            or not isinstance(required, list)
+            or not all(isinstance(item, str) for item in cast(list[object], required))
+        ):
+            raise ProtocolFailure("The host result next action is invalid")
+    elif exit_code != 0:
+        raise ProtocolFailure("The host result error is empty")
+    if exit_code == 1 and error_values.get("phase") == "usage":
+        raise ProtocolFailure("The host usage failure returned operational exit 1")
+    if exit_code == 2 and error_values.get("phase") != "usage":
+        raise ProtocolFailure("The host exit 2 does not describe invalid usage")
+    return cast(ExitCode, exit_code)
+
+
+def _retained_transport(staging: PurePosixPath | None, detail: str) -> dict[str, object]:
+    transport: dict[str, object] = {"cleanup": "skipped", "detail": detail}
+    if staging is not None:
+        transport["staging"] = str(staging)
+    return {"transport": transport}
+
+
+def _invocation_loss(
+    settings: RemoteSettings,
+    request: Request,
+    staging: PurePosixPath | None,
+    detail: str,
+) -> Invocation:
+    mutating = request.operation in {"publish", "restore"}
+    failure = Failure(
+        "publication_outcome_unknown" if mutating else "transport_failure",
+        "invoke",
+        "SSH lost the publication result" if mutating else "SSH lost the remote command result",
+        "inspect" if mutating else "retry",
+        ("name", "request_id", "expected_revision") if mutating else ("name",),
+    )
+    payload = _failure_payload(
+        settings,
+        request,
+        failure,
+        Effects(None, None) if mutating else Effects(),
+        details=_retained_transport(staging, detail),
+    )
+    return Invocation(payload, 1, False)
+
+
+def _protocol_failure(
+    settings: RemoteSettings,
+    request: Request,
+    staging: PurePosixPath | None,
+    message: str,
+) -> Invocation:
+    mutating = request.operation in {"publish", "restore"}
+    failure = Failure(
+        "remote_protocol_failure",
+        "invoke",
+        message,
+        "inspect" if mutating else "retry",
+        ("name", "request_id", "expected_revision") if mutating else ("name",),
+    )
+    details = _retained_transport(staging, message) if mutating else None
+    return Invocation(
+        _failure_payload(
+            settings,
+            request,
+            failure,
+            Effects(None, None) if mutating else Effects(),
+            details=details,
+        ),
+        1,
+        not mutating,
+    )
+
+
+def _invoke(
+    settings: RemoteSettings,
+    request: Request,
+    deadline: Deadline,
+    staging: PurePosixPath | None = None,
+    remote_source: PurePosixPath | None = None,
+) -> Invocation:
+    remote_command = shlex.join(_remote_arguments(settings, request, remote_source))
     try:
-        result = _ssh(settings, remote_command)
+        result = _ssh(settings, remote_command, deadline)
+    except CommandExpired as error:
+        if not error.started:
+            failure = Failure("command_timeout", "invoke", str(error), "retry")
+            return Invocation(_failure_payload(settings, request, failure), 1, True)
+        return _invocation_loss(settings, request, staging, "The command deadline expired")
+    except KeyboardInterrupt:
+        return _invocation_loss(settings, request, staging, "The caller cancelled the invocation")
     except OSError as error:
-        return _print_error(
-            _error_payload(
-                request.operation,
-                "transport_failure",
-                "invoke",
-                f"SSH could not start the remote invocation: {error}",
-                "retry",
-                False,
-                request_id,
-            ),
-            1,
+        failure = Failure(
+            "transport_failure",
+            "invoke",
+            f"SSH could not start the remote invocation: {error}",
+            "retry",
+            ("name",),
         )
+        return Invocation(_failure_payload(settings, request, failure), 1, True)
     _write_stderr(result.stderr)
     if result.returncode == 255:
-        may_have_started = request.operation == "publish"
-        return _print_error(
-            _error_payload(
-                request.operation,
-                "publication_outcome_unknown" if may_have_started else "transport_failure",
-                "invoke",
-                "SSH lost the remote command result after invocation started",
-                "check_status" if may_have_started else "retry",
-                may_have_started,
-                request_id,
-            ),
-            result.returncode,
-        )
-    sys.stdout.buffer.write(result.stdout)
-    sys.stdout.buffer.flush()
-    return result.returncode
+        return _invocation_loss(settings, request, staging, "SSH exited 255")
+    try:
+        payload = _json_object(result.stdout)
+        exit_code = _validate_host_payload(payload, result.returncode, settings, request)
+    except ProtocolFailure as error:
+        return _protocol_failure(settings, request, staging, str(error))
+    return Invocation(payload, exit_code, True)
 
 
-def _cleanup(settings: RemoteSettings, staging: PurePosixPath) -> None:
-    cleanup = shlex.join(["rm", "-rf", "--", str(staging)])
-    with contextlib.suppress(OSError):
-        _ssh(settings, cleanup)
+def _cleanup(
+    settings: RemoteSettings,
+    staging: PurePosixPath,
+    deadline: Deadline,
+) -> str | None:
+    command = shlex.join(["rm", "-rf", "--", str(staging)])
+    try:
+        result = _ssh(settings, command, deadline)
+    except (CommandExpired, KeyboardInterrupt):
+        return "The command deadline expired before cleanup completed"
+    except OSError as error:
+        return f"Cleanup could not start: {error}"
+    _write_stderr(result.stderr)
+    if result.returncode != 0:
+        return f"Cleanup exited {result.returncode}"
+    return None
 
 
-def _run_artifact(settings: RemoteSettings, request: ArtifactRequest) -> int:
+def _add_cleanup_warning(
+    payload: dict[str, object],
+    staging: PurePosixPath,
+    detail: str,
+) -> dict[str, object]:
+    updated = dict(payload)
+    warnings = cast(list[object], updated.get("warnings", []))
+    updated["warnings"] = [
+        *warnings,
+        "Remote staging cleanup failed; inspect the retained incoming directory",
+    ]
+    updated["transport"] = {
+        "cleanup": "failed",
+        "staging": str(staging),
+        "detail": detail,
+    }
+    return updated
+
+
+def _transfer_failure(
+    settings: RemoteSettings,
+    request: ArtifactRequest,
+    detail: str,
+) -> dict[str, object]:
+    required_inputs = (
+        ("source", "request_id", "expected_revision")
+        if request.operation == "publish"
+        else ("source", "expected_revision")
+    )
+    return _failure_payload(
+        settings,
+        request,
+        Failure(
+            "transport_failure",
+            "transfer",
+            "Transfer failed before invocation",
+            "retry",
+            required_inputs,
+        ),
+        details={"transport": {"detail": detail}},
+    )
+
+
+def _transport_deadline(deadline: Deadline, command_seconds: float) -> Deadline:
+    reserve = min(5.0, command_seconds / 2.0)
+    return Deadline(deadline.expires_at - reserve)
+
+
+def _run_artifact(
+    settings: RemoteSettings,
+    request: ArtifactRequest,
+    deadline: Deadline,
+) -> int:
     staging = settings.incoming_root / uuid.uuid4().hex
     remote_source = staging / "site"
-    request_id = request.request_id
     try:
         with tempfile.TemporaryDirectory(prefix="html-publish-remote-") as temporary:
             workspace = Path(temporary)
@@ -329,66 +815,74 @@ def _run_artifact(settings: RemoteSettings, request: ArtifactRequest) -> int:
                 request.source,
                 workspace,
                 "sha1",
-                Limits(),
-                Deadline.start(Limits().command_seconds),
+                Limits(command_seconds=settings.command_seconds),
+                deadline,
             )
+            transport_deadline = _transport_deadline(deadline, settings.command_seconds)
             mkdir = (
                 shlex.join(["umask", "077"]) + " && " + shlex.join(["mkdir", "--", str(staging)])
             )
             try:
-                mkdir_result = _ssh(settings, mkdir)
-            except OSError as error:
-                _cleanup(settings, staging)
-                return _transport_error(request, "transfer", error)
-            if mkdir_result.returncode != 0:
-                _cleanup(settings, staging)
-                return _transport_error(request, "transfer", mkdir_result)
+                setup = _ssh(settings, mkdir, transport_deadline)
+            except (CommandExpired, OSError, KeyboardInterrupt) as error:
+                payload = _transfer_failure(settings, request, str(error))
+                cleanup_error = _cleanup(settings, staging, deadline)
+                if cleanup_error is not None:
+                    payload = _add_cleanup_warning(payload, staging, cleanup_error)
+                return emit_json(payload, 1)
+            _write_stderr(setup.stderr)
+            if setup.returncode != 0:
+                payload = _transfer_failure(settings, request, f"setup exited {setup.returncode}")
+                cleanup_error = _cleanup(settings, staging, deadline)
+                if cleanup_error is not None:
+                    payload = _add_cleanup_warning(payload, staging, cleanup_error)
+                return emit_json(payload, 1)
             destination = f"{settings.host}:{staging}/"
             try:
                 transfer = _run(
                     [
                         "scp",
-                        *settings.ssh_options(),
+                        *settings.ssh_options(transport_deadline),
                         "-r",
                         "--",
                         str(captured.root),
                         destination,
-                    ]
+                    ],
+                    transport_deadline,
                 )
-            except OSError as error:
-                _cleanup(settings, staging)
-                return _transport_error(request, "transfer", error)
+            except (CommandExpired, PublishError, OSError, KeyboardInterrupt) as error:
+                payload = _transfer_failure(settings, request, str(error))
+                cleanup_error = _cleanup(settings, staging, deadline)
+                if cleanup_error is not None:
+                    payload = _add_cleanup_warning(payload, staging, cleanup_error)
+                return emit_json(payload, 1)
+            _write_stderr(transfer.stderr)
             if transfer.returncode != 0:
-                _cleanup(settings, staging)
-                return _transport_error(request, "transfer", transfer)
-            cleanup = shlex.join(["rm", "-rf", "--", str(staging)])
-            invocation = shlex.join(_remote_arguments(settings, request, remote_source))
-            remote_command = f"trap {shlex.quote(cleanup)} EXIT; {invocation}"
-            return _relay_invocation(settings, request, remote_command)
+                payload = _transfer_failure(settings, request, f"scp exited {transfer.returncode}")
+                cleanup_error = _cleanup(settings, staging, deadline)
+                if cleanup_error is not None:
+                    payload = _add_cleanup_warning(payload, staging, cleanup_error)
+                return emit_json(payload, 1)
+            invocation = _invoke(
+                settings,
+                request,
+                transport_deadline,
+                staging,
+                remote_source,
+            )
+            payload = invocation.payload
+            if invocation.cleanup_allowed:
+                cleanup_error = _cleanup(settings, staging, deadline)
+                if cleanup_error is not None:
+                    payload = _add_cleanup_warning(payload, staging, cleanup_error)
+            return emit_json(payload, invocation.exit_code)
     except (OSError, PublishError) as error:
-        if isinstance(error, PublishError):
-            failure = error.failure
-            code = failure.code
-            phase = failure.phase
-            message = failure.message
-            next_action = failure.next_action
-        else:
-            code = "capture_failure"
-            phase = "capture"
-            message = str(error)
-            next_action = "fix_input"
-        return _print_error(
-            _error_payload(
-                request.operation,
-                code,
-                phase,
-                message,
-                next_action,
-                False,
-                request_id,
-            ),
-            1,
+        failure = (
+            error.failure
+            if isinstance(error, PublishError)
+            else Failure("capture_failure", "capture", str(error), "fix_input")
         )
+        return emit_json(_failure_payload(settings, request, failure), 1)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -396,21 +890,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         settings, request = _parse(arguments)
     except UsageFailure as error:
-        return _print_error(
-            _error_payload(
-                _operation(arguments),
-                "invalid_usage",
-                "usage",
-                str(error),
-                "fix_arguments",
-                False,
-            ),
-            2,
-        )
+        failure = Failure("invalid_usage", "usage", str(error), "fix_arguments")
+        return emit_json(_usage_payload(arguments, failure), 2)
+    deadline = Deadline.start(settings.command_seconds)
     if isinstance(request, ArtifactRequest):
-        return _run_artifact(settings, request)
-    remote_command = shlex.join(_remote_arguments(settings, request))
-    return _relay_invocation(settings, request, remote_command)
+        return _run_artifact(settings, request, deadline)
+    invocation = _invoke(settings, request, deadline)
+    return emit_json(invocation.payload, invocation.exit_code)
 
 
 if __name__ == "__main__":

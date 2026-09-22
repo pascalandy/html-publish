@@ -1,16 +1,59 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import shlex
+import signal
 import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 from typing import Any, cast
 
 ROOT = Path(__file__).resolve().parents[1]
+TARGET = "https://om1.donkey-arcturus.ts.net:8444/html-publish/"
+
+
+def report(
+    operation: str,
+    *,
+    name: str | None = "release-notes",
+    request_id: str | None = None,
+    expected: str | None = None,
+    outcome: str = "observed",
+) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "operation": operation,
+        "request_id": request_id,
+        "outcome": outcome,
+        "target": TARGET,
+        "name": name,
+        "url": TARGET + name + "/" if name else None,
+        "expected_revision": expected,
+        "requested_revision": None,
+        "archived_revision": None,
+        "archive_commit": None,
+        "active_revision": None,
+        "effects": {"archive_advanced": False, "activated": False},
+        "verification": {
+            "result": "not_checked",
+            "revision": None,
+            "checked_at": None,
+            "probe_location": None,
+            "files_checked": 0,
+            "bytes_checked": 0,
+            "scope": [],
+            "detail": None,
+        },
+        "warnings": [],
+        "error": None,
+        "observation": None,
+    }
 
 
 class RemoteCliTest(unittest.TestCase):
@@ -21,249 +64,476 @@ class RemoteCliTest(unittest.TestCase):
         self.bin.mkdir()
         self.log = self.root / "transport.jsonl"
         self.snapshot = self.root / "snapshot.json"
-        self._write_fake_ssh()
-        self._write_fake_scp()
-        self.environment = os.environ.copy()
-        self.environment.update(
-            {
-                "PATH": f"{self.bin}{os.pathsep}{self.environment['PATH']}",
-                "FAKE_TRANSPORT_LOG": str(self.log),
-                "FAKE_SNAPSHOT": str(self.snapshot),
-                "FAKE_REMOTE_STDOUT": '{"outcome":"observed","active_revision":"abc123"}\n',
-                "FAKE_REMOTE_EXIT": "0",
-                "FAKE_SCP_EXIT": "0",
-            }
-        )
+        self.pids = self.root / "pids.json"
+        fixture = textwrap.dedent("""\
+            import json
+            import os
+            import shlex
+            import signal
+            import subprocess
+            import sys
+            import time
+            from pathlib import Path
+
+            program = Path(sys.argv[0]).name
+            command = sys.argv[-1]
+            stage = "transfer" if program == "scp" else (
+                "invoke" if "--json" in shlex.split(command) else (
+                    "cleanup" if command.startswith("rm ") else "setup"))
+            with Path(os.environ["FIXTURE_LOG"]).open("a") as output:
+                output.write(json.dumps({"program": program, "stage": stage,
+                                         "argv": sys.argv[1:]}) + "\\n")
+            if stage == "transfer":
+                source = Path(sys.argv[-2])
+                Path(os.environ["FIXTURE_SNAPSHOT"]).write_text(json.dumps({
+                    "source": str(source), "index": (source / "index.html").read_text(),
+                    "mode": source.parent.stat().st_mode & 0o777}))
+            if os.environ.get("FIXTURE_HANG") == stage:
+                child = subprocess.Popen([sys.executable, "-c",
+                    "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                    "time.sleep(60)"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                Path(os.environ["FIXTURE_PIDS"]).write_text(json.dumps([os.getpid(), child.pid]))
+                signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+                if os.environ.get("FIXTURE_CLOSE_PIPES"):
+                    os.close(1)
+                    os.close(2)
+                time.sleep(60)
+            if stage == "invoke":
+                sys.stdout.write(os.environ.get("FIXTURE_STDOUT", ""))
+            sys.stderr.write(os.environ.get("FIXTURE_STDERR", ""))
+            raise SystemExit(int(os.environ.get("FIXTURE_" + stage.upper() + "_EXIT", "0")))
+            """)
+        for name in ("ssh", "scp"):
+            executable = self.bin / name
+            executable.write_text(f"#!{sys.executable}\n{fixture}", encoding="utf-8")
+            executable.chmod(0o755)
+        self.environment = os.environ | {
+            "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}",
+            "FIXTURE_LOG": str(self.log),
+            "FIXTURE_SNAPSHOT": str(self.snapshot),
+            "FIXTURE_PIDS": str(self.pids),
+            "FIXTURE_STDOUT": json.dumps(report("status")),
+        }
+        self.source = self.root / "notes.html"
+        self.source.write_text("<!doctype html><h1>A</h1>\n", encoding="utf-8")
 
     def tearDown(self) -> None:
+        if self.pids.exists():
+            for pid in json.loads(self.pids.read_text()):
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(pid, signal.SIGKILL)
         self.temporary.cleanup()
 
-    def _write_executable(self, name: str, source: str) -> None:
-        path = self.bin / name
-        path.write_text(f"#!{sys.executable}\n{source}", encoding="utf-8")
-        path.chmod(0o755)
-
-    def _write_fake_ssh(self) -> None:
-        self._write_executable(
-            "ssh",
-            textwrap.dedent(
-                """
-                import json
-                import os
-                import sys
-                from pathlib import Path
-
-                log = Path(os.environ["FAKE_TRANSPORT_LOG"])
-                with log.open("a", encoding="utf-8") as output:
-                    output.write(json.dumps({"program": "ssh", "argv": sys.argv[1:]}) + "\\n")
-                command = sys.argv[-1]
-                if " --json " in f" {command} ":
-                    sys.stdout.write(os.environ.get("FAKE_REMOTE_STDOUT", ""))
-                    sys.stderr.write(os.environ.get("FAKE_REMOTE_STDERR", ""))
-                    raise SystemExit(int(os.environ.get("FAKE_REMOTE_EXIT", "0")))
-                raise SystemExit(int(os.environ.get("FAKE_SETUP_EXIT", "0")))
-                """
-            ),
-        )
-
-    def _write_fake_scp(self) -> None:
-        self._write_executable(
-            "scp",
-            textwrap.dedent(
-                """
-                import json
-                import os
-                import sys
-                from pathlib import Path
-
-                log = Path(os.environ["FAKE_TRANSPORT_LOG"])
-                source = Path(sys.argv[-2])
-                snapshot = {
-                    "source": str(source),
-                    "index": (source / "index.html").read_text(encoding="utf-8"),
-                    "mode": source.parent.stat().st_mode & 0o777,
-                }
-                Path(os.environ["FAKE_SNAPSHOT"]).write_text(
-                    json.dumps(snapshot), encoding="utf-8"
-                )
-                with log.open("a", encoding="utf-8") as output:
-                    output.write(json.dumps({"program": "scp", "argv": sys.argv[1:]}) + "\\n")
-                sys.stderr.write(os.environ.get("FAKE_SCP_STDERR", ""))
-                raise SystemExit(int(os.environ.get("FAKE_SCP_EXIT", "0")))
-                """
-            ),
-        )
+    def command(self, *arguments: str) -> list[str]:
+        return [sys.executable, "-m", "html_publish.remote", *arguments]
 
     def run_remote(
         self, *arguments: str, environment: dict[str, str] | None = None
     ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            [sys.executable, "-m", "html_publish.remote", *arguments],
+            self.command(*arguments),
             cwd=ROOT,
             env=environment or self.environment,
             text=True,
             capture_output=True,
             check=False,
+            timeout=8,
         )
 
     def records(self) -> list[dict[str, Any]]:
-        if not self.log.exists():
-            return []
-        return [
-            cast(dict[str, Any], json.loads(line))
-            for line in self.log.read_text(encoding="utf-8").splitlines()
-        ]
-
-    def test_status_uses_strict_ssh_and_relays_remote_result_without_transfer(self) -> None:
-        result = self.run_remote("status", "--name", "release-notes")
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(
-            result.stdout,
-            '{"outcome":"observed","active_revision":"abc123"}\n',
+        return (
+            [json.loads(line) for line in self.log.read_text().splitlines()]
+            if self.log.exists()
+            else []
         )
-        records = self.records()
-        self.assertEqual([record["program"] for record in records], ["ssh"])
-        arguments = cast(list[str], records[0]["argv"])
-        self.assertEqual(
-            arguments[:-2],
-            [
-                "-o",
-                "BatchMode=yes",
-                "-o",
-                "StrictHostKeyChecking=yes",
-                "-o",
-                "ConnectTimeout=10",
-                "-o",
-                "ForwardAgent=no",
-            ],
-        )
-        self.assertEqual(arguments[-2], "pascal@om1.donkey-arcturus.ts.net")
-        command = arguments[-1]
-        self.assertIn(
-            "/home/pascal/.local/share/html-publish/current/.venv/bin/html-publish",
-            command,
-        )
-        self.assertIn("--config", command)
-        self.assertIn("/home/pascal/.config/html-publish/publisher.json", command)
-        self.assertIn("--json status --name release-notes", command)
 
-    def test_plan_transfers_a_private_snapshot_and_forwards_expected_revision(self) -> None:
-        source = self.root / "notes.html"
-        source.write_text("<!doctype html><h1>A</h1>\n", encoding="utf-8")
-        remote_output = '{"operation":"plan","outcome":"planned"}\n'
-        environment = self.environment | {"FAKE_REMOTE_STDOUT": remote_output}
-
-        result = self.run_remote(
-            "plan",
+    def artifact_args(self, operation: str = "publish") -> list[str]:
+        args = [
+            operation,
             "--name",
             "release-notes",
             "--source",
-            str(source),
+            str(self.source),
             "--expected-revision",
-            "old-revision",
-            environment=environment,
-        )
+            "rev-a",
+        ]
+        return args + (["--request-id", "attempt-1"] if operation == "publish" else [])
 
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, remote_output)
-        snapshot = cast(dict[str, Any], json.loads(self.snapshot.read_text(encoding="utf-8")))
-        self.assertNotEqual(snapshot["source"], str(source))
-        self.assertEqual(snapshot["index"], "<!doctype html><h1>A</h1>\n")
+    def failure(
+        self, operation: str, code: str, phase: str, message: str, action: str, required: list[str]
+    ) -> dict[str, Any]:
+        expected = report(operation, request_id="attempt-1", expected="rev-a", outcome="error")
+        expected["error"] = {
+            "code": code,
+            "phase": phase,
+            "message": message,
+            "next_action": {"kind": action, "required_inputs": required},
+        }
+        return expected
+
+    def assert_no_live_children(self) -> None:
+        self.assertTrue(self.pids.exists(), "fixture did not reach the hanging phase")
+        for pid in json.loads(self.pids.read_text()):
+            path = Path(f"/proc/{pid}/stat")
+            for _ in range(50):
+                if not path.exists() or path.read_text().split(")", 1)[1].split()[0] == "Z":
+                    break
+                time.sleep(0.01)
+            else:
+                self.fail(f"owned child {pid} survived the command")
+
+    def test_all_non_upload_commands_forward_exact_arguments_and_additive_fields(self) -> None:
+        unsafe = "value with ' quotes ; $(touch should-not-exist)"
+        cases = [
+            (
+                ["status", "--after", "earlier", "--limit", "2", "--host-check"],
+                report("status", name=None),
+                ["status", "--after", "earlier", "--limit", "2", "--host-check"],
+            ),
+            (
+                ["verify", "--name", "release-notes"],
+                report("verify", outcome="verified"),
+                ["verify", "--name", "release-notes"],
+            ),
+            (
+                [
+                    "history",
+                    "--name",
+                    "release-notes",
+                    "--limit",
+                    "5",
+                    "--after",
+                    unsafe,
+                    "--diff",
+                    unsafe,
+                ],
+                report("history"),
+                [
+                    "history",
+                    "--name",
+                    "release-notes",
+                    "--limit",
+                    "5",
+                    "--after",
+                    unsafe,
+                    "--diff",
+                    unsafe,
+                ],
+            ),
+            (
+                [
+                    "restore",
+                    "--name",
+                    "release-notes",
+                    "--archive-commit",
+                    unsafe,
+                    "--expected-revision",
+                    "rev-a",
+                    "--request-id",
+                    unsafe,
+                ],
+                report("restore", request_id=unsafe, expected="rev-a", outcome="published"),
+                [
+                    "restore",
+                    "--name",
+                    "release-notes",
+                    "--archive-commit",
+                    unsafe,
+                    "--target",
+                    TARGET,
+                    "--expected-revision",
+                    "rev-a",
+                    "--request-id",
+                    unsafe,
+                ],
+            ),
+        ]
+        for args, payload, forwarded in cases:
+            with self.subTest(operation=args[0]):
+                if payload["outcome"] == "published":
+                    payload["effects"] = {"archive_advanced": True, "activated": True}
+                payload["future_detail"] = {"kept": True}
+                result = self.run_remote(
+                    *args, environment=self.environment | {"FIXTURE_STDOUT": json.dumps(payload)}
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(json.loads(result.stdout), payload)
+                record = self.records()[-1]
+                argv = cast(list[str], record["argv"])
+                self.assertEqual(
+                    argv[:-2],
+                    [
+                        "-o",
+                        "BatchMode=yes",
+                        "-o",
+                        "StrictHostKeyChecking=yes",
+                        "-o",
+                        "ConnectTimeout=10",
+                        "-o",
+                        "ForwardAgent=no",
+                    ],
+                )
+                self.assertEqual(
+                    shlex.split(argv[-1]),
+                    [
+                        "/home/pascal/.local/share/html-publish/current/.venv/bin/html-publish",
+                        "--config",
+                        "/home/pascal/.config/html-publish/publisher.json",
+                        "--json",
+                        *forwarded,
+                    ],
+                )
+        self.assertEqual([r["stage"] for r in self.records()], ["invoke"] * 4)
+
+    def test_plan_captures_private_source_and_cleans_after_validated_completion(self) -> None:
+        payload = report("plan", expected="rev-a", outcome="planned")
+        result = self.run_remote(
+            *self.artifact_args("plan"),
+            environment=self.environment | {"FIXTURE_STDOUT": json.dumps(payload)},
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(json.loads(result.stdout), payload)
+        snapshot = json.loads(self.snapshot.read_text())
+        self.assertEqual(snapshot["index"], self.source.read_text())
         self.assertEqual(snapshot["mode"], 0o700)
-        records = self.records()
-        self.assertEqual([record["program"] for record in records], ["ssh", "scp", "ssh"])
-        transfer = cast(list[str], records[1]["argv"])
-        self.assertIn("StrictHostKeyChecking=yes", transfer)
-        self.assertRegex(
-            transfer[-1],
-            r"^pascal@om1\.donkey-arcturus\.ts\.net:"
-            r"/home/pascal/\.local/share/html-publish/incoming/[0-9a-f]{32}/$",
+        self.assertFalse(Path(snapshot["source"]).exists())
+        self.assertEqual(
+            [r["stage"] for r in self.records()], ["setup", "transfer", "invoke", "cleanup"]
         )
-        invocation = cast(list[str], records[2]["argv"])[-1]
-        self.assertIn("--json plan --name release-notes", invocation)
-        self.assertIn("--expected-revision old-revision", invocation)
-        self.assertRegex(invocation, r"--source .*/incoming/[0-9a-f]{32}/site")
-        self.assertIn("trap 'rm -rf -- ", invocation)
+        command = self.records()[2]["argv"][-1]
+        self.assertNotIn("trap", command)
+        self.assertIn("--expected-revision rev-a", command)
 
-    def test_transfer_failure_reports_pre_invocation_and_preserves_source(self) -> None:
-        source = self.root / "report.html"
-        original = b"<!doctype html><h1>source survives</h1>\n"
-        source.write_bytes(original)
-        environment = self.environment | {
-            "FAKE_SCP_EXIT": "23",
-            "FAKE_SCP_STDERR": "transfer failed\n",
-        }
-
+    def test_transfer_failure_has_complete_common_envelope_and_exit_one(self) -> None:
         result = self.run_remote(
+            *self.artifact_args(), environment=self.environment | {"FIXTURE_TRANSFER_EXIT": "23"}
+        )
+        expected = self.failure(
             "publish",
-            "--name",
-            "report",
-            "--source",
-            str(source),
-            environment=environment,
+            "transport_failure",
+            "transfer",
+            "Transfer failed before invocation",
+            "retry",
+            ["source", "request_id", "expected_revision"],
         )
-
-        self.assertEqual(result.returncode, 23)
-        payload = cast(dict[str, Any], json.loads(result.stdout))
-        self.assertEqual(payload["error"]["code"], "transport_failure")
-        self.assertFalse(payload["publication_may_have_started"])
-        self.assertEqual(source.read_bytes(), original)
-        records = self.records()
-        self.assertEqual([record["program"] for record in records], ["ssh", "scp", "ssh"])
-        cleanup = cast(list[str], records[-1]["argv"])[-1]
-        self.assertRegex(cleanup, r"^rm -rf -- .*/incoming/[0-9a-f]{32}$")
-
-    def test_publish_relays_remote_failure_and_preserves_source(self) -> None:
-        source = self.root / "report.html"
-        original = b"<!doctype html><h1>conflict</h1>\n"
-        source.write_bytes(original)
-        remote_output = (
-            '{"operation":"publish","outcome":"error","error":{"code":"revision_conflict"}}\n'
-        )
-        environment = self.environment | {
-            "FAKE_REMOTE_STDOUT": remote_output,
-            "FAKE_REMOTE_EXIT": "1",
-        }
-
-        result = self.run_remote(
-            "publish",
-            "--name",
-            "report",
-            "--source",
-            str(source),
-            "--request-id",
-            "attempt-001",
-            environment=environment,
-        )
-
+        expected["transport"] = {"detail": "scp exited 23"}
         self.assertEqual(result.returncode, 1)
-        self.assertEqual(result.stdout, remote_output)
-        self.assertEqual(source.read_bytes(), original)
-        invocation = cast(list[str], self.records()[-1]["argv"])[-1]
-        self.assertIn("--request-id attempt-001", invocation)
+        self.assertEqual(json.loads(result.stdout), expected)
+        self.assertEqual([r["stage"] for r in self.records()], ["setup", "transfer", "cleanup"])
+        self.assertEqual(self.source.read_text(), "<!doctype html><h1>A</h1>\n")
 
-    def test_lost_publish_result_reports_uncertain_outcome_with_generated_request_id(self) -> None:
-        source = self.root / "report.html"
-        source.write_text("<!doctype html><h1>B</h1>\n", encoding="utf-8")
-        environment = self.environment | {"FAKE_REMOTE_EXIT": "255"}
+    def test_lost_mutation_response_retains_staging_and_caller_context(self) -> None:
+        for operation in ("publish", "restore"):
+            with self.subTest(operation=operation):
+                args = (
+                    self.artifact_args()
+                    if operation == "publish"
+                    else [
+                        "restore",
+                        "--name",
+                        "release-notes",
+                        "--archive-commit",
+                        "commit-a",
+                        "--expected-revision",
+                        "rev-a",
+                        "--request-id",
+                        "attempt-1",
+                    ]
+                )
+                result = self.run_remote(
+                    *args, environment=self.environment | {"FIXTURE_INVOKE_EXIT": "255"}
+                )
+                payload = json.loads(result.stdout)
+                expected = self.failure(
+                    operation,
+                    "publication_outcome_unknown",
+                    "invoke",
+                    "SSH lost the publication result",
+                    "inspect",
+                    ["name", "request_id", "expected_revision"],
+                )
+                expected["effects"] = {"archive_advanced": None, "activated": None}
+                expected["transport"] = {"cleanup": "skipped", "detail": "SSH exited 255"}
+                if operation == "publish":
+                    staging = payload["transport"]["staging"]
+                    self.assertRegex(staging, r"/incoming/[0-9a-f]{32}$")
+                    expected["transport"]["staging"] = staging
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(payload, expected)
+        self.assertNotIn("cleanup", [r["stage"] for r in self.records()])
 
+    def test_generated_identity_is_reported_after_lost_response(self) -> None:
         result = self.run_remote(
-            "publish",
+            "restore",
             "--name",
-            "report",
-            "--source",
-            str(source),
-            environment=environment,
+            "release-notes",
+            "--archive-commit",
+            "commit-a",
+            environment=self.environment | {"FIXTURE_INVOKE_EXIT": "255"},
         )
-
-        self.assertEqual(result.returncode, 255)
-        payload = cast(dict[str, Any], json.loads(result.stdout))
-        self.assertEqual(payload["error"]["code"], "publication_outcome_unknown")
-        self.assertTrue(payload["publication_may_have_started"])
+        payload = json.loads(result.stdout)
+        self.assertEqual(result.returncode, 1)
         self.assertRegex(payload["request_id"], r"^remote-[0-9a-f]{32}$")
-        invocation = cast(list[str], self.records()[-1]["argv"])[-1]
-        self.assertIn(f"--request-id {payload['request_id']}", invocation)
+        self.assertIn(payload["request_id"], shlex.split(self.records()[-1]["argv"][-1]))
+
+    def test_usage_failure_preserves_valid_context_and_exits_two(self) -> None:
+        result = self.run_remote("--command-seconds", "0", *self.artifact_args())
+        expected = self.failure(
+            "publish",
+            "invalid_usage",
+            "usage",
+            "argument --command-seconds: command seconds must be positive",
+            "fix_arguments",
+            [],
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(json.loads(result.stdout), expected)
+        self.assertEqual(self.records(), [])
+
+    def test_malformed_and_mismatched_results_are_protocol_failures(self) -> None:
+        valid = report("status")
+        bad = [
+            "",
+            "{",
+            "{} {}",
+            "[]",
+            json.dumps(valid | {"schema_version": True}),
+            json.dumps(valid | {"operation": "verify"}),
+            json.dumps(valid | {"name": "other"}),
+            json.dumps(valid | {"target": "other"}),
+            json.dumps(valid | {"request_id": "late"}),
+            json.dumps(valid | {"effects": {"archive_advanced": [], "activated": False}}),
+            json.dumps(valid | {"effects": {"archive_advanced": 0, "activated": False}}),
+            json.dumps(valid | {"effects": {}}),
+            json.dumps(valid | {"error": {}}),
+        ]
+        for stdout in bad:
+            with self.subTest(stdout=stdout):
+                result = self.run_remote(
+                    "status",
+                    "--name",
+                    "release-notes",
+                    environment=self.environment | {"FIXTURE_STDOUT": stdout},
+                )
+                self.assertEqual(result.returncode, 1, result.stderr)
+                payload = json.loads(result.stdout)
+                self.assertEqual(payload["error"]["code"], "remote_protocol_failure")
+                self.assertEqual(
+                    payload["effects"], {"archive_advanced": False, "activated": False}
+                )
+
+    def test_host_operational_and_usage_errors_keep_structured_actions(self) -> None:
+        for exit_code, phase, outcome in ((1, "status", "observed"), (2, "usage", "error")):
+            payload = report("status", outcome=outcome)
+            payload["error"] = {
+                "code": "state_degraded" if exit_code == 1 else "invalid_usage",
+                "phase": phase,
+                "message": "Inspect input",
+                "next_action": {"kind": "inspect", "required_inputs": []},
+            }
+            result = self.run_remote(
+                "status",
+                "--name",
+                "release-notes",
+                environment=self.environment
+                | {"FIXTURE_STDOUT": json.dumps(payload), "FIXTURE_INVOKE_EXIT": str(exit_code)},
+            )
+            self.assertEqual(result.returncode, exit_code)
+            self.assertEqual(json.loads(result.stdout), payload)
+
+    def test_untrusted_mutation_results_retain_staging(self) -> None:
+        valid = report("publish", request_id="attempt-1", expected="rev-a", outcome="published")
+        valid["effects"] = {"archive_advanced": True, "activated": True}
+        for changed in (
+            {"request_id": "different-attempt"},
+            {"effects": {"archive_advanced": None, "activated": None}},
+            {"effects": {"archive_advanced": True, "activated": False}},
+            {"outcome": "unchanged"},
+        ):
+            with self.subTest(changed=changed):
+                result = self.run_remote(
+                    *self.artifact_args(),
+                    environment=self.environment | {"FIXTURE_STDOUT": json.dumps(valid | changed)},
+                )
+                self.assertEqual(result.returncode, 1)
+                payload = json.loads(result.stdout)
+                self.assertEqual(payload["error"]["code"], "remote_protocol_failure")
+                self.assertEqual(payload["effects"], {"archive_advanced": None, "activated": None})
+                self.assertRegex(payload["transport"]["staging"], r"/incoming/[0-9a-f]{32}$")
+        self.assertNotIn("cleanup", [record["stage"] for record in self.records()])
+
+    def test_deadline_reaps_children_in_every_phase_and_preserves_effects(self) -> None:
+        success = report("publish", request_id="attempt-1", expected="rev-a", outcome="published")
+        success["effects"] = {"archive_advanced": True, "activated": True}
+        for stage in ("setup", "transfer", "invoke", "cleanup"):
+            with self.subTest(stage=stage):
+                start = time.monotonic()
+                result = self.run_remote(
+                    "--command-seconds",
+                    "1.5",
+                    *self.artifact_args(),
+                    environment=self.environment
+                    | {
+                        "FIXTURE_HANG": stage,
+                        "FIXTURE_STDOUT": json.dumps(success),
+                        "FIXTURE_CLOSE_PIPES": "1",
+                    },
+                )
+                self.assertLess(time.monotonic() - start, 2.5)
+                self.assert_no_live_children()
+                payload = json.loads(result.stdout)
+                self.assertEqual(result.returncode, 0 if stage == "cleanup" else 1, result.stderr)
+                self.assertEqual(
+                    payload["effects"],
+                    {
+                        "archive_advanced": True
+                        if stage == "cleanup"
+                        else None
+                        if stage == "invoke"
+                        else False,
+                        "activated": True
+                        if stage == "cleanup"
+                        else None
+                        if stage == "invoke"
+                        else False,
+                    },
+                )
+                if stage == "cleanup":
+                    self.assertEqual(payload["outcome"], "published")
+                    self.assertEqual(payload["transport"]["cleanup"], "failed")
+                    self.assertTrue(payload["warnings"])
+                if stage == "invoke":
+                    self.assertEqual(payload["transport"]["cleanup"], "skipped")
+
+    def test_cancelled_invocation_reaps_transport_group_and_reports_uncertainty(self) -> None:
+        environment = self.environment | {"FIXTURE_HANG": "invoke"}
+        with subprocess.Popen(
+            self.command(*self.artifact_args()),
+            cwd=ROOT,
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        ) as process:
+            end = time.monotonic() + 3
+            while not self.pids.exists() and time.monotonic() < end:
+                time.sleep(0.01)
+            self.assertTrue(self.pids.exists())
+            process.send_signal(signal.SIGTERM)
+            stdout, stderr = process.communicate(timeout=3)
+        self.assertEqual(process.returncode, 1, stderr)
+        self.assertEqual(
+            json.loads(stdout)["effects"], {"archive_advanced": None, "activated": None}
+        )
+        self.assert_no_live_children()
+
+    def test_help_explains_continuation(self) -> None:
+        for operation in ("status", "history"):
+            result = self.run_remote(operation, "--help")
+            self.assertEqual(result.returncode, 0)
+            self.assertIn("opaque continuation", result.stdout)
+            self.assertIn("--after '<continuation>'", result.stdout)
 
 
 if __name__ == "__main__":

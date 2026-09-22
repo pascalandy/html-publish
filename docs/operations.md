@@ -59,9 +59,16 @@ ssh pascal@om1.donkey-arcturus.ts.net \
 
 The stable publication root is `https://om1.donkey-arcturus.ts.net:8444/html-publish/`
 
-## Remote plan, publish, and status
+## Remote publication and observation
 
-The remote client captures the source into a private local staging directory, transfers that captured copy into a unique directory under `incoming`, invokes the installed CLI over SSH, and attempts to remove remote staging afterward. It never moves or edits the source artifact. Transfer and publication failures therefore preserve the source artifact
+The remote client captures plan and publish sources into private local staging, uploads that copy
+to a unique `incoming` directory, and invokes the installed CLI over SSH. Status, verify, history,
+and restore invoke the CLI without SCP. The source artifact stays unchanged
+
+All six commands emit the common JSON envelope. Exit 0 means success, 1 means operational failure,
+and 2 means invalid usage. The client validates the host result's command and caller identity before
+relaying it. `--command-seconds 120`, placed before the command, bounds capture, transport, and
+cleanup with one deadline. Cleanup reserves up to five seconds inside that budget
 
 Preview an initial publication
 
@@ -105,6 +112,25 @@ uv run html-publish-remote publish \
 The URL remains `https://om1.donkey-arcturus.ts.net:8444/html-publish/release-notes/`. A competing different update that still expects revision A exits with a conflict. An identical retry of B remains safe
 
 If SSH fails before the remote invocation, the client reports that publication did not start. If SSH loses the result after a publish invocation starts, retain the original expected revision and run `status` to inspect the outcome. Do not adopt the observed revision as a new write baseline. Retry only the same intended bytes
+
+Lost publish and restore results report unknown mutation effects. A client timeout stops its owned
+local transport process group, but does not prove the remote publisher stopped. Incoming staging
+is retained after uncertain invocation, with its path in `transport.staging`. Cleanup failures after
+known completion add a warning and retained path without changing the publication result
+
+Read paged observations and verify delivery without uploading a source
+
+```sh
+uv run html-publish-remote status --limit 20
+uv run html-publish-remote status --after '<continuation>' --limit 20
+uv run html-publish-remote status --name release-notes --host-check
+uv run html-publish-remote verify --name release-notes
+uv run html-publish-remote history --name release-notes --limit 5
+uv run html-publish-remote history --name release-notes --after '<continuation>' --limit 5
+```
+
+Use the returned opaque continuation only for the same operation and name. Status totals count all
+names. History totals count entries remaining after the cursor. Empty pages include `entries: []`
 
 ## Publication recovery and cleanup
 
@@ -182,7 +208,7 @@ Reinstall the current checkout with `just deploy-om1` after a rollback
 ## Known limits
 
 - User linger is disabled on the verified host, and reboot persistence has not been verified
-- A lost SSH connection can leave its private `incoming` directory for operator inspection, and established SSH or SCP sessions have no total command deadline
+- A lost SSH connection can leave its private `incoming` directory for operator inspection. The client deadline cannot prove that remote publication stopped
 - Application rollback changes the application release pointer; it does not restore publication content. Publication restore is available through the installed CLI
-- Durable receipts, remote backup, and the browser, transfer, and second-device fault matrices remain deferred
+- Durable receipts, remote backup, and the browser and second-device fault matrices remain deferred. Controlled SSH and SCP subprocess fixtures cover transport failures and timeouts
 - The workflow is a controlled private MVP and is not production-ready

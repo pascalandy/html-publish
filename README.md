@@ -2,7 +2,7 @@
 
 `html-publish` publishes private static HTML with stable URLs and local Git history
 
-The current MVP supports first publication, guarded replacement, identical retry, advisory planning, and read-only status
+The current MVP supports first publication, guarded replacement, identical retry, advisory planning, read-only status, verification, history, and guarded restore
 
 ## Run the checks
 
@@ -28,6 +28,11 @@ uv run html-publish-remote publish \
   --name release-notes \
   --source ./release-notes.html
 ```
+
+The remote helper supports all six commands and emits the same versioned JSON as local execution.
+Use `--command-seconds 120` before the command to set the total client deadline. Use
+`status --help` or `history --help` for pagination examples. Observations never advance the caller's
+accepted revision
 
 See the [om1 operations guide](docs/operations.md) for installation, guarded updates, rollback, health checks, storage ownership, and known limits. The [controlled MVP evidence](docs/evidence/deployment/2026-09-21-om1-controlled-mvp.md) records the verified live deployment
 
