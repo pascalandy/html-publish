@@ -21,11 +21,11 @@ import urllib.parse
 import urllib.request
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest import mock
 
 from html_publish import _git, cli
-from html_publish.model import Deadline
+from html_publish.model import Deadline, Failure, Report
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -1086,6 +1086,7 @@ class PublisherCliTest(unittest.TestCase):
                     "detail": None,
                 },
                 "warnings": [],
+                "warning_details": [],
                 "error": None,
                 "observation": None,
                 "entries": [],
@@ -1093,6 +1094,11 @@ class PublisherCliTest(unittest.TestCase):
                 "truncated": False,
                 "continuation": None,
                 "staging": None,
+                "report": {
+                    "mode": "detail",
+                    "collections": {"/warning_details": {"total": 0, "included": 0, "omitted": 0}},
+                    "text": {},
+                },
             },
         )
 
@@ -1432,6 +1438,42 @@ class PublisherCliTest(unittest.TestCase):
             self.payload(result)["warnings"],
             ["root_relative_reference", "external_dependency", "service_worker"],
         )
+
+    def test_relative_warning_scan_limits_and_base_href(self) -> None:
+        site = self.root / "relative-site"
+        site.mkdir()
+        (site / "café.css").write_bytes(b"body{}")
+        index = site / "index.html"
+        index.write_bytes(b'<link href="caf%C3%A9.css"><img src="missing.png?view=1#top">')
+
+        def plan() -> dict[str, object]:
+            result = self.run_cli(
+                "plan", "--name", "relative", "--source", str(site), "--target", self.base_url
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return self.payload(result)
+
+        plain = plan()
+        self.assertEqual(plain["warnings"], ["missing_relative_asset"])
+        self.assertEqual(
+            plain["warning_details"],
+            [
+                {
+                    "code": "missing_relative_asset",
+                    "source_path": "index.html",
+                    "reference": "missing.png?view=1#top",
+                    "expected_path": "missing.png",
+                }
+            ],
+        )
+        index.write_bytes(b'<base href="/assets/"><img src="missing.png">')
+        base = plan()
+        self.assertEqual(
+            base["warnings"], ["root_relative_reference", "base_href_analysis_limited"]
+        )
+        index.write_bytes(b'<img src="missing.png">' + b"x" * (2 * 1024 * 1024))
+        truncated = plan()
+        self.assertEqual(truncated["warnings"], ["missing_relative_asset", "html_scan_truncated"])
 
     def test_status_of_an_absent_name_observes_nulls(self) -> None:
         result = self.run_cli("status", "--name", "nothing")
@@ -3079,6 +3121,32 @@ class PublisherCliTest(unittest.TestCase):
         absent_payload = self.payload(absent)
         self.assertEqual(absent_payload["host_checks"]["route"], "not_checked")
         self.assertEqual(absent_payload["verification"]["result"], "not_checked")
+
+
+class ReportProjectionTest(unittest.TestCase):
+    def test_summary_reports_exact_utf8_omissions_without_changing_detail(self) -> None:
+        message = "€" * 1500 + '\n"\\'
+        report = Report(
+            "publish",
+            "error",
+            "https://publisher.test/pages/",
+            None,
+            None,
+            error=Failure("delivery_failure", "verify", message, "inspect"),
+        )
+
+        summary = cast(dict[str, Any], cli.report_dict(report, "summary"))
+        detail = cast(dict[str, Any], cli.report_dict(report, "detail"))
+
+        self.assertEqual(summary["error"]["code"], "delivery_failure")
+        self.assertEqual(summary["error"]["next_action"]["kind"], "inspect")
+        self.assertEqual(summary["error"]["message"], "€" * 1365)
+        self.assertEqual(
+            summary["report"]["text"]["/error/message"],
+            {"total_bytes": 4503, "included_bytes": 4095, "omitted_bytes": 408},
+        )
+        self.assertEqual(detail["error"]["message"], message)
+        self.assertEqual(detail["report"]["text"]["/error/message"]["omitted_bytes"], 0)
 
 
 if __name__ == "__main__":

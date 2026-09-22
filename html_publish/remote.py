@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 
 from html_publish import __version__
 from html_publish.artifact import capture
-from html_publish.cli import emit_json, report_dict, usage_report
+from html_publish.cli import ReportMode, bound_report_text, emit_json, report_dict, usage_report
 from html_publish.configuration import ClientConfig, read_document, selected_path
 from html_publish.delivery import publication_url
 from html_publish.discovery import (
@@ -101,6 +101,7 @@ class ArtifactRequest:
     source: Path
     expected_revision: str | None
     request_id: str | None
+    report: ReportMode = "detail"
 
 
 @dataclass(frozen=True)
@@ -110,12 +111,14 @@ class StatusRequest:
     after: str | None
     limit: int
     host_check: bool
+    report: ReportMode = "detail"
 
 
 @dataclass(frozen=True)
 class VerifyRequest:
     operation: Literal["verify"]
     name: str
+    report: ReportMode = "detail"
 
 
 @dataclass(frozen=True)
@@ -125,6 +128,7 @@ class HistoryRequest:
     after: str | None
     limit: int
     diff_revision: str | None
+    report: ReportMode = "detail"
 
 
 @dataclass(frozen=True)
@@ -134,6 +138,7 @@ class RestoreRequest:
     archive_commit: str
     expected_revision: str | None
     request_id: str
+    report: ReportMode = "detail"
 
 
 Request = ArtifactRequest | StatusRequest | VerifyRequest | HistoryRequest | RestoreRequest
@@ -306,6 +311,7 @@ def _parser(json_version: bool = False) -> Parser:
         )
         if operation == "publish":
             command.add_argument("--request-id", help="caller attempt ID echoed in the result")
+        command.add_argument("--report", choices=("detail", "summary"), default="detail")
         _globals(command, version, child=True)
 
     status = register_command(
@@ -337,6 +343,7 @@ def _parser(json_version: bool = False) -> Parser:
         action="store_true",
         help="also validate selected bytes and probe delivery for a named page",
     )
+    status.add_argument("--report", choices=("detail", "summary"), default="detail")
     _globals(status, version, child=True)
 
     verify = register_command(
@@ -347,6 +354,7 @@ def _parser(json_version: bool = False) -> Parser:
         effects=("reads saved bytes and host delivery", "does not activate"),
     )
     verify.add_argument("--name", required=True, type=_name, help="publication name")
+    verify.add_argument("--report", choices=("detail", "summary"), default="detail")
     _globals(verify, version, child=True)
 
     history = register_command(
@@ -374,6 +382,7 @@ def _parser(json_version: bool = False) -> Parser:
         help="reachable archived revision to compare with the latest page tree at HEAD "
         "(UTF-8 diff text capped at 64 KiB)",
     )
+    history.add_argument("--report", choices=("detail", "summary"), default="detail")
     _globals(history, version, child=True)
 
     restore = register_command(
@@ -398,6 +407,7 @@ def _parser(json_version: bool = False) -> Parser:
     )
     restore.add_argument("--expected-revision", help="expected active revision for guarded restore")
     restore.add_argument("--request-id", help="caller attempt ID echoed in the result")
+    restore.add_argument("--report", choices=("detail", "summary"), default="detail")
     _globals(restore, version, child=True)
 
     schema = register_command(
@@ -482,10 +492,11 @@ def _parse(arguments: list[str]) -> tuple[RemoteSettings, Request]:
             cast(str | None, parsed.after),
             cast(int, parsed.limit),
             cast(bool, parsed.host_check),
+            cast(ReportMode, parsed.report),
         )
     name = cast(str, parsed.name)
     if operation == "verify":
-        return settings, VerifyRequest("verify", name)
+        return settings, VerifyRequest("verify", name, cast(ReportMode, parsed.report))
     if operation == "history":
         return settings, HistoryRequest(
             "history",
@@ -493,6 +504,7 @@ def _parse(arguments: list[str]) -> tuple[RemoteSettings, Request]:
             cast(str | None, parsed.after),
             cast(int, parsed.limit),
             cast(str | None, parsed.diff_revision),
+            cast(ReportMode, parsed.report),
         )
     request_id = cast(str | None, getattr(parsed, "request_id", None))
     if operation in {"publish", "restore"} and request_id is None:
@@ -505,6 +517,7 @@ def _parse(arguments: list[str]) -> tuple[RemoteSettings, Request]:
             cast(str, parsed.archive_commit),
             cast(str | None, parsed.expected_revision),
             request_id,
+            cast(ReportMode, parsed.report),
         )
     return settings, ArtifactRequest(
         operation,
@@ -512,6 +525,7 @@ def _parse(arguments: list[str]) -> tuple[RemoteSettings, Request]:
         cast(Path, parsed.source),
         cast(str | None, parsed.expected_revision),
         request_id,
+        cast(ReportMode, parsed.report),
     )
 
 
@@ -599,7 +613,8 @@ def _failure_payload(
             effects=effects or Effects(),
             error=failure,
             details=details or {},
-        )
+        ),
+        request.report,
     )
 
 
@@ -643,7 +658,9 @@ def _run(argv: list[str], deadline: Deadline) -> subprocess.CompletedProcess[byt
     return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
 
 
-def _write_stderr(data: bytes) -> None:
+def _write_stderr(data: bytes, mode: ReportMode = "detail") -> None:
+    if mode == "summary":
+        data = data[:4096]
     if data:
         sys.stderr.buffer.write(data)
         sys.stderr.buffer.flush()
@@ -672,6 +689,8 @@ def _remote_arguments(
         settings.config,
         "--json",
         request.operation,
+        "--report",
+        request.report,
     ]
     if isinstance(request, ArtifactRequest):
         assert remote_source is not None
@@ -812,6 +831,115 @@ def _validate_observation(
     return selection
 
 
+def _validate_report_projection(payload: dict[str, object], request: Request) -> None:
+    details = payload.get("warning_details")
+    if request.report == "summary" and details is None:
+        raise ProtocolFailure("The host summary has no warning details collection")
+    if details is not None:
+        if not isinstance(details, list):
+            raise ProtocolFailure("The host warning details are invalid")
+        for item in cast(list[object], details):
+            values = _report_object(
+                item, {"code", "source_path", "reference", "expected_path"}, "warning detail"
+            )
+            if not all(
+                isinstance(values[key], str) for key in ("code", "source_path", "reference")
+            ) or (
+                values["expected_path"] is not None and not isinstance(values["expected_path"], str)
+            ):
+                raise ProtocolFailure("The host warning details are invalid")
+            warnings = payload.get("warnings")
+            if isinstance(warnings, list) and values["code"] not in warnings:
+                raise ProtocolFailure("The host warning detail code is not reported")
+    report = payload.get("report")
+    if report is None:
+        if request.report == "summary":
+            raise ProtocolFailure("The host did not return the requested summary")
+        return
+    values = _report_object(report, {"mode", "collections", "text"}, "report")
+    if values["mode"] != request.report:
+        raise ProtocolFailure("The host report mode does not match the request")
+    collections = values["collections"]
+    text_fields = values["text"]
+    if not isinstance(collections, dict) or not isinstance(text_fields, dict):
+        raise ProtocolFailure("The host report metadata is invalid")
+    collections = cast(dict[str, object], collections)
+    text_fields = cast(dict[str, object], text_fields)
+    expected: dict[str, list[object]] = {}
+    if isinstance(details, list):
+        expected["/warning_details"] = cast(list[object], details)
+    differences = payload.get("differences")
+    if isinstance(differences, dict):
+        differences = cast(dict[str, object], differences)
+        for key in ("added", "changed", "deleted"):
+            paths = differences.get(key)
+            if isinstance(paths, list):
+                expected[f"/differences/{key}"] = cast(list[object], paths)
+    entries = payload.get("entries")
+    if request.operation == "history" and isinstance(entries, list):
+        for index, entry in enumerate(cast(list[object], entries)):
+            if isinstance(entry, dict):
+                typed_entry = cast(dict[str, object], entry)
+                if not isinstance(typed_entry.get("changes"), dict):
+                    continue
+                changes = cast(dict[str, object], typed_entry["changes"])
+                for key in ("added", "changed", "deleted"):
+                    paths = changes.get(key)
+                    if isinstance(paths, list):
+                        expected[f"/entries/{index}/changes/{key}"] = cast(list[object], paths)
+    if set(collections) != set(expected):
+        raise ProtocolFailure("The host report collection metadata is incomplete")
+    for path, paths in expected.items():
+        counts = _report_object(collections[path], {"total", "included", "omitted"}, "report count")
+        total, included, omitted = (counts[key] for key in ("total", "included", "omitted"))
+        if any(type(value) is not int or value < 0 for value in (total, included, omitted)):
+            raise ProtocolFailure("The host report counts are invalid")
+        total, included, omitted = cast(tuple[int, int, int], (total, included, omitted))
+        if (
+            included != len(paths)
+            or total != included + omitted
+            or (request.report == "detail" and omitted != 0)
+            or (request.report == "summary" and included != 0)
+        ):
+            raise ProtocolFailure("The host report counts disagree with its collections")
+    expected_text: dict[str, str] = {}
+    for path, container, key in (
+        ("/error/message", payload.get("error"), "message"),
+        ("/verification/detail", payload.get("verification"), "detail"),
+        ("/transport/detail", payload.get("transport"), "detail"),
+    ):
+        if isinstance(container, dict):
+            value = cast(dict[str, object], container).get(key)
+            if isinstance(value, str):
+                expected_text[path] = value
+    observation = payload.get("observation")
+    if isinstance(observation, dict):
+        selection = cast(dict[str, object], observation).get("selection")
+        if isinstance(selection, dict):
+            value = cast(dict[str, object], selection).get("detail")
+            if isinstance(value, str):
+                expected_text["/observation/selection/detail"] = value
+    if set(text_fields) != set(expected_text):
+        raise ProtocolFailure("The host report text metadata is incomplete")
+    for path, item in text_fields.items():
+        counts = _report_object(
+            item, {"total_bytes", "included_bytes", "omitted_bytes"}, "text count"
+        )
+        total, included, omitted = (
+            counts[key] for key in ("total_bytes", "included_bytes", "omitted_bytes")
+        )
+        if any(type(value) is not int or value < 0 for value in (total, included, omitted)):
+            raise ProtocolFailure("The host report text counts are invalid")
+        total, included, omitted = cast(tuple[int, int, int], (total, included, omitted))
+        if (
+            total != included + omitted
+            or included != len(expected_text[path].encode("utf-8"))
+            or (request.report == "detail" and omitted != 0)
+            or (request.report == "summary" and included > 4096)
+        ):
+            raise ProtocolFailure("The host report text counts disagree")
+
+
 def _validate_host_payload(
     payload: dict[str, object],
     exit_code: int,
@@ -913,6 +1041,7 @@ def _validate_host_payload(
         isinstance(item, str) for item in cast(list[object], warnings)
     ):
         raise ProtocolFailure("The host result warnings are invalid")
+    _validate_report_projection(payload, request)
     error = payload.get("error")
     if exit_code == 0 and (outcome == "error" or error is not None):
         raise ProtocolFailure("The host success exit does not agree with its result")
@@ -1073,7 +1202,7 @@ def _invoke(
             ("name",),
         )
         return Invocation(_failure_payload(settings, request, failure), 1, True)
-    _write_stderr(result.stderr)
+    _write_stderr(result.stderr, request.report)
     if result.returncode == 255:
         return _invocation_loss(settings, request, staging, "SSH exited 255")
     try:
@@ -1081,6 +1210,14 @@ def _invoke(
         exit_code = _validate_host_payload(payload, result.returncode, settings, request)
     except ProtocolFailure as error:
         return _protocol_failure(settings, request, staging, str(error))
+    if (
+        request.report == "summary"
+        and len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        >= 512 * 1024
+    ):
+        return _protocol_failure(
+            settings, request, staging, "The host summary exceeds the supported transport bound"
+        )
     return Invocation(payload, exit_code, True)
 
 
@@ -1088,6 +1225,7 @@ def _cleanup(
     settings: RemoteSettings,
     staging: PurePosixPath,
     deadline: Deadline,
+    mode: ReportMode = "detail",
 ) -> str | None:
     command = shlex.join(["rm", "-rf", "--", str(staging)])
     try:
@@ -1096,7 +1234,7 @@ def _cleanup(
         return "The command deadline expired before cleanup completed"
     except OSError as error:
         return f"Cleanup could not start: {error}"
-    _write_stderr(result.stderr)
+    _write_stderr(result.stderr, mode)
     if result.returncode != 0:
         return f"Cleanup exited {result.returncode}"
     return None
@@ -1113,11 +1251,20 @@ def _add_cleanup_warning(
         *warnings,
         "Remote staging cleanup failed; inspect the retained incoming directory",
     ]
-    updated["transport"] = {
+    transport: dict[str, object] = {
         "cleanup": "failed",
         "staging": str(staging),
         "detail": detail,
     }
+    updated["transport"] = transport
+    report = updated.get("report")
+    if isinstance(report, dict):
+        typed_report = cast(dict[str, object], report)
+        if typed_report.get("mode") == "summary":
+            counts = bound_report_text(transport, "detail", "summary")
+            text_fields = typed_report.get("text")
+            if counts is not None and isinstance(text_fields, dict):
+                cast(dict[str, object], text_fields)["/transport/detail"] = counts
     return updated
 
 
@@ -1176,14 +1323,14 @@ def _run_artifact(
                 setup = _ssh(settings, mkdir, transport_deadline)
             except (CommandExpired, OSError, KeyboardInterrupt) as error:
                 payload = _transfer_failure(settings, request, str(error))
-                cleanup_error = _cleanup(settings, staging, deadline)
+                cleanup_error = _cleanup(settings, staging, deadline, request.report)
                 if cleanup_error is not None:
                     payload = _add_cleanup_warning(payload, staging, cleanup_error)
                 return emit_json(payload, 1)
-            _write_stderr(setup.stderr)
+            _write_stderr(setup.stderr, request.report)
             if setup.returncode != 0:
                 payload = _transfer_failure(settings, request, f"setup exited {setup.returncode}")
-                cleanup_error = _cleanup(settings, staging, deadline)
+                cleanup_error = _cleanup(settings, staging, deadline, request.report)
                 if cleanup_error is not None:
                     payload = _add_cleanup_warning(payload, staging, cleanup_error)
                 return emit_json(payload, 1)
@@ -1202,14 +1349,14 @@ def _run_artifact(
                 )
             except (CommandExpired, PublishError, OSError, KeyboardInterrupt) as error:
                 payload = _transfer_failure(settings, request, str(error))
-                cleanup_error = _cleanup(settings, staging, deadline)
+                cleanup_error = _cleanup(settings, staging, deadline, request.report)
                 if cleanup_error is not None:
                     payload = _add_cleanup_warning(payload, staging, cleanup_error)
                 return emit_json(payload, 1)
-            _write_stderr(transfer.stderr)
+            _write_stderr(transfer.stderr, request.report)
             if transfer.returncode != 0:
                 payload = _transfer_failure(settings, request, f"scp exited {transfer.returncode}")
-                cleanup_error = _cleanup(settings, staging, deadline)
+                cleanup_error = _cleanup(settings, staging, deadline, request.report)
                 if cleanup_error is not None:
                     payload = _add_cleanup_warning(payload, staging, cleanup_error)
                 return emit_json(payload, 1)
@@ -1222,7 +1369,7 @@ def _run_artifact(
             )
             payload = invocation.payload
             if invocation.cleanup_allowed:
-                cleanup_error = _cleanup(settings, staging, deadline)
+                cleanup_error = _cleanup(settings, staging, deadline, request.report)
                 if cleanup_error is not None:
                     payload = _add_cleanup_warning(payload, staging, cleanup_error)
             return emit_json(payload, invocation.exit_code)

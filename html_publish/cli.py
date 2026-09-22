@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import copy
 import json
 import math
 import re
@@ -50,6 +51,31 @@ NAME_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 
 
 OPERATIONS = frozenset({"plan", "publish", "status", "verify", "history", "restore"})
+ReportMode = Literal["detail", "summary"]
+
+
+def bound_report_text(
+    container: dict[str, object], key: str, mode: ReportMode
+) -> dict[str, int] | None:
+    value = container.get(key)
+    if not isinstance(value, str):
+        return None
+    encoded = value.encode("utf-8")
+    retained = encoded if mode == "detail" else encoded[:4096]
+    while retained:
+        try:
+            shortened = retained.decode("utf-8")
+            break
+        except UnicodeDecodeError:
+            retained = retained[:-1]
+    else:
+        shortened = ""
+    container[key] = shortened
+    return {
+        "total_bytes": len(encoded),
+        "included_bytes": len(retained),
+        "omitted_bytes": len(encoded) - len(retained),
+    }
 
 
 class UsageFailure(Exception):
@@ -317,6 +343,14 @@ def _parser(json_version: bool = False) -> Parser:
         "--request-id", help="caller attempt ID echoed in the result for reconciliation"
     )
     _globals(restore, version)
+
+    for command in (plan, publish, status, verify, history, restore):
+        command.add_argument(
+            "--report",
+            choices=("detail", "summary"),
+            default="detail",
+            help="report detail (default) or bounded summary with exact omission counts",
+        )
 
     artifact = register_command(
         commands,
@@ -769,10 +803,75 @@ def _failure_dict(failure: Failure | None) -> dict[str, object] | None:
 
 
 def _details_dict(details: Mapping[str, object]) -> dict[str, object]:
-    return dict(details)
+    return copy.deepcopy(dict(details))
 
 
-def report_dict(report: Report) -> dict[str, object]:
+def project_report(payload: dict[str, object], mode: ReportMode) -> dict[str, object]:
+    collections: dict[str, dict[str, int]] = {}
+    text: dict[str, dict[str, int]] = {}
+
+    def collection(path: str, values: list[object]) -> list[object]:
+        included = values if mode == "detail" else []
+        collections[path] = {
+            "total": len(values),
+            "included": len(included),
+            "omitted": len(values) - len(included),
+        }
+        return included
+
+    def bounded(path: str, container: dict[str, object], key: str) -> None:
+        counts = bound_report_text(container, key, mode)
+        if counts is not None:
+            text[path] = counts
+
+    details = payload.get("warning_details")
+    if isinstance(details, list):
+        payload["warning_details"] = collection("/warning_details", cast(list[object], details))
+    differences = payload.get("differences")
+    if isinstance(differences, dict):
+        differences = cast(dict[str, object], differences)
+        for key in ("added", "changed", "deleted"):
+            values = differences.get(key)
+            if isinstance(values, list):
+                differences[key] = collection(f"/differences/{key}", cast(list[object], values))
+    entries = payload.get("entries")
+    if payload.get("operation") == "history" and isinstance(entries, list):
+        for index, entry in enumerate(cast(list[object], entries)):
+            if isinstance(entry, dict):
+                typed_entry = cast(dict[str, object], entry)
+                if not isinstance(typed_entry.get("changes"), dict):
+                    continue
+                changes = cast(dict[str, object], typed_entry["changes"])
+                for key in ("added", "changed", "deleted"):
+                    values = changes.get(key)
+                    if isinstance(values, list):
+                        changes[key] = collection(
+                            f"/entries/{index}/changes/{key}", cast(list[object], values)
+                        )
+    for path, container, key in (
+        ("/error/message", payload.get("error"), "message"),
+        ("/verification/detail", payload.get("verification"), "detail"),
+    ):
+        if isinstance(container, dict):
+            bounded(path, cast(dict[str, object], container), key)
+    observation = payload.get("observation")
+    if isinstance(observation, dict):
+        typed_observation = cast(dict[str, object], observation)
+        selection = typed_observation.get("selection")
+        if isinstance(selection, dict):
+            bounded(
+                "/observation/selection/detail",
+                cast(dict[str, object], selection),
+                "detail",
+            )
+    transport = payload.get("transport")
+    if isinstance(transport, dict):
+        bounded("/transport/detail", cast(dict[str, object], transport), "detail")
+    payload["report"] = {"mode": mode, "collections": collections, "text": text}
+    return payload
+
+
+def report_dict(report: Report, mode: ReportMode = "detail") -> dict[str, object]:
     state = report.state
     payload: dict[str, object] = {
         "schema_version": 1,
@@ -792,6 +891,7 @@ def report_dict(report: Report) -> dict[str, object]:
         "effects": _effects_dict(report.effects),
         "verification": _verification_dict(report.verification),
         "warnings": list(report.warnings),
+        "warning_details": [asdict(item) for item in report.warning_details],
         "error": _failure_dict(report.error),
         "observation": _state_dict(state) if state else None,
     }
@@ -805,7 +905,7 @@ def report_dict(report: Report) -> dict[str, object]:
             }
             for entry in report.status_entries
         ]
-    return payload
+    return project_report(payload, mode)
 
 
 def usage_report(
@@ -816,6 +916,7 @@ def usage_report(
     name: Name | None = None,
     expected_revision: Revision | None = None,
     request_id: str | None = None,
+    mode: ReportMode = "detail",
 ) -> dict[str, object]:
     if operation in OPERATIONS:
         return report_dict(
@@ -828,7 +929,8 @@ def usage_report(
                 request_id=request_id,
                 expected_revision=expected_revision,
                 error=failure,
-            )
+            ),
+            mode,
         )
     return {
         "schema_version": 1,
@@ -856,8 +958,8 @@ def emit_json(payload: Mapping[str, object], exit_code: Literal[0, 1, 2]) -> int
     return exit_code
 
 
-def _print_report(report: Report, json_output: bool) -> int:
-    payload = report_dict(report)
+def _print_report(report: Report, json_output: bool, mode: ReportMode = "detail") -> int:
+    payload = report_dict(report, mode)
     if json_output:
         return emit_json(payload, 1 if report.error else 0)
     elif report.error:
@@ -1149,7 +1251,7 @@ def main(argv: list[str] | None = None) -> int:
                     parsed.limit,
                     getattr(parsed, "host_check", False),
                 )
-        return _print_report(report, parsed.json)
+        return _print_report(report, parsed.json, parsed.report)
     except UsageFailure as error:
         failure = Failure("invalid_usage", "usage", str(error), "fix_arguments")
         operation = getattr(parsed, "operation", None)
@@ -1195,6 +1297,7 @@ def main(argv: list[str] | None = None) -> int:
                     name=getattr(parsed, "name", None),
                     expected_revision=getattr(parsed, "expected_revision", None),
                     request_id=getattr(parsed, "request_id", None),
+                    mode=getattr(parsed, "report", "detail"),
                 ),
                 2,
             )
@@ -1234,7 +1337,7 @@ def main(argv: list[str] | None = None) -> int:
             expected_revision=getattr(parsed, "expected_revision", None),
             error=error.failure,
         )
-        return _print_report(report, json_output)
+        return _print_report(report, json_output, getattr(parsed, "report", "detail"))
 
 
 def entrypoint() -> NoReturn:

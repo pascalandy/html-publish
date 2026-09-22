@@ -681,6 +681,7 @@ class PublicationStore:
                         effects,
                         verification,
                         captured.warnings,
+                        warning_details=captured.warning_details,
                     )
                 saved = state.saved
                 if saved is None or saved.site.revision != captured.revision:
@@ -732,6 +733,7 @@ class PublicationStore:
                     effects,
                     verification,
                     captured.warnings,
+                    warning_details=captured.warning_details,
                 )
         except (OSError, PublishError) as error:
             failure = (
@@ -763,6 +765,7 @@ class PublicationStore:
                 verification,
                 captured.warnings,
                 failure,
+                warning_details=captured.warning_details,
             )
 
     def plan(
@@ -821,6 +824,7 @@ class PublicationStore:
                     requested_revision=captured.revision,
                     state=state,
                     warnings=captured.warnings,
+                    warning_details=captured.warning_details,
                     details=details,
                 )
         except (OSError, PublishError) as error:
@@ -1158,12 +1162,14 @@ class PublicationStore:
                     _git.export_blob(self.config.archive, entry.blob, destination, self.deadline)
                     os.chmod(destination, 0o644)
                     total_bytes += entry.size
+                warnings, warning_details = warnings_for(root / "index.html", site.entries)
                 captured = CapturedSite(
                     root,
                     site.entries,
                     Revision(revision),
                     total_bytes,
-                    warnings_for(root / "index.html"),
+                    warnings,
+                    warning_details,
                 )
             except (OSError, PublishError) as error:
                 failure = (

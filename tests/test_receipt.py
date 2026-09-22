@@ -251,7 +251,7 @@ class ReceiptFixture(unittest.TestCase):
         target: str | None = None,
         lock_seconds: float = 1.0,
         command_seconds: float = 5,
-        output_bytes: int = 64 * 1024,
+        output_bytes: int = 1024 * 1024,
     ) -> None:
         self.config.write_text(
             json.dumps(
@@ -709,7 +709,7 @@ class HelperCliTest(ReceiptFixture):
             "sys.stdout.buffer.flush()\n"
             f"Path({str(marker)!r}).write_text('finished')\n"
         )
-        self.write_config(output_bytes=1024)
+        self.write_config(output_bytes=1024 * 1024)
         source = self.root / "flood.html"
         source.write_text("flood")
 
@@ -725,7 +725,61 @@ class HelperCliTest(ReceiptFixture):
         assert isinstance(result_path, str)
         saved = json.loads(Path(result_path).read_text())
         self.assertTrue(saved["output_limited"])
-        self.assertLessEqual(len(saved["stdout"].encode()), 1024)
+        self.assertLessEqual(len(saved["stdout"].encode()), 1024 * 1024)
+
+    def test_retry_rejects_small_capture_cap_without_changing_pending_intent(self) -> None:
+        self.write_scenario("ambiguous")
+        source = self.root / "pending.html"
+        source.write_text("pending")
+        first = self.run_helper("publish", str(source), "--new", "pending")
+        self.assertEqual(first.returncode, 1)
+        receipt_dir = Path(str(source) + ".publish")
+        before = (receipt_dir / "receipt.json").read_bytes()
+        call_count = len(self.calls())
+        self.write_config(output_bytes=1024)
+
+        retry = self.run_helper("retry", "--receipt", str(receipt_dir))
+
+        self.assertEqual(retry.returncode, 1)
+        payload = self.payload(retry)
+        self.assertEqual(
+            cast(dict[str, object], payload["error"])["code"], "output_limit_too_small"
+        )
+        self.assertEqual(payload["publisher_calls"], 0)
+        self.assertEqual((receipt_dir / "receipt.json").read_bytes(), before)
+        self.assertEqual(len(self.calls()), call_count)
+
+    def test_large_target_identity_is_rejected_before_binding(self) -> None:
+        source = self.root / "large-target.html"
+        source.write_text("large target")
+        self.write_config(target="https://publisher.test/" + "a" * 70_000 + "/")
+
+        result = self.run_helper("publish", str(source), "--new", "large-target")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(
+            cast(dict[str, object], self.payload(result)["error"])["code"],
+            "report_identity_too_large",
+        )
+        self.assertFalse((Path(str(source) + ".publish") / "receipt.json").exists())
+        self.assertEqual(self.calls(), [])
+
+    def test_json_escaped_executor_identity_is_rejected_before_binding(self) -> None:
+        source = self.root / "escaped-identity.html"
+        source.write_text("escaped identity")
+        raw = json.loads(self.config.read_text())
+        raw["execution"]["command"].append("\n" * 35_000)
+        self.config.write_text(json.dumps(raw))
+
+        result = self.run_helper("publish", str(source), "--new", "escaped-identity")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(
+            cast(dict[str, object], self.payload(result)["error"])["code"],
+            "report_identity_too_large",
+        )
+        self.assertFalse((Path(str(source) + ".publish") / "receipt.json").exists())
+        self.assertEqual(self.calls(), [])
 
     def test_file_create_and_update_use_one_publish_call_each(self) -> None:
         source = self.root / "report.html"
