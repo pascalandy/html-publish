@@ -130,16 +130,15 @@ The reviewed observer script and frozen manifest were copied byte-identically to
 
 The external observer reported ready at `2026-09-22T14:09:47.579818+00:00`. All six baseline targets matched and its state was `waiting_for_outage`. A new SSH session confirmed observer PID `316`, PPID `1`, and the exact reviewed script/manifest/output arguments after the launching SSH session disconnected. Its owned `caffeinate` PID `317` held `PreventUserIdleSystemSleep` and `PreventSystemSleep` for that observer, with 1,125 seconds remaining at inspection. Unrelated power assertions are omitted from the machine record
 
-The observer has a 1,200-second lifetime. This ready timestamp is a bounded observation, not a promise that it remains running. The host preboot check correctly reported `unchanged_boot`, `success=false`, `boot_verified=false`, and `agent_continuation=false`. No reboot was authorized or performed, and the setup does not resume an agent unattended. The prior preparation record remains unchanged and describes the earlier uninstalled state
+The observer's 1,200-second window ended at `2026-09-22T14:29:42.478051+00:00` with `outcome=timeout`, `state=waiting_for_outage`, and all six final baseline targets matching. It did not verify a reboot. The earlier host preboot check correctly reported `unchanged_boot`, `success=false`, `boot_verified=false`, and `agent_continuation=false`. No reboot was authorized or performed, and the setup does not resume an agent unattended. The prior preparation record remains unchanged and describes the earlier uninstalled state
 
-At `2026-09-22T14:12:56.758875Z`, the saved reader-scope record counted 538 visible peers. Compiled source selectors permitting `om1:8444` matched both advertised addresses for six peers, including `mbp16` and `m4mini`, and neither address for 532 peers. There were 532 tagged peers and no tagged peer among the six matches. The selector SHA-256 was `383a8f9585357f3a134d750bf6acf6b1ce4550e6a0c5451bb3b722952f20a86e`. The record reports tailnet-only Serve and Funnel status with no public Funnel. This describes the observed compiled network scope. It does not map peers to owners, establish a stable human audience, prove administrator ACL intent, or cover future or unseen peers
+At `2026-09-22T14:29:01.821006Z`, the corrected probe's exact output counted 538 visible peers. Compiled source selectors permitting `om1:8444` matched all advertised addresses for six peers, including `mbp16` and `m4mini`, and no advertised addresses for 532 peers. There were 532 tagged peers and no tagged peer among the six matches. The selector SHA-256 was `383a8f9585357f3a134d750bf6acf6b1ce4550e6a0c5451bb3b722952f20a86e`. The probe matched the exact host's tailnet-only status and found no true `AllowFunnel` entry for that endpoint. This describes the observed compiled network scope. It does not map peers to owners, establish a stable human audience, prove administrator ACL intent, or cover future or unseen peers
 
 Remaining gates are explicit
 
-- Recheck the observer's remaining lifetime and readiness before an approved reboot
+- Rearm the external observer and capture fresh readiness before an approved reboot. The observer window recorded here has expired
 - Obtain explicit reboot authorization and record a changed boot ID, service startup, preserved publication state, browser refresh, and second-device access
 - Complete installed skill activation separately
-- Confirm authoritative ACL intent separately. The dated compiled-selector scope does not prove exclusion of future or unseen peers
 - Keep power-loss resilience, remote backup, broader browser/client fault matrices, and production readiness unclaimed
 
 The [2026-09-21 deployment record](2026-09-21-om1-controlled-mvp.md) and the [isolated helper proof](../hosting/2026-09-22-om1-helper-proof.md) remain historical evidence. This installed run supplements them without changing their original results

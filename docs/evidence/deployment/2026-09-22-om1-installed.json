@@ -967,6 +967,17 @@
       ],
       "lifetime_seconds": 1200,
       "state_at_ready": "waiting_for_outage",
+      "recorded_window_result": {
+        "finished_at": "2026-09-22T14:29:42.478051+00:00",
+        "outcome": "timeout",
+        "state": "waiting_for_outage",
+        "success": false,
+        "boot_verified": false,
+        "agent_continuation": false,
+        "final_baseline_targets": 6,
+        "final_baseline_targets_match": true,
+        "fresh_rearm_required": true
+      },
       "baseline_targets": 6,
       "baseline_targets_match": true,
       "sleep_prevention": {
@@ -992,10 +1003,11 @@
     "limitation": "Frozen readiness observation with a finite observer lifetime; it does not prove a reboot or unattended agent continuation."
   },
   "reader_scope": {
-    "observed_at_utc": "2026-09-22T14:12:56.758875Z",
-    "source_record": "/home/pascal/.local/state/codex/orchestrate/html-publish-20260922/state/reader-scope/record.json",
-    "record_sha256": "d3705f3ea5159a7ca1b6588e5618420f8bf4a6705de480fe72ad42fba0a0b34a",
-    "probe_sha256": "e9f3369c21724c9c8c068dcf56f9b6ea2c0d8ca7972184c707fc30817f108900",
+    "observed_at_utc": "2026-09-22T14:29:01.821006Z",
+    "source_record": "/home/pascal/.local/state/codex/orchestrate/html-publish-20260922/state/reader-scope/fixed-record.json",
+    "record_sha256": "e538f770f0a3904f563527942f18d5b81c2a501f12b6ff2bab5ccb2806225cd8",
+    "probe_source": "/home/pascal/.local/state/codex/orchestrate/html-publish-20260922/state/reader-scope/probe-fixed.py",
+    "probe_sha256": "6d3c880e4626da0cc8e69d264b788ce253f8f7b3538e01ee3b815e5a5f1fb5b6",
     "destination_port": 8444,
     "visible_peer_count": 538,
     "visible_peers_with_all_advertised_addresses_matching": 6,
@@ -1007,6 +1019,7 @@
     "source_selector_sha256": "383a8f9585357f3a134d750bf6acf6b1ce4550e6a0c5451bb3b722952f20a86e",
     "record_reports_tailnet_only": true,
     "record_reports_public_funnel": false,
+    "public_funnel_check": "Exact endpoint AllowFunnel entry is not true; public status is not inferred from a missing tailnet-only marker",
     "owner_mapping_inferred": false,
     "stable_human_audience_established": false,
     "authoritative_acl_intent_observed": false,
@@ -1068,6 +1081,7 @@
       "external-ready.json": "84576ac24f343754485251ae0a72828ad25005c91cb7fbfa72fee8ebb864b2df",
       "boot-precheck/result.json": "88c804782712e765bd3f9fc097e5f2fa74cacc3fff5954ffafae4e0815e991e3",
       "boot-recorder-unit-state.json": "7dde834e6f41b6eb33b75ed8ce3285a9b1d935c413702e4cadf275fd40eaa118",
+      "external-window-01-result.json": "b86d81aae1f52f7940a1b6556100a2c0314d85358dce28e529b284a8bb52e414",
       "browser-client-A.json": "cd9ee8a62d87c2356f8f4c534de521ce14d64625b815880fc0755e98497c21c4",
       "browser-client-B.json": "700fd4433da6850e795cead91449a3bf2115d0da04cd03d978b85687ab3b77b4",
       "browser-client-restored-A.json": "651d5342c8d1973acad4c8da70437adce1e37d7b9f3f1015a0b5733e0659b007"
