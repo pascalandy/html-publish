@@ -46,13 +46,20 @@ class InstalledArtifactTest(unittest.TestCase):
             wrapper = run / "instance/publisher-wrapper.py"
             drop = run / "instance/drop-next-result"
             delay = run / "instance/delay-transport"
+            status_done = run / "instance/budget-status-done"
+            publish_done = run / "instance/budget-publish-done"
             wrapper.write_text(
                 "import pathlib, subprocess, sys, time\n"
                 f"flag = pathlib.Path({str(drop)!r})\n"
                 f"delay = pathlib.Path({str(delay)!r})\n"
-                "if delay.exists() and any(x in sys.argv for x in ('status', 'publish')):\n"
-                "    time.sleep(0.7)\n"
+                f"status_done = pathlib.Path({str(status_done)!r})\n"
+                f"publish_done = pathlib.Path({str(publish_done)!r})\n"
                 f"result = subprocess.run([{cli!r}, *sys.argv[1:]], capture_output=True)\n"
+                "if delay.exists() and 'status' in sys.argv:\n"
+                "    status_done.write_text(str(result.returncode))\n"
+                "if delay.exists() and 'publish' in sys.argv:\n"
+                "    publish_done.write_text(str(result.returncode))\n"
+                "    time.sleep(6)\n"
                 "if flag.exists() and any(x in sys.argv for x in ('publish', 'restore')):\n"
                 "    flag.unlink()\n"
                 "    print('lost publisher response')\n"
@@ -477,11 +484,14 @@ class InstalledArtifactTest(unittest.TestCase):
                 "--receipt",
                 str(budget_receipt),
                 "--command-seconds",
-                "1",
+                "3",
                 code=1,
             )
             elapsed = time.monotonic() - started
-            self.assertLess(elapsed, 1.35)
+            self.assertLess(elapsed, 4.5)
+            self.assertEqual(status_done.read_text(), "0", budget_failure)
+            self.assertEqual(publish_done.read_text(), "0", budget_failure)
+            self.assertEqual(budget_failure["publisher_calls"], 2)
             self.assertEqual(
                 cast(dict[str, object], budget_failure["error"])["code"], "publisher_timeout"
             )
