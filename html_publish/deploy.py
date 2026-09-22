@@ -16,6 +16,7 @@ import urllib.request
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from types import FrameType
 from typing import NoReturn, Protocol, cast
 from urllib.parse import urlparse
 
@@ -31,6 +32,10 @@ COMMAND_TERMINATE_SECONDS = 2.0
 
 
 class DeployError(Exception):
+    pass
+
+
+class DeployCancelled(Exception):
     pass
 
 
@@ -802,7 +807,20 @@ def main(
 ) -> int:
     arguments = _parser().parse_args(argv)
     layout = Layout(arguments.state_root, arguments.config, arguments.unit)
+    previous_handlers = {
+        signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGINT)
+    }
+    cancelled_signal: int | None = None
+
+    def cancel(signum: int, _frame: FrameType | None) -> None:
+        nonlocal cancelled_signal
+        if cancelled_signal is None:
+            cancelled_signal = signum
+            raise DeployCancelled(f"Deployment cancelled by {signal.Signals(signum).name}")
+
     try:
+        for signum in previous_handlers:
+            signal.signal(signum, cancel)
         if arguments.operation == "install":
             payload = install(layout, arguments.source, runner, probe)
         elif arguments.operation == "rollback":
@@ -812,7 +830,7 @@ def main(
             if not payload["healthy"]:
                 print(json.dumps(payload, sort_keys=True))
                 return 1
-    except DeployError as error:
+    except (DeployError, DeployCancelled) as error:
         print(
             json.dumps(
                 {"operation": arguments.operation, "outcome": "error", "error": str(error)},
@@ -820,7 +838,10 @@ def main(
             ),
             file=sys.stderr,
         )
-        return 1
+        return 128 + cancelled_signal if cancelled_signal is not None else 1
+    finally:
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
     print(json.dumps(payload, sort_keys=True))
     return 0
 

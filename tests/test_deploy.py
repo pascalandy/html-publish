@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import contextlib
+import io
 import json
 import os
 import signal
+import subprocess
 import sys
 import tempfile
 import time
@@ -21,6 +23,7 @@ from html_publish.deploy import (
     Layout,
     health,
     install,
+    main,
     rollback,
 )
 
@@ -505,6 +508,137 @@ class DeploymentTest(unittest.TestCase):
                     if identity.exists():
                         with contextlib.suppress(ProcessLookupError):
                             os.kill(int(identity.read_text()), signal.SIGKILL)
+
+    def test_executable_sigterm_stops_owned_command_and_descendant(self) -> None:
+        identity = self.root / "command-pids"
+        child_identity = self.root / "child-pid"
+        child_code = (
+            "import os,signal,time; from pathlib import Path; "
+            "signal.signal(signal.SIGTERM,signal.SIG_IGN); "
+            f"Path({str(child_identity)!r}).write_text(str(os.getpid())); time.sleep(60)"
+        )
+        command = self.root / "systemctl"
+        command.write_text(
+            f"#!{sys.executable}\n"
+            "import os,subprocess,sys,time\nfrom pathlib import Path\n"
+            f"child=subprocess.Popen([sys.executable,'-c',{child_code!r}])\n"
+            f"while not Path({str(child_identity)!r}).exists(): time.sleep(.01)\n"
+            f"Path({str(identity)!r}).write_text(f'{{os.getpid()}} {{child.pid}}')\n"
+            "time.sleep(60)\n"
+        )
+        command.chmod(0o755)
+        continued = self.root / "continued"
+        tailscale = self.root / "tailscale"
+        tailscale.write_text(
+            f"#!{sys.executable}\nfrom pathlib import Path\n"
+            f"Path({str(continued)!r}).touch()\nprint('{{}}')\n"
+        )
+        tailscale.chmod(0o755)
+        executable = Path(sys.executable).with_name("html-publish-deploy")
+        process = subprocess.Popen(
+            [
+                str(executable),
+                "--state-root",
+                str(self.layout.state_root),
+                "--config",
+                str(self.layout.config),
+                "--unit",
+                str(self.layout.unit),
+                "health",
+            ],
+            env=dict(os.environ, PATH=f"{self.root}:{os.environ['PATH']}"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            deadline = time.monotonic() + 5
+            while not identity.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(identity.exists(), "owned command did not become ready")
+            pids = [int(value) for value in identity.read_text().split()]
+            process.send_signal(signal.SIGTERM)
+            stdout, stderr = process.communicate(timeout=5)
+            self.assertEqual(process.returncode, 143)
+            self.assertEqual(stdout, "")
+            self.assertEqual(
+                json.loads(stderr),
+                {
+                    "operation": "health",
+                    "outcome": "error",
+                    "error": "Deployment cancelled by SIGTERM",
+                },
+            )
+            self.assertFalse(continued.exists())
+            for pid in pids:
+                status = Path(f"/proc/{pid}/stat")
+                deadline = time.monotonic() + 2
+                while status.exists() and status.read_text().split()[2] != "Z":
+                    if time.monotonic() >= deadline:
+                        self.fail(f"owned process {pid} still running after cancellation")
+                    time.sleep(0.01)
+        finally:
+            if identity.exists():
+                parent_pid = int(identity.read_text().split()[0])
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(parent_pid, signal.SIGKILL)
+            if process.poll() is None:
+                process.kill()
+            process.communicate(timeout=5)
+
+    def test_cancellation_recovers_install_and_rollback_and_restores_handlers(self) -> None:
+        install(self.layout, self.source, self.runner, successful_probe)
+        self.runner.wheel_bytes = b"release-b"
+        install(self.layout, self.source, self.runner, successful_probe)
+        original = (os.readlink(self.layout.current), os.readlink(self.layout.previous))
+        unit = self.layout.unit.read_bytes()
+        config = self.layout.config.read_bytes()
+        previous_handlers = {
+            signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGINT)
+        }
+        for operation in ("install", "rollback"):
+            with self.subTest(operation=operation):
+                cancelled = False
+
+                def cancel_health(argv: Sequence[str]) -> CommandResult:
+                    nonlocal cancelled
+                    if tuple(argv[:3]) == ("systemctl", "--user", "is-active"):
+                        cancelled = True
+                        os.kill(os.getpid(), signal.SIGTERM)
+                        self.fail("cancellation did not interrupt health")
+                    if cancelled and tuple(argv[:3]) == ("systemctl", "--user", "restart"):
+                        os.kill(os.getpid(), signal.SIGINT)
+                        raise DeployError("fixture recovery restart failed")
+                    return self.runner(argv)
+
+                self.runner.wheel_bytes = b"release-c"
+                args = [
+                    "--state-root",
+                    str(self.layout.state_root),
+                    "--config",
+                    str(self.layout.config),
+                    "--unit",
+                    str(self.layout.unit),
+                    operation,
+                ]
+                if operation == "install":
+                    args.extend(["--source", str(self.source)])
+                output, errors = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                    result = main(args, runner=cancel_health, probe=successful_probe)
+                self.assertEqual(result, 143)
+                self.assertEqual(output.getvalue(), "")
+                report = json.loads(errors.getvalue())
+                self.assertEqual(report["outcome"], "error")
+                self.assertIn("Deployment cancelled by SIGTERM; recovery errors:", report["error"])
+                self.assertIn("fixture recovery restart failed", report["error"])
+                self.assertEqual(
+                    (os.readlink(self.layout.current), os.readlink(self.layout.previous)), original
+                )
+                self.assertEqual(self.layout.unit.read_bytes(), unit)
+                self.assertEqual(self.layout.config.read_bytes(), config)
+                for signum, handler in previous_handlers.items():
+                    self.assertEqual(signal.getsignal(signum), handler)
 
 
 if __name__ == "__main__":

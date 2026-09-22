@@ -24,7 +24,9 @@ On activation failure, recovery restores this attempt's unit and configuration b
 
 The error reports both the original failure and any recovery failures. If file or pointer recovery fails, the installer skips restarting the recovered service and reports that omission. Inspect the reported state before retrying. Application releases, the archive, and publication runtime remain in place. An incomplete application release is retained for inspection and blocks reuse of that wheel until the operator resolves it
 
-Run one installer at a time. Recovery is scoped to a caught failure in the current process. It is not a durable transaction across process termination or power loss. The installer accepts enabled, disabled, or absent units and refuses other unit-file states before changing them. Child commands have a 120-second deadline, followed by bounded process-group termination and direct-child reaping
+Run one installer at a time. Recovery is scoped to a caught failure in the current process. It is not a durable transaction across SIGKILL, crashes, or power loss. The installer accepts enabled, disabled, or absent units and refuses other unit-file states before changing them. Child commands have a 120-second deadline, followed by bounded process-group termination and direct-child reaping
+
+SIGTERM and SIGINT cancel the deploy command, stop its owned command group, and enter the same caught-failure recovery for install or rollback. Cancellation stops health checks instead of recording a failed check and continuing. The command reports the cancellation and any recovery failures as JSON on stderr, then exits 143 for SIGTERM or 130 for SIGINT. Further cancellation signals do not interrupt cleanup or recovery. The command restores the caller's prior signal handlers when it returns
 
 ## Storage and ownership
 
