@@ -814,10 +814,12 @@ class RemoteCliTest(unittest.TestCase):
         success["effects"] = {"archive_advanced": True, "activated": True}
         for stage in ("setup", "transfer", "invoke", "cleanup"):
             with self.subTest(stage=stage):
+                self.pids.unlink(missing_ok=True)
+                records_before = len(self.records())
                 start = time.monotonic()
                 result = self.run_remote(
                     "--command-seconds",
-                    "1.5",
+                    "4",
                     *self.artifact_args(),
                     environment=self.environment
                     | {
@@ -826,7 +828,12 @@ class RemoteCliTest(unittest.TestCase):
                         "FIXTURE_CLOSE_PIPES": "1",
                     },
                 )
-                self.assertLess(time.monotonic() - start, 2.5)
+                self.assertLess(time.monotonic() - start, 5.5)
+                self.assertIn(
+                    stage,
+                    [entry["stage"] for entry in self.records()[records_before:]],
+                    result.stdout + result.stderr,
+                )
                 self.assert_no_live_children()
                 payload = json.loads(result.stdout)
                 self.assertEqual(result.returncode, 0 if stage == "cleanup" else 1, result.stderr)
