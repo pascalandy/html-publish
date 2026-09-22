@@ -135,7 +135,7 @@ def parse_client(raw: dict[str, object]) -> ClientConfig:
     base_url = _url(target.get("base_url"))
     execution = _object(raw.get("execution"), "execution")
     kind = execution.get("kind")
-    if kind not in {"local", "remote"}:
+    if not isinstance(kind, str) or kind not in {"local", "remote"}:
         raise _invalid("execution.kind must be local or remote")
     kind = cast(Execution, kind)
     command_raw = execution.get("command")

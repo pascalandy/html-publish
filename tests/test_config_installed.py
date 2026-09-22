@@ -230,6 +230,33 @@ class InstalledConfigurationTest(unittest.TestCase):
             self.assertEqual(client.read_bytes(), client_bytes)
             self.assertFalse(calls.exists())
             self.assertEqual(client.stat().st_mode & 0o777, 0o600)
+            malformed_kinds: tuple[tuple[str, object], ...] = (("list", []), ("object", {}))
+            for label, kind in malformed_kinds:
+                malformed = artifacts / f"malformed-kind-{label}.json"
+                malformed.write_text(
+                    json.dumps(
+                        {
+                            "schema_version": 1,
+                            "target": {"id": "broken", "base_url": target},
+                            "execution": {"kind": kind, "command": ["html-publish"]},
+                            "limits": {},
+                        }
+                    )
+                )
+                invalid = command(
+                    cli,
+                    "config",
+                    "validate",
+                    "--role",
+                    "client",
+                    "--config",
+                    str(malformed),
+                    "--json",
+                    exit_code=1,
+                )
+                self.assertEqual(
+                    cast(dict[str, object], invalid["error"])["code"], "invalid_config"
+                )
 
             command(
                 cli,
