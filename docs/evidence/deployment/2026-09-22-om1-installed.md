@@ -2,7 +2,7 @@
 
 Date: 2026-09-22
 
-The installed application passed the six-command publication workflow, browser and second-device A to B to restored A checks, reinstall, application rollback, and return to the reviewed wheel. Separate private stores exercised three faults with that installed executable. Reboot remains unverified. This record does not establish production readiness
+The installed application passed the six-command publication workflow, browser and second-device A to B to restored A checks, reinstall, application rollback, and return to the reviewed wheel. Separate private stores exercised three faults with that installed executable. A later user-performed reboot has bounded postboot evidence below. This record does not establish production readiness
 
 The [bounded machine record](2026-09-22-om1-installed.json) contains results, script hashes, raw-artifact hashes, and screenshot hashes. Raw evidence remains at `/home/pascal/.local/state/html-publish-issue6/20260922-44b6da0`. Unrelated publication names and paths are omitted and represented consistently as `existing-publication-1` and `existing-publication-2`. Full private configuration, unrelated service inventory, and response bodies remain local
 
@@ -134,11 +134,29 @@ The observer's 1,200-second window ended at `2026-09-22T14:29:42.478051+00:00` w
 
 At `2026-09-22T14:29:01.821006Z`, the corrected probe's exact output counted 538 visible peers. Compiled source selectors permitting `om1:8444` matched all advertised addresses for six peers, including `mbp16` and `m4mini`, and no advertised addresses for 532 peers. There were 532 tagged peers and no tagged peer among the six matches. The selector SHA-256 was `383a8f9585357f3a134d750bf6acf6b1ce4550e6a0c5451bb3b722952f20a86e`. The probe matched the exact host's tailnet-only status and found no true `AllowFunnel` entry for that endpoint. This describes the observed compiled network scope. It does not map peers to owners, establish a stable human audience, prove administrator ACL intent, or cover future or unseen peers
 
-Remaining gates are explicit
+At the preboot handoff, the remaining gates were
 
 - Rearm the external observer and capture fresh readiness before an approved reboot. The observer window recorded here has expired
 - Obtain explicit reboot authorization and record a changed boot ID, service startup, preserved publication state, browser refresh, and second-device access
 - Complete installed skill activation separately
 - Keep power-loss resilience, remote backup, broader browser/client fault matrices, and production readiness unclaimed
+
+## Postboot evidence after user reboot
+
+Pascal later rebooted `om1`. The observed boot ID changed from `a256d54f-c198-4998-be7d-f2563c4da544` to `a6200a54-c87f-44df-8ca2-1afb0cf4f9d6`
+
+| Observation | Result |
+| --- | --- |
+| Publisher service | Enabled, active, and running since 14:50:33 UTC, PID `1347`, `NRestarts=0`. Startup was 22.841246 seconds after boot and preceded the Wayland session at 23.003026 seconds |
+| Installed identity | Source `44b6da03562160f974dc222cade2088ed2acd9a1`, binary SHA-256 `26c4d2af01c854c99a175ae357ddfe9b1bfb75a93de35e9d819e2f7fb1c6e399`, and all 11 package files matched |
+| Installed status and verify | Active revision `14b039d322afde685e38b1925e91d85d4fdede48`, verification passed |
+| Frozen host state | All 16 recorded hashes, both application pointers, and six frozen HTTP targets matched |
+| Two-host HTTP comparison | All 12 checks matched from `om1` and `m4mini`, covering the publication HTML and CSS, publisher health, and the three unrelated endpoint baselines |
+| Browser | An ordinary reload kept the stable URL and displayed marker `ISSUE2-A-sources` with CSS state `'A'` |
+| Detached reconciliation | `late_postboot_reconciliation_pass` at 14:57:21 UTC from a systemd user unit, independent of the active agent process |
+
+The temporary boot recorder failed at 14:50:33 UTC with `fresh manifest capture required`. Its frozen manifest was 2,509.818429 seconds old, beyond the recorder's 30-minute limit. The earlier `m4mini` observer had already timed out at 14:29:42 UTC. Neither observer recorded an outage or recovery, and no successful boot-recorder result exists
+
+The planned `external=recovered` and `local=postboot_verified` handshake was not met. The independent review accepted the changed boot, automatic publisher startup, and later process-independent systemd audit as alternate evidence for the bounded operational restart requirement. This does not prove outage continuity, boot-recorder success, absence of a concurrent agent session, power-loss resilience, or production readiness. A second reboot is not required for this bounded result
 
 The [2026-09-21 deployment record](2026-09-21-om1-controlled-mvp.md) and the [isolated helper proof](../hosting/2026-09-22-om1-helper-proof.md) remain historical evidence. This installed run supplements them without changing their original results

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "date": "2026-09-22",
-  "scope": "Installed om1 maintenance, actual browser and second-device observations, and separate private fault stores",
+  "scope": "Installed om1 maintenance, actual browser and second-device observations, separate private fault stores, and bounded postboot reconciliation",
   "source_sha": "44b6da03562160f974dc222cade2088ed2acd9a1",
   "source_sha_meaning": "Reviewed target revision for this run. It does not identify the old rollback wheel source.",
   "installed_release": "sha256-f98c0e17db50a6a1780eb56a57d4d09aac942eb7bbef3f4d0817f12ffd87f489",
@@ -20,7 +20,8 @@
   },
   "raw_roots": {
     "installed": "/home/pascal/.local/state/html-publish-issue6/20260922-44b6da0",
-    "faults": "/home/pascal/.local/state/codex/orchestrate/html-publish-20260922/store/installed-fault-proof-prep/runs/installed-fault-01"
+    "faults": "/home/pascal/.local/state/codex/orchestrate/html-publish-20260922/store/installed-fault-proof-prep/runs/installed-fault-01",
+    "postboot_review": "/home/pascal/.local/state/codex/orchestrate/html-publish-20260922"
   },
   "redaction": "Allowlisted summary. Existing publication names and paths become existing-publication-N. Full configs, Serve JSON, unrelated unit inventory, response bodies, and unrelated application paths are omitted.",
   "snapshots": [
@@ -1002,6 +1003,81 @@
     "agent_resume_promised": false,
     "limitation": "Frozen readiness observation with a finite observer lifetime; it does not prove a reboot or unattended agent continuation."
   },
+  "postboot": {
+    "reboot_actor": "user",
+    "baseline_boot_id": "a256d54f-c198-4998-be7d-f2563c4da544",
+    "observed_boot_id": "a6200a54-c87f-44df-8ca2-1afb0cf4f9d6",
+    "boot_changed": true,
+    "publisher_service": {
+      "active_state": "active",
+      "sub_state": "running",
+      "unit_file_state": "enabled",
+      "started_at_utc": "2026-09-22T14:50:33Z",
+      "started_at_monotonic_seconds": 22.841246,
+      "wayland_session_at_monotonic_seconds": 23.003026,
+      "started_before_wayland_session": true,
+      "main_pid": 1347,
+      "restart_count": 0,
+      "protect_home": "read-only",
+      "protect_system": "strict",
+      "no_new_privileges": true
+    },
+    "installed_identity": {
+      "source_sha": "44b6da03562160f974dc222cade2088ed2acd9a1",
+      "binary_sha256": "26c4d2af01c854c99a175ae357ddfe9b1bfb75a93de35e9d819e2f7fb1c6e399",
+      "package_files_match": 11,
+      "status_revision": "14b039d322afde685e38b1925e91d85d4fdede48",
+      "verify_result": "passed"
+    },
+    "frozen_state": {
+      "manifest_sha256": "3a62a4768adb29f8c722eab2e44b9bfc3c62821b5d79ed5eb2f6a2ea59c5d9ec",
+      "hashes_match": 16,
+      "pointers_match": 2,
+      "http_targets_match": 6,
+      "http_targets_checked": 6
+    },
+    "http_comparison": {
+      "observed_at_utc": "2026-09-22T14:52:55Z",
+      "hosts": [
+        "om1",
+        "m4mini"
+      ],
+      "checks_match": 12,
+      "checks_total": 12
+    },
+    "browser": {
+      "url": "https://om1.donkey-arcturus.ts.net:8444/html-publish/issue6-20260922-44b6da0/",
+      "navigation_type": "reload",
+      "marker": "ISSUE2-A-sources",
+      "css_state": "'A'"
+    },
+    "detached_reconciliation": {
+      "outcome": "late_postboot_reconciliation_pass",
+      "observed_at": "2026-09-22T14:57:21.493693+00:00",
+      "execution": "systemd user unit",
+      "independent_of_active_agent_process": true,
+      "review_verdict": "PASS for bounded operational restart evidence",
+      "review_report_sha256": "deafc584240768c454e6db106aaa004c94ef1161e9e606d0250066a0411aa6c0",
+      "second_reboot_required": false
+    },
+    "recorder": {
+      "succeeded": false,
+      "result_exists": false,
+      "error_at": "2026-09-22T14:50:33.797449+00:00",
+      "error": "fresh manifest capture required",
+      "manifest_age_seconds": 2509.818429
+    },
+    "limits": {
+      "outage_observed": false,
+      "external_observer_expired_before_reboot": true,
+      "original_external_recovered_and_local_postboot_verified_handshake_met": false,
+      "alternate_process_independent_proof_accepted": true,
+      "boot_recorder_success_claimed": false,
+      "absence_of_concurrent_agent_claimed": false,
+      "power_loss_resilience_claimed": false,
+      "production_readiness_claimed": false
+    }
+  },
   "reader_scope": {
     "observed_at_utc": "2026-09-22T14:29:01.821006Z",
     "source_record": "/home/pascal/.local/state/codex/orchestrate/html-publish-20260922/state/reader-scope/fixed-record.json",
@@ -1027,7 +1103,8 @@
     "scope": "Dated compiled-selector matches for visible peers, not a universal exclusion or per-peer connectivity test. Peer names and addresses are omitted except for the two documented clients."
   },
   "limits": [
-    "No reboot or power-loss proof",
+    "Changed-boot and late-postboot state are proved; outage continuity and boot-recorder success are not",
+    "No power-loss proof",
     "No production-readiness claim",
     "No ETag emitted; ETag-only and combined-validator cases unavailable",
     "Faults use the installed executable with private stores and loopback fixtures, not failed live routes",
@@ -1084,7 +1161,18 @@
       "external-window-01-result.json": "b86d81aae1f52f7940a1b6556100a2c0314d85358dce28e529b284a8bb52e414",
       "browser-client-A.json": "cd9ee8a62d87c2356f8f4c534de521ce14d64625b815880fc0755e98497c21c4",
       "browser-client-B.json": "700fd4433da6850e795cead91449a3bf2115d0da04cd03d978b85687ab3b77b4",
-      "browser-client-restored-A.json": "651d5342c8d1973acad4c8da70437adce1e37d7b9f3f1015a0b5733e0659b007"
+      "browser-client-restored-A.json": "651d5342c8d1973acad4c8da70437adce1e37d7b9f3f1015a0b5733e0659b007",
+      "postboot-coordinator/http-comparison.json": "9c940df9c04aa29b347b6a1e1a439d26fe878fe60d39fbb0891511efef4d5aff",
+      "postboot-coordinator/browser.json": "19e010a59ae118b089133ede13f156769792be524bef7ad9937d99f2b13cfeb9",
+      "postboot-coordinator/detached-unit.json": "88ee2a1f31580ebe3839acc5e7defac430e799e95326f79168a9b9f189dfe14d",
+      "postboot-coordinator/detached-unit-journal.jsonl": "b1d72db09736c08284345b6401cbb9f1249de1d6f1d4772940375d53403df0d3",
+      "boot.stderr": "667dbe063898c486e6a34bba18e56928fdeffcc3e2ab937b27dd62d2ca0f18dc"
+    },
+    "postboot_review": {
+      "review-postboot.md": "deafc584240768c454e6db106aaa004c94ef1161e9e606d0250066a0411aa6c0",
+      "review-postboot-evidence/audit_postboot.py": "204e708b0dcfa8fabc1a3b7813793c379e41a6827d5878c90a6c7a58256ce796",
+      "review-postboot-evidence/independent-01/result.json": "cd55e4e74af4a0209fc0faeb02a1d6c435ee0d03b1fdbcb90230293095f6cc56",
+      "review-postboot-evidence/detached-01/result.json": "6b66da0a242c8981d62ca523cc2716da96c45388538be16d8132580ba951e5b9"
     },
     "faults": {
       "inputs.json": "afcd4ac25d90202e739d33878c3628c013ca7fc2fe9b1da5f64edcac759f1d97",
