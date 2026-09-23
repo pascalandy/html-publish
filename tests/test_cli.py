@@ -968,6 +968,27 @@ class PublisherCliTest(unittest.TestCase):
         self.assertEqual(payload["error"]["code"], "invalid_usage")
         self.assertEqual(result.stderr, "")
 
+    def test_usage_error_route_comes_from_command_not_argument_values(self) -> None:
+        for name in ("doctor", "config", "status"):
+            with self.subTest(name=name):
+                result = self.run_cli("publish", "--name", name)
+                self.assertEqual(result.returncode, 2)
+                payload = self.payload(result)
+                self.assertEqual(payload["operation"], "publish")
+                self.assertEqual(payload["error"]["code"], "invalid_usage")
+                self.assertIn("verification", payload)
+                self.assertEqual(result.stderr, "")
+        for config in ("doctor", "config", "status"):
+            with self.subTest(config=config):
+                result = self.run_cli("--config", config, "publish", "--name", "report")
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(self.payload(result)["operation"], "publish")
+        for operation in ("doctor", "config"):
+            with self.subTest(operation=operation):
+                result = self.run_cli(operation)
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(self.payload(result)["operation"], operation)
+
     def test_empty_status_has_explicit_entries_and_common_envelope(self) -> None:
         result = self.run_cli("status")
         self.assertEqual(result.returncode, 0, result.stderr)

@@ -1003,12 +1003,11 @@ def _run_config(parsed: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     json_output = "--json" in arguments
-    operation = next((value for value in arguments if value in OPERATIONS), None)
-    parsed: argparse.Namespace | None = None
+    parsed = argparse.Namespace()
     config: Config | None = None
     try:
         parser = _parser(json_output)
-        parsed = parser.parse_args(arguments)
+        parser.parse_args(arguments, namespace=parsed)
         if parsed.operation == "schema":
             return emit_json(command_schema(parser, "html-publish"), 0)
         if parsed.operation in {"config", "doctor"}:
@@ -1059,14 +1058,14 @@ def main(argv: list[str] | None = None) -> int:
         return _print_report(report, parsed.json)
     except UsageFailure as error:
         failure = Failure("invalid_usage", "usage", str(error), "fix_arguments")
-        if parsed is None and ("config" in arguments or "doctor" in arguments):
-            route = "config" if "config" in arguments else "doctor"
+        operation = getattr(parsed, "operation", None)
+        if operation in {"config", "doctor"} and not hasattr(parsed, "role"):
             return _emit_config(
-                _config_result(route, None, None, None, "error", failure=failure),
+                _config_result(operation, None, None, None, "error", failure=failure),
                 json_output,
                 2,
             )
-        if parsed is not None and parsed.operation in {"config", "doctor"}:
+        if operation in {"config", "doctor"}:
             action = parsed.config_action if parsed.operation == "config" else "doctor"
             return _emit_config(
                 _config_result(
@@ -1096,7 +1095,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"html-publish: {error}", file=sys.stderr)
         return 2
     except PublishError as error:
-        if parsed is not None and parsed.operation in {"config", "doctor"}:
+        operation = getattr(parsed, "operation", None)
+        if operation in {"config", "doctor"}:
             action = parsed.config_action if parsed.operation == "config" else "doctor"
             return _emit_config(
                 _config_result(
