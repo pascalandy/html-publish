@@ -343,6 +343,7 @@ html-publish --config /absolute/path/publisher.json host serve --port 4177
 html-publish --config /absolute/path/publisher.json --json host setup
 html-publish --config /absolute/path/publisher.json --json host setup --apply
 html-publish --config /absolute/path/publisher.json --json host route setup
+html-publish --config /absolute/path/publisher.json --json host route setup --apply
 ```
 
 `host serve` stops on SIGINT or SIGTERM. `host setup` previews by default. Apply writes a record at
@@ -352,30 +353,37 @@ The default unit name is `html-publish.service`. Use `--unit-name html-publish-<
 verification installation. Apply starts or restarts the user unit, checks loopback health, and
 returns each completed or uncertain effect. Repeat apply returns `unchanged` without a restart.
 
-`host route setup` is a separate read-only preview for one already owned healthy service. It checks
-the exact recorded configuration, package, executable, unit, user-manager state, listener, and
-loopback health before it inspects Tailscale. The command has no route port or target override. It
-takes the loopback port from the service record and derives the HTTPS host, port, and mount from the
-configured public URL.
+`host route setup` is a separate command from service setup. It previews one route for an already
+owned healthy service by default. Ordinary `host setup --apply` manages only the owned user service
+and never inspects or changes Tailscale. Route setup checks the exact recorded configuration,
+package, executable, unit, user-manager state, listener, and loopback health before it inspects
+Tailscale. The command has no route port or target override. It takes the loopback port from the
+service record and derives the HTTPS host, port, and mount from the configured public URL.
 
 Route ownership uses a separate unit-keyed record under
 `$XDG_STATE_HOME/html-publish/routes/<unit-basename>.json`, or under `~/.local/state` when the
-variable is unset. Preview reads that record but never creates or changes it. It reports the
-selected service, route, node and Serve observations, prerequisites, ownership, route decision,
-blockers, and proposed effects. An unrecorded equal route is foreign. Owned, pending, drifted,
-colliding, and unfamiliar state remain distinct decisions. Every blocker clears proposed effects.
+variable is unset. Preview reads that record but never creates or changes it. It reports the selected
+service, route, node and Serve observations, prerequisites, ownership, route decision, blockers, and
+proposed effects. An unrecorded equal route is foreign. Owned, pending, drifted, colliding, and
+unfamiliar state remain distinct decisions. Every blocker clears proposed effects.
 
-`host route setup --apply` is reserved for issue #59 and fails before configuration or external
-reads. Ordinary `host setup` and `host setup --apply` remain service-only and never inspect or
-change Tailscale. Route preview reports private HTTPS as `not_checked`. Private HTTPS proof needs
-an authenticated disposable node and a second tailnet client. The existing `om1` installer remains
-a separate deployment workflow with its own route lifecycle and evidence.
+`host route setup --apply` reloads the selected configuration and rechecks the owned service, node,
+route, collisions, and Funnel exposure before it changes one scoped Serve path. It writes pending
+route ownership before invoking Serve, then checks the selected route and surrounding Serve state.
+Only an exact match can complete ownership. A retry proceeds only when the matching pending route
+remains absent and its saved HTTPS-port state matches. An equal route after an uncertain command
+remains pending. A verified owned repeat returns `unchanged` without a Serve write.
 
-Installed-executable tests retain controlled CLI results, Tailscale command logs, source and wheel
-identity, and before-and-after manifests. They cover route decisions, blockers, a nondefault service
-port, early apply rejection, and the absence of writes. This controlled evidence does not prove
-private HTTPS delivery. The isolated user-service job in `.github/workflows/host-systemd.yml`
-proves restart only after it passes on hosted Ubuntu.
+Route apply configures the mapping but does not prove private HTTPS delivery. Issue #60 remains
+blocked until an authenticated disposable Linux node and a second tailnet client are available for
+the exact-byte create and update checks. The existing `om1` installer remains a separate deployment
+workflow with its own route lifecycle and evidence.
+
+The [installed Linux hosting recipe](../.agents/skills/verify-html-publish/features/installed-linux-hosting.md)
+owns the focused command and artifact fields for controlled installed-wheel evidence. Its fake
+systemctl and Tailscale state can show CLI behavior and state preservation, but cannot prove a real
+service restart or private HTTPS delivery. The isolated user-service job in
+`.github/workflows/host-systemd.yml` proves restart only after it passes on hosted Ubuntu.
 
 To remove the isolated verification installation, read its record first and compare the current
 unit bytes, mode, and effective `FragmentPath`. If they still match,

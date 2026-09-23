@@ -139,8 +139,8 @@ class Verification:
 | `receipt.py` | Caller binding, frozen publish or restore intent, accepted output and record revisions, observation, local lock, and saved-result recovery |
 | `server.py` | Read-only HTTP delivery of selected files, without publication mutations |
 | `host.py` | Linux service setup, its ownership record, systemd observations, loopback health, and owned-service inspection |
-| `host_route.py` | Route ownership record, route decision, blockers, proposed effects, and future route apply |
-| `tailscale.py` | Bounded Tailscale node and Serve reads and supported wire-format parsing |
+| `host_route.py` | Route ownership record, route decisions, apply checks, pending retries, and effects |
+| `tailscale.py` | Bounded node and Serve reads, wire-format parsing, and scoped Serve path mutation |
 
 `_git.py` is a private mechanism shared by capture and storage. It owns the one sanitized Git invocation policy and exposes no publication decisions
 
@@ -175,11 +175,16 @@ accepts no independent port or target. It derives the loopback target from the s
 
 `host_route.py` compares that healthy service with the Tailscale observation and a separate
 unit-keyed route record under the user's XDG state directory. `tailscale.py` reads the authenticated
-node and Serve state without assigning ownership. Route preview never writes the route record or
-changes the service, Tailscale, publications, or receipts. `host route setup --apply` is reserved
-for issue #59 and fails before configuration or external reads. Ordinary `host setup --apply`
-remains service-only. The controlled `om1` installer in `deploy.py` remains a separate
-source-checkout deployment path.
+node and Serve state without assigning ownership, then applies one scoped Serve path when the
+operator passes `--apply`. Route preview never writes the route record or changes the service,
+Tailscale, publications, or receipts. Apply reloads the selected configuration and rechecks the
+owned service, node, route, collisions, and Funnel state before mutation. It writes pending route
+ownership first and records ownership only after a postcheck confirms the selected route and
+surrounding Serve state. A matching pending attempt can retry only while the selected route remains
+absent and its saved HTTPS-port state still matches. An equal route after an uncertain command
+remains pending. A verified owned repeat returns `unchanged` without a Serve write. Ordinary
+`host setup --apply` remains service-only and never inspects or changes Tailscale. The controlled
+`om1` installer in `deploy.py` remains a separate source-checkout deployment path.
 Setup uses one lock in the host-record directory across unit names. It re-reads the selected config
 and installed package bytes before external writes. External HTTPS delivery is configured separately
 and remains outside generic host setup's verification scope. Route preview reports private HTTPS as

@@ -582,8 +582,8 @@ effects.
 Preview reports the selected executable, configuration, service, route identity, node and Serve
 observations, prerequisites, ownership, route decision, blockers, and proposed effects. A `planned`
 preview proposes `route_intent`, `tailscale_serve_route`, and `route_completion`. Preview reports each
-effect as `not_started` and reports private HTTPS as `not_checked`. Future apply reports each effect
-as `not_started`, `completed`, `unchanged`, or `unknown` after it reobserves the selected route.
+effect as `not_started` and reports private HTTPS as `not_checked`. Apply reports each effect as
+`not_started`, `completed`, `unchanged`, or `unknown` after it reobserves the selected route.
 Preview invokes only bounded status and health checks. It does not change records, services, routes,
 publications, or receipts.
 
