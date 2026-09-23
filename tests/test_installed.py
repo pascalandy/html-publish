@@ -255,14 +255,14 @@ class InstalledWorkflowTest(unittest.TestCase):
                 self.assertEqual(byte_count, (installed_guide_root / f"{name}.md").stat().st_size)
 
             core_guide = discovery(values["CLI"], "skills", "get", "core")
-            self.assertIn("html-publish 0.1.0", core_guide.stdout)
+            self.assertIn(f"html-publish {local_schema['version']}", core_guide.stdout)
             self.assertIn("# Core guide", core_guide.stdout)
             recovery_guide = cast(
                 dict[str, object],
                 json.loads(discovery(values["CLI"], "skills", "get", "recovery", "--json").stdout),
             )
             self.assertEqual(recovery_guide["name"], "recovery")
-            self.assertIn("html-publish 0.1.0", str(recovery_guide["content"]))
+            self.assertIn(f"html-publish {local_schema['version']}", str(recovery_guide["content"]))
             missing_json = cast(
                 dict[str, object],
                 json.loads(

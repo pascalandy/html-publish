@@ -10,12 +10,12 @@ revision. Readers see the same URL across updates.
 
 ## Install
 
-Install from a built wheel, or from a pinned Git source. The wheel path and tag are examples;
-use the release you reviewed.
+Install from a built wheel, or from a pinned Git source. The wheel path and the tag below are
+placeholders; use a release you reviewed.
 
 ```sh
 uv tool install --from /path/to/html_publish-0.1.0-py3-none-any.whl html-publish
-uv tool install git+https://github.com/pascalandy/html-publish@v0.1.0
+uv tool install git+https://github.com/pascalandy/html-publish@<reviewed-tag>
 ```
 
 Confirm the installation and its version-matched guides:
@@ -49,11 +49,15 @@ Create `publisher.json` with absolute storage paths and a canonical base URL.
 ```
 
 HTTP is accepted only for explicit loopback tests. A production target must use HTTPS. The
-`config init` command writes this file for you:
+`config init` command writes both files. The publisher file configures storage and the
+canonical base URL; the client file names the target and selects the publisher executable:
 
 ```sh
 html-publish config init --role publisher --config publisher.json \
   --base-url http://127.0.0.1:8000/ --allow-http
+html-publish config init --role client --config client.json \
+  --base-url http://127.0.0.1:8000/ --target-id local-test \
+  --execution local --publisher-config publisher.json
 ```
 
 Serve the configured runtime mount during a loopback test:
@@ -202,11 +206,13 @@ html-publish --config publisher.json --json status \
 
 ## Publish with a durable receipt
 
-Root help recommends the `artifact` group for durable publication. A receipt is a private
-directory kept beside the artifact. It preserves the publication name, target, accepted
-revision, immutable pending bytes, and retry identity across sessions.
+Root help recommends the `artifact` group for durable publication. Names use lowercase
+letters, digits, and single hyphens, up to 80 characters; choose one name per page and keep
+it. A receipt is a private directory kept beside the artifact. It preserves the publication
+name, target, accepted revision, immutable pending bytes, and retry identity across sessions.
 
-Create the first publication with an explicit stable name:
+Create the first publication with an explicit stable name. Without `--receipt`, the receipt
+directory defaults to `SOURCE.publish`, here `./page.html.publish`:
 
 ```sh
 html-publish --config client.json artifact publish ./page.html --new release-notes
@@ -218,31 +224,42 @@ For later edits, use the same artifact and sibling receipt:
 html-publish --config client.json artifact publish ./page.html
 ```
 
-If a result is uncertain or delivery failed, retry the frozen attempt. It inspects the known
+A normal publish makes one publisher call. Do not add plan, status, history, or verify calls
+unless the result requires diagnosis. An explicit local-only request neither invokes the
+publisher nor changes a receipt.
+
+If a result is uncertain or delivery failed, retry the frozen attempt. Keep the same
+`--config`; the receipt does not remember the configuration path. The retry inspects the known
 publication before an uncertain redispatch and never substitutes a current source file for a
 pending snapshot:
 
 ```sh
-html-publish artifact retry --receipt ./page.publish
+html-publish --config client.json artifact retry --receipt ./page.html.publish
 ```
 
-Record an explicit observation, which never changes the accepted revision:
+Read the saved receipt state without invoking a host. This records nothing:
 
 ```sh
-html-publish artifact status --receipt ./page.publish --local-only
+html-publish artifact status --receipt ./page.html.publish --local-only
+```
+
+With the selected configuration and without `--local-only`, status records an observation. An
+observation never changes the accepted revision:
+
+```sh
+html-publish --config client.json artifact status --receipt ./page.html.publish
 ```
 
 Start a guarded restore through the receipt:
 
 ```sh
-html-publish --config client.json artifact restore --receipt ./page.publish \
+html-publish --config client.json artifact restore --receipt ./page.html.publish \
   --archive-commit COMMIT --target http://127.0.0.1:8000/
 ```
 
-An explicit local-only request neither invokes the publisher nor changes a receipt. Return
-the tool's JSON and keep browser review, host delivery verification, a separate client probe,
-and receipt persistence as distinct evidence. The recovery guide covers conflict and lost
-result handling.
+Return the tool's JSON and keep browser review, host delivery verification, a separate client
+probe, and receipt persistence as distinct evidence. The recovery guide covers conflict and
+lost result handling.
 
 ## Publish through the controlled om1 host
 

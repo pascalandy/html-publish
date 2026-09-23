@@ -6,13 +6,12 @@ The MVP supports first publication, guarded replacement, identical retry, adviso
 
 ## Install
 
-Install a reviewed release from a wheel or a pinned Git source
+Install a reviewed release from a wheel or a pinned Git source; the path and tag are placeholders
 
 ```sh
 uv tool install --from /path/to/html_publish-0.1.0-py3-none-any.whl html-publish
-uv tool install git+https://github.com/pascalandy/html-publish@v0.1.0
+uv tool install git+https://github.com/pascalandy/html-publish@<reviewed-tag>
 ```
-
 ```sh
 html-publish skills list
 html-publish skills get core
@@ -24,13 +23,14 @@ html-publish skills get core
 just check
 ```
 
-The checks use temporary archives, runtime directories, and a controlled loopback HTTP server
-
 ## Set up a target
 
 ```sh
 html-publish config init --role publisher --config publisher.json \
   --base-url http://127.0.0.1:8000/ --allow-http
+html-publish config init --role client --config client.json \
+  --base-url http://127.0.0.1:8000/ --target-id local-test \
+  --execution local --publisher-config publisher.json
 html-publish --config publisher.json host serve --port 8000
 ```
 
@@ -38,12 +38,12 @@ HTTP is accepted only for explicit loopback tests. A production target must use 
 
 ## Publish and update
 
-Use the receipt workflow for durable publication across sessions
+Use the receipt workflow for durable publication across sessions. Names use lowercase letters, digits, and single hyphens, up to 80 characters, and stay stable across updates
 
 ```sh
 html-publish --config client.json artifact publish ./page.html --new release-notes
 html-publish --config client.json artifact publish ./page.html
-html-publish artifact retry --receipt ./page.publish
+html-publish --config client.json artifact retry --receipt ./page.html.publish
 ```
 
 The [core guide](html_publish/guides/core.md) owns the full shell patterns for plan, publish, guarded updates with `--expected-revision`, verify, history, restore, host diagnostics, and the remote helper. The [recovery guide](html_publish/guides/recovery.md) owns error codes, interruption states, and guarded retries
@@ -58,7 +58,7 @@ The [core guide](html_publish/guides/core.md) owns the full shell patterns for p
 - Input is one HTML file or a directory with `index.html` and relative assets
 - Readers are controlled by tailnet policy; external assets may still contact external hosts
 - Installed Linux hosting previews before apply and never changes Tailscale
-- This controlled MVP is not production-ready
+- Linux and macOS are supported; this controlled MVP is not production-ready
 
 ## Current boundary
 

@@ -3,32 +3,32 @@
   "record": "2026-09-22-bundled-guides-skills",
   "date": "2026-09-22",
   "source_sha": "dc754dfe42142e6e895e9f1f151ea5fc65b3e468",
-  "installed_release": "sha256-92ef377172c920549bfaed9dace854d4620748b787e4723cf1ca340ccb79a26a",
+  "installed_release": "sha256-bea1251b307d8d56096a3377a940ee71462a29581a3d37f4387fef13777800e4",
   "executable_version": "0.1.0",
-  "run_id": "skills-disc-20260922",
+  "run_id": "skills-disc-20260922b",
   "guides": [
     {
       "name": "core",
-      "sha256": "a72f7e1f9e0cc540dd9137df4faabf781067800387322ec3bbab306672458c8f",
-      "bytes": 8823
+      "sha256": "58a98bcde09d6926f35564cb91c200bcc96a4b7acaf0758118fb0651086d1f5c",
+      "bytes": 9858
     },
     {
       "name": "recovery",
-      "sha256": "57a3b2b803e2d4663e41084e45e04dd90b41a06fc53d7f7ea8934bb89d7a2fc8",
-      "bytes": 5819
+      "sha256": "c4f720835aa5f68165483c454e4061bd285ec9dc5bc78eb90e8aa22581d477f0",
+      "bytes": 6711
     }
   ],
   "proofs": [
     {
       "host": "linux",
-      "host_detail": "isolated installed wheel in /tmp/html-publish-verify/skills-disc-20260922/instance/venv",
-      "transcript": "skills-discovery-skills-disc-20260922.txt",
+      "host_detail": "isolated installed wheel in /tmp/html-publish-verify/skills-disc-20260922b/instance/venv",
+      "transcript": "skills-discovery-skills-disc-20260922b.txt",
       "doctor": "passed",
       "checks": {
-        "skills_list": "exit 0; schema_version 1; version 0.1.0; guides core then recovery with bytes 8823 and 5819",
+        "skills_list": "exit 0; schema_version 1; version 0.1.0; guides core then recovery with bytes 9858 and 6711",
         "skills_get_core_plain": "exit 0; starts with '# Core guide'; carries the html-publish 0.1.0 marker",
         "byte_parity": "inventory bytes == packaged file bytes == plain stdout bytes for both guides",
-        "skills_get_recovery_json": "exit 0; name recovery; schema_version 1; 5819 content bytes",
+        "skills_get_recovery_json": "exit 0; name recovery; schema_version 1; 6711 content bytes",
         "skills_get_unknown": "exit 2; plain diagnostic on stderr with empty stdout; JSON usage error with error.code invalid_usage",
         "config_independence": "skills list --config /nonexistent/x.json exited 0",
         "remote_boundary": "html-publish-remote skills get core exited 2 with operation usage and error.code invalid_usage",
@@ -39,13 +39,13 @@
     {
       "host": "m4mini",
       "host_detail": "m4mini.donkey-arcturus.ts.net, macOS 26.6.2, arm64, disposable uv venv with Python 3.12",
-      "transcript": "skills-discovery-m4mini-skills-disc-20260922.txt",
+      "transcript": "skills-discovery-m4mini-skills-disc-20260922b.txt",
       "checks": {
         "install_identity": "installed guide hashes matched the reviewed bytes",
         "skills_list": "identical JSON to the Linux run",
         "skills_get_core_plain": "head matched the reviewed text with the html-publish 0.1.0 marker",
-        "byte_parity": "core stdout 8823 bytes; recovery stdout 5819 bytes",
-        "skills_get_recovery_json": "name recovery; version 0.1.0; schema_version 1; 5819 content bytes",
+        "byte_parity": "core stdout 9858 bytes; recovery stdout 6711 bytes",
+        "skills_get_recovery_json": "name recovery; version 0.1.0; schema_version 1; 6711 content bytes",
         "skills_get_unknown": "exit 2; empty stdout; JSON mode reported invalid_usage",
         "remote_boundary": "exit 2; operation usage; error.code invalid_usage",
         "cleanup": "temporary venv, copied wheel, and scratch files removed; durable host tooling untouched"
@@ -62,5 +62,6 @@
     "m4mini install used a disposable virtual environment, not a durable uv tool installation",
     "no browser rendering or tailnet delivery claims",
     "power-loss resilience and remote backup unclaimed"
-  ]
+  ],
+  "review_correction": "An earlier proof run skills-disc-20260922 (wheel sha256-92ef3771...) exercised the same routes before an independent review corrected the guide examples: receipt directory name, retained client configuration, client configuration setup step, local-only status wording, and artifact error codes. The corrected guides are the ones hashed here."
 }

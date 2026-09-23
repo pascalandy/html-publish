@@ -11,8 +11,13 @@ facts are `null`, never guessed.
 
 ## Read a failure
 
-Every error carries a stable `code`, the `phase` that failed, and a structured `next_action`
-with required inputs. Exit 0 is success, 1 is operational failure, 2 is invalid usage.
+The six publisher commands and the artifact commands report different error shapes. Publisher
+command errors carry a stable `code`, the `phase` that failed, a message, and a structured
+`next_action` with `kind` and `required_inputs`. Artifact handoffs carry `{code, message,
+next_action}`, where `next_action` is a plain string. Exit 0 is success, 1 is operational
+failure, 2 is invalid usage.
+
+Publisher command error codes:
 
 | Code | Meaning | Action |
 | --- | --- | --- |
@@ -21,17 +26,27 @@ with required inputs. Exit 0 is success, 1 is operational failure, 2 is invalid 
 | `invalid_input` | Artifact input is rejected | Fix the source; see limits in the core guide |
 | `source_changed` | The source changed during capture | Finish writes, then retry |
 | `capture_failure` | Capture failed before any mutation | Retry the original input |
-| `target_mismatch` | Target differs from the configured or bound identity | Restore the intended target; never silently rebind |
+| `target_mismatch` | Target differs from the configured identity | Restore the intended target; never silently rebind |
 | `revision_conflict` | Live content differs from the expectation | Review, then publish with a reviewed revision |
 | `lock_timeout` | Another command holds the publication lock | Retry after the holder finishes |
 | `command_timeout` | The command exceeded its time budget | Retry; a lost result stays uncertain until inspected |
+| `delivery_failure` | Delivery verification failed or probed a degraded route | Verify; see interruption states below |
 | `export` failures | Saved export is missing, corrupt, or malformed | Stop; see degraded state below |
-| `delivery_failed` | Activation succeeded, delivery verification failed | Verify; see interruption states below |
+
+Artifact handoff error codes:
+
+| Code | Meaning | Action |
+| --- | --- | --- |
+| `receipt_missing` | The receipt directory does not exist | Rebind with `--adopt` after inspection |
+| `receipt_busy` | Another command holds the receipt lock | Retry after the holder finishes |
+| `receipt_exists` | A receipt already exists for a `--new` binding | Reuse it, or choose a new publication name |
 | `receipt_persistence_failed` | A host result exists but the receipt did not persist | Keep the reported paths; retry after inspection |
+| `delivery_failed` | Activation was proven, but delivery verification or persistence did not complete | Retry the frozen attempt |
+| `interrupted` | A scoped cancellation stopped the command | Retry the same input and expectation |
 | `publisher_timeout` | The remote publisher did not finish in budget | The attempt is uncertain; inspect status, then retry |
 | `publisher_output_limit` | Host output exceeded the protocol bound | Treat as uncertain; inspect status |
-| `publisher_process_group` | Cleanup of the transport process group is unproven | The attempt stays unresolved; inspect before retrying |
-| `cancelled` | A scoped cancellation stopped the command | Retry the same input and expectation |
+| `publisher_process_group_unknown` | Cleanup of the transport process group is unproven | The attempt stays unresolved; inspect before retrying |
+| `publisher_process_group` | The transport process group was stopped | Retry the same input and expectation |
 
 ## Interruption states
 
@@ -59,7 +74,7 @@ reviewing the competing revision, publish deliberately:
 
 ```sh
 html-publish --config client.json artifact publish ./page.html \
-  --receipt ./page.publish \
+  --receipt ./page.html.publish \
   --reviewed-revision REVISION \
   --replaces-attempt ATTEMPT_ID
 ```
