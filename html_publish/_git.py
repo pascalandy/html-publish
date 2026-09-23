@@ -67,6 +67,7 @@ def command(
     args: Sequence[str],
     deadline: Deadline,
     *,
+    cwd: Path | None = None,
     input_bytes: bytes | None = None,
     stdin: BinaryIO | None = None,
     stdout: BinaryIO | int = subprocess.PIPE,
@@ -101,6 +102,7 @@ def command(
             stdin=stdin,
             stdout=stdout,
             stderr=subprocess.PIPE,
+            cwd=cwd,
             env=_environment(extra_env),
             timeout=deadline.remaining(),
             check=False,
@@ -150,6 +152,49 @@ def hash_file(git_dir: Path, path: Path, deadline: Deadline, *, write: bool) -> 
     args.append("--stdin")
     with path.open("rb") as source:
         return command(git_dir, args, deadline, stdin=source).decode().strip()
+
+
+def hash_files(
+    git_dir: Path,
+    root: Path,
+    paths: Sequence[PurePosixPath],
+    deadline: Deadline,
+) -> tuple[str, ...]:
+    if not paths:
+        return ()
+    if any(
+        path.is_absolute()
+        or ".." in path.parts
+        or not path.parts
+        or "\n" in str(path)
+        or "\r" in str(path)
+        for path in paths
+    ):
+        raise PublishError(
+            "unsafe_input",
+            "capture",
+            "A staged path cannot be sent to Git safely",
+            "fix_input",
+        )
+    payload = b"\n".join(b"./" + os.fsencode(path) for path in paths) + b"\n"
+    output = command(
+        git_dir,
+        ["hash-object", "-w", "--stdin-paths", "--no-filters"],
+        deadline,
+        cwd=root,
+        input_bytes=payload,
+    )
+    object_ids = output.splitlines()
+    if len(object_ids) != len(paths) or any(
+        re.fullmatch(rb"[0-9a-f]{40}|[0-9a-f]{64}", object_id) is None for object_id in object_ids
+    ):
+        raise PublishError(
+            "archive_failure",
+            "archive",
+            "Git returned an invalid blob identity batch",
+            "inspect",
+        )
+    return tuple(object_id.decode("ascii") for object_id in object_ids)
 
 
 def make_tree(git_dir: Path, entries: Sequence[TreeEntry], deadline: Deadline) -> str:

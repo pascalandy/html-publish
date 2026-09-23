@@ -1,0 +1,300 @@
+{
+  "issue": "https://github.com/pascalandy/html-publish/issues/36",
+  "fix_commit": "67d0a9ebe241f36a637ab83964acfa9f063c9985",
+  "wheel_sha256": "02cfdebe9b905ce9aecc60d2dc68fbcbe2c7ccbaa88fabc2c1ddd4419c5235c3",
+  "before_fix": {
+    "sha1_unchanged_plan_revision": "72fdebdda0e3a8ddd750b8fcdb4cd4ccac03f295",
+    "sha256_unchanged_plan_revision": "e69f815ee54e6c4396d8dd401e22a520936c3e950a25b806020be6d0e467d882",
+    "publish_error": {
+      "code": "archive_failure",
+      "phase": "archive",
+      "message": "Git produced a different blob identity for \"README.md\""
+    }
+  },
+  "linux": {
+    "feature": "first-publication and quoted-path identity",
+    "run_id": "quoted-path-20260922",
+    "object_format": "sha256",
+    "records": [
+      {
+        "command": [
+          "/tmp/html-publish-verify/quoted-path-20260922/instance/venv/bin/html-publish",
+          "--config",
+          "/tmp/html-publish-verify/quoted-path-20260922/instance/publisher.json",
+          "--json",
+          "plan",
+          "--name",
+          "quote-proof",
+          "--source",
+          "/tmp/html-publish-verify/quoted-path-20260922/instance/quoted-site",
+          "--target",
+          "http://127.0.0.1:47147/"
+        ],
+        "stdout": "{\"schema_version\":1,\"operation\":\"plan\",\"request_id\":null,\"outcome\":\"planned\",\"target\":\"http://127.0.0.1:47147/\",\"name\":\"quote-proof\",\"url\":\"http://127.0.0.1:47147/quote-proof/\",\"expected_revision\":null,\"requested_revision\":\"3cf1f982a1b683b57ce8f4a4a5deeb659f640a6f8f01ca9d55d56332930240d4\",\"archived_revision\":null,\"archive_commit\":null,\"active_revision\":null,\"effects\":{\"archive_advanced\":false,\"activated\":false},\"verification\":{\"result\":\"not_checked\",\"revision\":null,\"checked_at\":null,\"probe_location\":null,\"files_checked\":0,\"bytes_checked\":0,\"scope\":[],\"detail\":null},\"warnings\":[],\"error\":null,\"observation\":{\"saved\":null,\"selection\":{\"state\":\"absent\",\"revision\":null,\"integrity_checked\":false,\"detail\":null}},\"prediction\":\"create\",\"file_count\":4,\"byte_count\":80,\"differences\":{\"added\":[\"\\\"README.md\\\"\",\"\\\"leading-only\",\"README.md\",\"index.html\"],\"changed\":[],\"deleted\":[]},\"limits\":{\"max_bytes\":104857600,\"max_files\":2000}}\n",
+        "stderr": "",
+        "exit_code": 0
+      },
+      {
+        "command": [
+          "/tmp/html-publish-verify/quoted-path-20260922/instance/venv/bin/html-publish",
+          "--config",
+          "/tmp/html-publish-verify/quoted-path-20260922/instance/publisher.json",
+          "--json",
+          "plan",
+          "--name",
+          "quote-proof",
+          "--source",
+          "/tmp/html-publish-verify/quoted-path-20260922/instance/quoted-site",
+          "--target",
+          "http://127.0.0.1:47147/"
+        ],
+        "stdout": "{\"schema_version\":1,\"operation\":\"plan\",\"request_id\":null,\"outcome\":\"planned\",\"target\":\"http://127.0.0.1:47147/\",\"name\":\"quote-proof\",\"url\":\"http://127.0.0.1:47147/quote-proof/\",\"expected_revision\":null,\"requested_revision\":\"99d6f3451665d2430aa1d7d066d9488ea3a7b7ecf4d6d66e87a936e6dac0c120\",\"archived_revision\":null,\"archive_commit\":null,\"active_revision\":null,\"effects\":{\"archive_advanced\":false,\"activated\":false},\"verification\":{\"result\":\"not_checked\",\"revision\":null,\"checked_at\":null,\"probe_location\":null,\"files_checked\":0,\"bytes_checked\":0,\"scope\":[],\"detail\":null},\"warnings\":[],\"error\":null,\"observation\":{\"saved\":null,\"selection\":{\"state\":\"absent\",\"revision\":null,\"integrity_checked\":false,\"detail\":null}},\"prediction\":\"create\",\"file_count\":4,\"byte_count\":80,\"differences\":{\"added\":[\"\\\"README.md\\\"\",\"\\\"leading-only\",\"README.md\",\"index.html\"],\"changed\":[],\"deleted\":[]},\"limits\":{\"max_bytes\":104857600,\"max_files\":2000}}\n",
+        "stderr": "",
+        "exit_code": 0
+      },
+      {
+        "command": [
+          "/tmp/html-publish-verify/quoted-path-20260922/instance/venv/bin/html-publish",
+          "--config",
+          "/tmp/html-publish-verify/quoted-path-20260922/instance/publisher.json",
+          "--json",
+          "publish",
+          "--name",
+          "quote-proof",
+          "--source",
+          "/tmp/html-publish-verify/quoted-path-20260922/instance/quoted-site",
+          "--target",
+          "http://127.0.0.1:47147/",
+          "--request-id",
+          "quoted-path-proof"
+        ],
+        "stdout": "{\"schema_version\":1,\"operation\":\"publish\",\"request_id\":\"quoted-path-proof\",\"outcome\":\"published\",\"target\":\"http://127.0.0.1:47147/\",\"name\":\"quote-proof\",\"url\":\"http://127.0.0.1:47147/quote-proof/\",\"expected_revision\":null,\"requested_revision\":\"99d6f3451665d2430aa1d7d066d9488ea3a7b7ecf4d6d66e87a936e6dac0c120\",\"archived_revision\":\"99d6f3451665d2430aa1d7d066d9488ea3a7b7ecf4d6d66e87a936e6dac0c120\",\"archive_commit\":\"08122d940b0e4169a85a40fc950c34291a2fa38e4de2044b5f100ee7dae40151\",\"active_revision\":\"99d6f3451665d2430aa1d7d066d9488ea3a7b7ecf4d6d66e87a936e6dac0c120\",\"effects\":{\"archive_advanced\":true,\"activated\":true},\"verification\":{\"result\":\"passed\",\"revision\":\"99d6f3451665d2430aa1d7d066d9488ea3a7b7ecf4d6d66e87a936e6dac0c120\",\"checked_at\":\"2026-09-22T21:36:26.584468+00:00\",\"probe_location\":\"host\",\"files_checked\":4,\"bytes_checked\":122,\"scope\":[\"local_export\",\"directory_url\",\"index_html\",\"all_files\",\"missing_path\"],\"detail\":null},\"warnings\":[],\"error\":null,\"observation\":{\"saved\":{\"revision\":\"99d6f3451665d2430aa1d7d066d9488ea3a7b7ecf4d6d66e87a936e6dac0c120\",\"archive_commit\":\"08122d940b0e4169a85a40fc950c34291a2fa38e4de2044b5f100ee7dae40151\"},\"selection\":{\"state\":\"selected\",\"revision\":\"99d6f3451665d2430aa1d7d066d9488ea3a7b7ecf4d6d66e87a936e6dac0c120\",\"integrity_checked\":true,\"detail\":null}}}\n",
+        "stderr": "",
+        "exit_code": 0
+      },
+      {
+        "command": [
+          "/tmp/html-publish-verify/quoted-path-20260922/instance/venv/bin/html-publish",
+          "--config",
+          "/tmp/html-publish-verify/quoted-path-20260922/instance/publisher.json",
+          "--json",
+          "verify",
+          "--name",
+          "quote-proof"
+        ],
+        "stdout": "{\"schema_version\":1,\"operation\":\"verify\",\"request_id\":null,\"outcome\":\"verified\",\"target\":\"http://127.0.0.1:47147/\",\"name\":\"quote-proof\",\"url\":\"http://127.0.0.1:47147/quote-proof/\",\"expected_revision\":null,\"requested_revision\":null,\"archived_revision\":\"99d6f3451665d2430aa1d7d066d9488ea3a7b7ecf4d6d66e87a936e6dac0c120\",\"archive_commit\":\"08122d940b0e4169a85a40fc950c34291a2fa38e4de2044b5f100ee7dae40151\",\"active_revision\":\"99d6f3451665d2430aa1d7d066d9488ea3a7b7ecf4d6d66e87a936e6dac0c120\",\"effects\":{\"archive_advanced\":false,\"activated\":false},\"verification\":{\"result\":\"passed\",\"revision\":\"99d6f3451665d2430aa1d7d066d9488ea3a7b7ecf4d6d66e87a936e6dac0c120\",\"checked_at\":\"2026-09-22T21:36:26.676044+00:00\",\"probe_location\":\"host\",\"files_checked\":4,\"bytes_checked\":122,\"scope\":[\"local_export\",\"directory_url\",\"index_html\",\"all_files\",\"missing_path\"],\"detail\":null},\"warnings\":[],\"error\":null,\"observation\":{\"saved\":{\"revision\":\"99d6f3451665d2430aa1d7d066d9488ea3a7b7ecf4d6d66e87a936e6dac0c120\",\"archive_commit\":\"08122d940b0e4169a85a40fc950c34291a2fa38e4de2044b5f100ee7dae40151\"},\"selection\":{\"state\":\"selected\",\"revision\":\"99d6f3451665d2430aa1d7d066d9488ea3a7b7ecf4d6d66e87a936e6dac0c120\",\"integrity_checked\":true,\"detail\":null}}}\n",
+        "stderr": "",
+        "exit_code": 0
+      },
+      {
+        "command": [
+          "/tmp/html-publish-verify/quoted-path-20260922/instance/venv/bin/html-publish",
+          "--config",
+          "/tmp/html-publish-verify/quoted-path-20260922/instance/publisher.json",
+          "--json",
+          "status",
+          "--name",
+          "quote-proof"
+        ],
+        "stdout": "{\"schema_version\":1,\"operation\":\"status\",\"request_id\":null,\"outcome\":\"observed\",\"target\":\"http://127.0.0.1:47147/\",\"name\":\"quote-proof\",\"url\":\"http://127.0.0.1:47147/quote-proof/\",\"expected_revision\":null,\"requested_revision\":null,\"archived_revision\":\"99d6f3451665d2430aa1d7d066d9488ea3a7b7ecf4d6d66e87a936e6dac0c120\",\"archive_commit\":\"08122d940b0e4169a85a40fc950c34291a2fa38e4de2044b5f100ee7dae40151\",\"active_revision\":\"99d6f3451665d2430aa1d7d066d9488ea3a7b7ecf4d6d66e87a936e6dac0c120\",\"effects\":{\"archive_advanced\":false,\"activated\":false},\"verification\":{\"result\":\"not_checked\",\"revision\":null,\"checked_at\":null,\"probe_location\":null,\"files_checked\":0,\"bytes_checked\":0,\"scope\":[],\"detail\":null},\"warnings\":[],\"error\":null,\"observation\":{\"saved\":{\"revision\":\"99d6f3451665d2430aa1d7d066d9488ea3a7b7ecf4d6d66e87a936e6dac0c120\",\"archive_commit\":\"08122d940b0e4169a85a40fc950c34291a2fa38e4de2044b5f100ee7dae40151\"},\"selection\":{\"state\":\"selected\",\"revision\":\"99d6f3451665d2430aa1d7d066d9488ea3a7b7ecf4d6d66e87a936e6dac0c120\",\"integrity_checked\":false,\"detail\":null}}}\n",
+        "stderr": "",
+        "exit_code": 0
+      }
+    ],
+    "plan_revisions": [
+      "3cf1f982a1b683b57ce8f4a4a5deeb659f640a6f8f01ca9d55d56332930240d4",
+      "99d6f3451665d2430aa1d7d066d9488ea3a7b7ecf4d6d66e87a936e6dac0c120"
+    ],
+    "served": {
+      "index.html": {
+        "status": 200,
+        "url": "http://127.0.0.1:47147/quote-proof/index.html",
+        "body_hex": "3c21646f63747970652068746d6c3e3c68313e71756f74656420706174682070726f6f663c2f68313e0a"
+      },
+      "README.md": {
+        "status": 200,
+        "url": "http://127.0.0.1:47147/quote-proof/README.md",
+        "body_hex": "756e71756f7465642066696c650a"
+      },
+      "\"README.md\"": {
+        "status": 200,
+        "url": "http://127.0.0.1:47147/quote-proof/%22README.md%22",
+        "body_hex": "71756f74656420420a"
+      },
+      "\"leading-only": {
+        "status": 200,
+        "url": "http://127.0.0.1:47147/quote-proof/%22leading-only",
+        "body_hex": "006c656164696e672071756f74650a"
+      }
+    },
+    "directory_status": 200,
+    "slashless": {
+      "status": 301,
+      "location": "quote-proof/"
+    },
+    "missing_status": 404
+  },
+  "m4mini": {
+    "platform": "macOS-26.6.2-arm64-arm-64bit",
+    "git_version": "git version 2.54.0 (Apple Git-157)",
+    "python_version": "Python 3.12.13",
+    "wheel_sha256": "02cfdebe9b905ce9aecc60d2dc68fbcbe2c7ccbaa88fabc2c1ddd4419c5235c3",
+    "plan_revisions": {
+      "sha1": [
+        "6f51795c7179ccc41aeef6eb73f0aa4a9526f381",
+        "68c2d1a899a97f6aa85d1b71010fab78ac620252"
+      ],
+      "sha256": [
+        "1c8ff085f89ecd7bcce968425893af89e0da9d6695980a8de324b820351864cc",
+        "617adcdc631d91d664f534e7b16805ded35858b695c27d93dc9ebf0610af6956"
+      ]
+    },
+    "records": [
+      {
+        "command": [
+          "/private/tmp/html-publish-quote-cli.YayKgg/venv/bin/html-publish",
+          "--config",
+          "/private/tmp/html-publish-quote-cli.YayKgg/config.json",
+          "--json",
+          "plan",
+          "--name",
+          "quote-proof",
+          "--source",
+          "/private/tmp/html-publish-quote-cli.YayKgg/site",
+          "--target",
+          "http://127.0.0.1:56784/"
+        ],
+        "stdout": "{\"schema_version\":1,\"operation\":\"plan\",\"request_id\":null,\"outcome\":\"planned\",\"target\":\"http://127.0.0.1:56784/\",\"name\":\"quote-proof\",\"url\":\"http://127.0.0.1:56784/quote-proof/\",\"expected_revision\":null,\"requested_revision\":\"6f51795c7179ccc41aeef6eb73f0aa4a9526f381\",\"archived_revision\":null,\"archive_commit\":null,\"active_revision\":null,\"effects\":{\"archive_advanced\":false,\"activated\":false},\"verification\":{\"result\":\"not_checked\",\"revision\":null,\"checked_at\":null,\"probe_location\":null,\"files_checked\":0,\"bytes_checked\":0,\"scope\":[],\"detail\":null},\"warnings\":[],\"error\":null,\"observation\":{\"saved\":null,\"selection\":{\"state\":\"absent\",\"revision\":null,\"integrity_checked\":false,\"detail\":null}},\"prediction\":\"create\",\"file_count\":4,\"byte_count\":78,\"differences\":{\"added\":[\"\\\"README.md\\\"\",\"\\\"leading-only\",\"README.md\",\"index.html\"],\"changed\":[],\"deleted\":[]},\"limits\":{\"max_bytes\":104857600,\"max_files\":2000}}\n",
+        "stderr": "",
+        "exit_code": 0
+      },
+      {
+        "command": [
+          "/private/tmp/html-publish-quote-cli.YayKgg/venv/bin/html-publish",
+          "--config",
+          "/private/tmp/html-publish-quote-cli.YayKgg/config.json",
+          "--json",
+          "plan",
+          "--name",
+          "quote-proof",
+          "--source",
+          "/private/tmp/html-publish-quote-cli.YayKgg/site",
+          "--target",
+          "http://127.0.0.1:56784/"
+        ],
+        "stdout": "{\"schema_version\":1,\"operation\":\"plan\",\"request_id\":null,\"outcome\":\"planned\",\"target\":\"http://127.0.0.1:56784/\",\"name\":\"quote-proof\",\"url\":\"http://127.0.0.1:56784/quote-proof/\",\"expected_revision\":null,\"requested_revision\":\"68c2d1a899a97f6aa85d1b71010fab78ac620252\",\"archived_revision\":null,\"archive_commit\":null,\"active_revision\":null,\"effects\":{\"archive_advanced\":false,\"activated\":false},\"verification\":{\"result\":\"not_checked\",\"revision\":null,\"checked_at\":null,\"probe_location\":null,\"files_checked\":0,\"bytes_checked\":0,\"scope\":[],\"detail\":null},\"warnings\":[],\"error\":null,\"observation\":{\"saved\":null,\"selection\":{\"state\":\"absent\",\"revision\":null,\"integrity_checked\":false,\"detail\":null}},\"prediction\":\"create\",\"file_count\":4,\"byte_count\":78,\"differences\":{\"added\":[\"\\\"README.md\\\"\",\"\\\"leading-only\",\"README.md\",\"index.html\"],\"changed\":[],\"deleted\":[]},\"limits\":{\"max_bytes\":104857600,\"max_files\":2000}}\n",
+        "stderr": "",
+        "exit_code": 0
+      },
+      {
+        "command": [
+          "/private/tmp/html-publish-quote-cli.YayKgg/venv/bin/html-publish",
+          "--config",
+          "/private/tmp/html-publish-quote-cli.YayKgg/config.json",
+          "--json",
+          "plan",
+          "--name",
+          "quote-proof",
+          "--source",
+          "/private/tmp/html-publish-quote-cli.YayKgg/site",
+          "--target",
+          "http://127.0.0.1:56784/"
+        ],
+        "stdout": "{\"schema_version\":1,\"operation\":\"plan\",\"request_id\":null,\"outcome\":\"planned\",\"target\":\"http://127.0.0.1:56784/\",\"name\":\"quote-proof\",\"url\":\"http://127.0.0.1:56784/quote-proof/\",\"expected_revision\":null,\"requested_revision\":\"1c8ff085f89ecd7bcce968425893af89e0da9d6695980a8de324b820351864cc\",\"archived_revision\":null,\"archive_commit\":null,\"active_revision\":null,\"effects\":{\"archive_advanced\":false,\"activated\":false},\"verification\":{\"result\":\"not_checked\",\"revision\":null,\"checked_at\":null,\"probe_location\":null,\"files_checked\":0,\"bytes_checked\":0,\"scope\":[],\"detail\":null},\"warnings\":[],\"error\":null,\"observation\":{\"saved\":null,\"selection\":{\"state\":\"absent\",\"revision\":null,\"integrity_checked\":false,\"detail\":null}},\"prediction\":\"create\",\"file_count\":4,\"byte_count\":78,\"differences\":{\"added\":[\"\\\"README.md\\\"\",\"\\\"leading-only\",\"README.md\",\"index.html\"],\"changed\":[],\"deleted\":[]},\"limits\":{\"max_bytes\":104857600,\"max_files\":2000}}\n",
+        "stderr": "",
+        "exit_code": 0
+      },
+      {
+        "command": [
+          "/private/tmp/html-publish-quote-cli.YayKgg/venv/bin/html-publish",
+          "--config",
+          "/private/tmp/html-publish-quote-cli.YayKgg/config.json",
+          "--json",
+          "plan",
+          "--name",
+          "quote-proof",
+          "--source",
+          "/private/tmp/html-publish-quote-cli.YayKgg/site",
+          "--target",
+          "http://127.0.0.1:56784/"
+        ],
+        "stdout": "{\"schema_version\":1,\"operation\":\"plan\",\"request_id\":null,\"outcome\":\"planned\",\"target\":\"http://127.0.0.1:56784/\",\"name\":\"quote-proof\",\"url\":\"http://127.0.0.1:56784/quote-proof/\",\"expected_revision\":null,\"requested_revision\":\"617adcdc631d91d664f534e7b16805ded35858b695c27d93dc9ebf0610af6956\",\"archived_revision\":null,\"archive_commit\":null,\"active_revision\":null,\"effects\":{\"archive_advanced\":false,\"activated\":false},\"verification\":{\"result\":\"not_checked\",\"revision\":null,\"checked_at\":null,\"probe_location\":null,\"files_checked\":0,\"bytes_checked\":0,\"scope\":[],\"detail\":null},\"warnings\":[],\"error\":null,\"observation\":{\"saved\":null,\"selection\":{\"state\":\"absent\",\"revision\":null,\"integrity_checked\":false,\"detail\":null}},\"prediction\":\"create\",\"file_count\":4,\"byte_count\":78,\"differences\":{\"added\":[\"\\\"README.md\\\"\",\"\\\"leading-only\",\"README.md\",\"index.html\"],\"changed\":[],\"deleted\":[]},\"limits\":{\"max_bytes\":104857600,\"max_files\":2000}}\n",
+        "stderr": "",
+        "exit_code": 0
+      },
+      {
+        "command": [
+          "/private/tmp/html-publish-quote-cli.YayKgg/venv/bin/html-publish",
+          "--config",
+          "/private/tmp/html-publish-quote-cli.YayKgg/config.json",
+          "--json",
+          "publish",
+          "--name",
+          "quote-proof",
+          "--source",
+          "/private/tmp/html-publish-quote-cli.YayKgg/site",
+          "--target",
+          "http://127.0.0.1:56784/",
+          "--request-id",
+          "mac-quote-proof"
+        ],
+        "stdout": "{\"schema_version\":1,\"operation\":\"publish\",\"request_id\":\"mac-quote-proof\",\"outcome\":\"published\",\"target\":\"http://127.0.0.1:56784/\",\"name\":\"quote-proof\",\"url\":\"http://127.0.0.1:56784/quote-proof/\",\"expected_revision\":null,\"requested_revision\":\"617adcdc631d91d664f534e7b16805ded35858b695c27d93dc9ebf0610af6956\",\"archived_revision\":\"617adcdc631d91d664f534e7b16805ded35858b695c27d93dc9ebf0610af6956\",\"archive_commit\":\"d4dcab98cbfa405d6296238f00bd2588302c2f361f9db0db61095d332d3deb1e\",\"active_revision\":\"617adcdc631d91d664f534e7b16805ded35858b695c27d93dc9ebf0610af6956\",\"effects\":{\"archive_advanced\":true,\"activated\":true},\"verification\":{\"result\":\"passed\",\"revision\":\"617adcdc631d91d664f534e7b16805ded35858b695c27d93dc9ebf0610af6956\",\"checked_at\":\"2026-09-22T21:38:10.782094+00:00\",\"probe_location\":\"host\",\"files_checked\":4,\"bytes_checked\":118,\"scope\":[\"local_export\",\"directory_url\",\"index_html\",\"all_files\",\"missing_path\"],\"detail\":null},\"warnings\":[],\"error\":null,\"observation\":{\"saved\":{\"revision\":\"617adcdc631d91d664f534e7b16805ded35858b695c27d93dc9ebf0610af6956\",\"archive_commit\":\"d4dcab98cbfa405d6296238f00bd2588302c2f361f9db0db61095d332d3deb1e\"},\"selection\":{\"state\":\"selected\",\"revision\":\"617adcdc631d91d664f534e7b16805ded35858b695c27d93dc9ebf0610af6956\",\"integrity_checked\":true,\"detail\":null}}}\n",
+        "stderr": "",
+        "exit_code": 0
+      },
+      {
+        "command": [
+          "/private/tmp/html-publish-quote-cli.YayKgg/venv/bin/html-publish",
+          "--config",
+          "/private/tmp/html-publish-quote-cli.YayKgg/config.json",
+          "--json",
+          "verify",
+          "--name",
+          "quote-proof"
+        ],
+        "stdout": "{\"schema_version\":1,\"operation\":\"verify\",\"request_id\":null,\"outcome\":\"verified\",\"target\":\"http://127.0.0.1:56784/\",\"name\":\"quote-proof\",\"url\":\"http://127.0.0.1:56784/quote-proof/\",\"expected_revision\":null,\"requested_revision\":null,\"archived_revision\":\"617adcdc631d91d664f534e7b16805ded35858b695c27d93dc9ebf0610af6956\",\"archive_commit\":\"d4dcab98cbfa405d6296238f00bd2588302c2f361f9db0db61095d332d3deb1e\",\"active_revision\":\"617adcdc631d91d664f534e7b16805ded35858b695c27d93dc9ebf0610af6956\",\"effects\":{\"archive_advanced\":false,\"activated\":false},\"verification\":{\"result\":\"passed\",\"revision\":\"617adcdc631d91d664f534e7b16805ded35858b695c27d93dc9ebf0610af6956\",\"checked_at\":\"2026-09-22T21:38:10.994162+00:00\",\"probe_location\":\"host\",\"files_checked\":4,\"bytes_checked\":118,\"scope\":[\"local_export\",\"directory_url\",\"index_html\",\"all_files\",\"missing_path\"],\"detail\":null},\"warnings\":[],\"error\":null,\"observation\":{\"saved\":{\"revision\":\"617adcdc631d91d664f534e7b16805ded35858b695c27d93dc9ebf0610af6956\",\"archive_commit\":\"d4dcab98cbfa405d6296238f00bd2588302c2f361f9db0db61095d332d3deb1e\"},\"selection\":{\"state\":\"selected\",\"revision\":\"617adcdc631d91d664f534e7b16805ded35858b695c27d93dc9ebf0610af6956\",\"integrity_checked\":true,\"detail\":null}}}\n",
+        "stderr": "",
+        "exit_code": 0
+      },
+      {
+        "command": [
+          "/private/tmp/html-publish-quote-cli.YayKgg/venv/bin/html-publish",
+          "--config",
+          "/private/tmp/html-publish-quote-cli.YayKgg/config.json",
+          "--json",
+          "status",
+          "--name",
+          "quote-proof"
+        ],
+        "stdout": "{\"schema_version\":1,\"operation\":\"status\",\"request_id\":null,\"outcome\":\"observed\",\"target\":\"http://127.0.0.1:56784/\",\"name\":\"quote-proof\",\"url\":\"http://127.0.0.1:56784/quote-proof/\",\"expected_revision\":null,\"requested_revision\":null,\"archived_revision\":\"617adcdc631d91d664f534e7b16805ded35858b695c27d93dc9ebf0610af6956\",\"archive_commit\":\"d4dcab98cbfa405d6296238f00bd2588302c2f361f9db0db61095d332d3deb1e\",\"active_revision\":\"617adcdc631d91d664f534e7b16805ded35858b695c27d93dc9ebf0610af6956\",\"effects\":{\"archive_advanced\":false,\"activated\":false},\"verification\":{\"result\":\"not_checked\",\"revision\":null,\"checked_at\":null,\"probe_location\":null,\"files_checked\":0,\"bytes_checked\":0,\"scope\":[],\"detail\":null},\"warnings\":[],\"error\":null,\"observation\":{\"saved\":{\"revision\":\"617adcdc631d91d664f534e7b16805ded35858b695c27d93dc9ebf0610af6956\",\"archive_commit\":\"d4dcab98cbfa405d6296238f00bd2588302c2f361f9db0db61095d332d3deb1e\"},\"selection\":{\"state\":\"selected\",\"revision\":\"617adcdc631d91d664f534e7b16805ded35858b695c27d93dc9ebf0610af6956\",\"integrity_checked\":false,\"detail\":null}}}\n",
+        "stderr": "",
+        "exit_code": 0
+      }
+    ],
+    "served": {
+      "index.html": {
+        "status": 200,
+        "url": "http://127.0.0.1:56784/quote-proof/index.html",
+        "body_hex": "3c21646f63747970652068746d6c3e3c68313e6d61632071756f74656420706174683c2f68313e0a"
+      },
+      "README.md": {
+        "status": 200,
+        "url": "http://127.0.0.1:56784/quote-proof/README.md",
+        "body_hex": "756e71756f7465642066696c650a"
+      },
+      "\"README.md\"": {
+        "status": 200,
+        "url": "http://127.0.0.1:56784/quote-proof/%22README.md%22",
+        "body_hex": "71756f74656420420a"
+      },
+      "\"leading-only": {
+        "status": 200,
+        "url": "http://127.0.0.1:56784/quote-proof/%22leading-only",
+        "body_hex": "006c656164696e672071756f74650a"
+      }
+    },
+    "directory_status": 200,
+    "redirect_status": 301,
+    "missing_status": 404
+  }
+}
