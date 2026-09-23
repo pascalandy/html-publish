@@ -298,7 +298,7 @@ def _output_map(source_paths: tuple[str, ...], entry_path: str) -> dict[str, str
         output_keys[output_key] = source_path
         result[source_path] = normalized_output
 
-    for output_path, source_path in result.items():
+    for source_path, output_path in result.items():
         parts = PurePosixPath(output_path).parts
         for index in range(1, len(parts)):
             parent = PurePosixPath(*parts[:index]).as_posix().casefold()
@@ -491,8 +491,7 @@ def _rewrite_inline(
             src = src_value if isinstance(src_value, str) else ""
             result = _resolve_url(src, source_path, output_path, source_to_output)
             if result is None:
-                alt_value = token.attrGet("alt")
-                alt = alt_value if isinstance(alt_value, str) else ""
+                alt = _image_alt(token)
                 rewritten.append(Token("text", "", 0, content=alt))
                 _warning(
                     warnings,
@@ -504,7 +503,7 @@ def _rewrite_inline(
             else:
                 token.attrSet("src", result)
                 rewritten.append(token)
-        elif token.type == "text" and not any(link_stack):
+        elif token.type == "text" and not link_stack:
             rewritten.extend(
                 _rewrite_wikilinks(
                     token.content,
@@ -518,6 +517,19 @@ def _rewrite_inline(
         else:
             rewritten.append(token)
     return rewritten
+
+
+def _image_alt(token: Token) -> str:
+    if token.children is None:
+        return ""
+    return "".join(
+        child.content
+        if child.type in {"text", "code_inline"}
+        else "\n"
+        if child.type in {"softbreak", "hardbreak"}
+        else ""
+        for child in token.children
+    )
 
 
 def _resolve_url(
@@ -607,7 +619,11 @@ def _rewrite_wikilinks(
                 decoded += ".md"
             candidate = posixpath.normpath(posixpath.join(parent, decoded))
             expected_path = candidate
-            within_root = candidate != ".." and not candidate.startswith("../")
+            within_root = (
+                not candidate.startswith("/")
+                and candidate != ".."
+                and not candidate.startswith("../")
+            )
             if within_root:
                 if candidate in markdown_paths:
                     target_path = candidate

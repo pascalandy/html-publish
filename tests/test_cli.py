@@ -585,7 +585,9 @@ class PublisherCliTest(unittest.TestCase):
             "```python\nprint('static')\n```\n\n"
             "| Name | Value |\n| --- | --- |\n| Item | 1 |\n\n"
             "[Next](nested/guide.md?view=full#next), [[nested/guide|Guide]], and [[guide]].\n\n"
-            "![Diagram](assets/diagram.svg)\n\n<script>alert(1)</script>\n"
+            "[Nested [[guide]]](nested/guide.md)\n\n"
+            "![Diagram](assets/diagram.svg) and ![Useful **description**](missing.png).\n\n"
+            "<script>alert(1)</script>\n"
         )
         (source / "nested" / "guide.md").write_text("# Guide\n\n## Next\n\nNext section.\n")
         (source / "assets" / "diagram.svg").write_text(
@@ -616,7 +618,13 @@ class PublisherCliTest(unittest.TestCase):
         self.assertIn('href="nested/guide.html?view=full#next"', index)
         self.assertIn('href="nested/guide.html">Guide</a>', index)
         self.assertIn('href="nested/guide.html">guide</a>', index)
+        self.assertIn(
+            '<a href="nested/guide.html">Nested [[guide]]</a>',
+            index,
+        )
         self.assertIn('src="assets/diagram.svg"', index)
+        self.assertIn("Useful description", index)
+        self.assertEqual(payload["warnings"], ["unresolved_markdown_image"])
         self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", index)
         self.assertNotIn("<script>alert(1)</script>", index)
         self.assertNotIn("this stays private", index)
@@ -664,6 +672,60 @@ class PublisherCliTest(unittest.TestCase):
             self.runtime / "releases" / payload["requested_revision"] / "index.html"
         ).read_text()
         self.assertIn("<p>[[guide]]</p>", index)
+
+    def test_markdown_encoded_absolute_wikilink_stays_unresolved(self) -> None:
+        source = self.root / "absolute-wiki"
+        source.mkdir()
+        (source / "index.md").write_text("# Wiki\n\n[[%2Foutside%2Fguide.md]]\n")
+        (source / "guide.md").write_text("# Local guide\n")
+
+        result = self.run_cli(
+            "publish",
+            "--name",
+            "absolute-wiki",
+            "--source",
+            str(source),
+            "--format",
+            "markdown",
+            "--target",
+            self.base_url,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = self.payload(result)
+        self.assertIn("unresolved_wikilink", payload["warnings"])
+        index = (
+            self.runtime / "releases" / payload["requested_revision"] / "index.html"
+        ).read_text()
+        self.assertIn("[[%2Foutside%2Fguide.md]]", index)
+        self.assertNotIn('href="guide.html"', index)
+
+    def test_markdown_entry_remap_does_not_confuse_source_prefix_with_output_prefix(self) -> None:
+        source = self.root / "output-prefix"
+        (source / "x.html").mkdir(parents=True)
+        (source / "x.html" / "README.md").write_text("# Entry\n")
+        (source / "x.md").write_text("# Companion\n")
+
+        result = self.run_cli(
+            "publish",
+            "--name",
+            "output-prefix",
+            "--source",
+            str(source),
+            "--format",
+            "markdown",
+            "--entry",
+            "x.html/README.md",
+            "--target",
+            self.base_url,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = self.payload(result)
+        output_root = self.runtime / "releases" / payload["requested_revision"]
+        self.assertEqual({path.name for path in output_root.iterdir()}, {"index.html", "x.html"})
+        self.assertIn("Entry", (output_root / "index.html").read_text())
+        self.assertIn("Companion", (output_root / "x.html").read_text())
 
     def test_markdown_single_file_publishes_as_index_and_keeps_original_name_private(self) -> None:
         source = self.root / "article.md"
