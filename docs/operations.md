@@ -325,7 +325,7 @@ Return to the reviewed checkout with the same `html-publish-install --source ...
 
 ## Known limits
 
-- User linger was enabled separately on 2026-09-22 after the installed preservation checks. A later user reboot produced bounded postboot startup and delivery evidence. No observer captured the outage or recovery. See the [postboot evidence](evidence/deployment/2026-09-22-om1-installed.md#postboot-evidence-after-user-reboot)
+- User linger was enabled separately on 2026-09-22 after the installed preservation checks. A later user reboot produced [bounded postboot startup and delivery evidence](evidence/deployment/2026-09-22-om1-installed.md#successful-postboot-checks-after-user-reboot). The [expired recorder attempt](evidence/deployment/2026-09-22-om1-installed.md#expired-recorder-attempt) captured neither the outage nor the recovery
 - A lost SSH connection can leave its private `incoming` directory for operator inspection. The client deadline cannot prove that remote publication stopped
 - Application rollback changes the application release pointer; it does not restore publication content. Publication restore is available through the installed CLI
 - Remote backup and the browser and second-device fault matrices remain deferred. Browser and second-device success transitions are recorded. Controlled SSH and SCP fixtures cover transport failures and timeouts, and separate private stores cover installed-executable faults
