@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish HTML through the existing publisher with a durable caller receipt."""
+"""Publish HTML or rendered Markdown through the existing publisher and receipt."""
 
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ from html_publish.configuration import (
 from html_publish.configuration import (
     ClientLimits as Limits,
 )
+from html_publish.markdown import RENDER_PROFILE_ID
 from html_publish.model import PublishError
 
 DEFAULT_CONFIG = Path("~/.config/html-publish/client.json").expanduser()
@@ -92,6 +93,7 @@ class Expectation:
     kind: Literal["accepted", "reviewed"]
     revision: str | None
     replaces_attempt: str | None
+    record_revision: str | None = None
 
 
 @dataclass(frozen=True)
@@ -108,6 +110,9 @@ class PublishIntent:
     id: str
     expectation: Expectation
     input: FrozenInput
+    input_format: Literal["html", "markdown"] = "html"
+    entry: str | None = None
+    render_profile_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -140,6 +145,9 @@ class Observation:
     active_revision: str | None
     verification: str | None
     error_code: str | None
+    expected_record_revision: str | None = None
+    requested_record_revision: str | None = None
+    archived_record_revision: str | None = None
 
 
 @dataclass(frozen=True)
@@ -151,12 +159,13 @@ class Completion:
 
 @dataclass(frozen=True)
 class Receipt:
-    version: Literal[1, 2]
+    version: Literal[1, 2, 3]
     binding: Binding
     accepted_revision: str | None
     pending: Pending | None
     last_observation: Observation | None
     completion: Completion | None
+    accepted_record_revision: str | None = None
 
 
 @dataclass(frozen=True)
@@ -308,12 +317,27 @@ def load_config(path: Path, command_seconds: float | None = None) -> ClientConfi
 
 def receipt_dict(receipt: Receipt) -> dict[str, object]:
     raw = cast(dict[str, object], dataclasses.asdict(receipt))
-    if receipt.version == 2 and receipt.pending is not None:
+    if receipt.pending is not None:
         pending = cast(dict[str, object], raw["pending"])
         intent = cast(dict[str, object], pending["intent"])
-        intent["operation"] = (
-            "publish" if isinstance(receipt.pending.intent, PublishIntent) else "restore"
-        )
+        if receipt.version >= 2:
+            intent["operation"] = (
+                "publish" if isinstance(receipt.pending.intent, PublishIntent) else "restore"
+            )
+        if receipt.version < 3:
+            expectation = cast(dict[str, object], intent["expectation"])
+            expectation.pop("record_revision", None)
+            if isinstance(receipt.pending.intent, PublishIntent):
+                intent.pop("input_format", None)
+                intent.pop("entry", None)
+                intent.pop("render_profile_id", None)
+    if receipt.version < 3:
+        raw.pop("accepted_record_revision", None)
+        if raw.get("last_observation") is not None:
+            observation = cast(dict[str, object], raw["last_observation"])
+            observation.pop("expected_record_revision", None)
+            observation.pop("requested_record_revision", None)
+            observation.pop("archived_record_revision", None)
     return raw
 
 
@@ -330,9 +354,12 @@ def _parse_target(value: object) -> TargetIdentity:
     return TargetIdentity(cast(ExecutorKind, kind), host, base_url)
 
 
-def _parse_expectation(value: object) -> Expectation:
+def _parse_expectation(value: object, version: int) -> Expectation:
     raw = _object(value, "pending.intent.expectation")
-    if set(raw) != {"kind", "revision", "replaces_attempt"}:
+    expected_fields = {"kind", "revision", "replaces_attempt"}
+    if version >= 3:
+        expected_fields.add("record_revision")
+    if set(raw) != expected_fields:
         raise ReceiptFailure(
             "invalid_state", "pending expectation has unexpected fields", "inspect"
         )
@@ -340,6 +367,9 @@ def _parse_expectation(value: object) -> Expectation:
     if kind not in {"accepted", "reviewed"}:
         raise ReceiptFailure("invalid_state", "pending expectation kind is invalid", "inspect")
     revision = _optional_revision(raw.get("revision"), "pending expectation revision")
+    record_revision = _optional_revision(
+        raw.get("record_revision"), "pending expectation record_revision"
+    )
     replaces = raw.get("replaces_attempt")
     if replaces is not None and (not isinstance(replaces, str) or not replaces):
         raise ReceiptFailure("invalid_state", "replaces_attempt is invalid", "inspect")
@@ -349,7 +379,9 @@ def _parse_expectation(value: object) -> Expectation:
         )
     if kind == "reviewed" and revision is None:
         raise ReceiptFailure("invalid_state", "reviewed expectation requires a revision", "inspect")
-    return Expectation(cast(Literal["accepted", "reviewed"], kind), revision, replaces)
+    return Expectation(
+        cast(Literal["accepted", "reviewed"], kind), revision, replaces, record_revision
+    )
 
 
 def _parse_frozen(value: object) -> FrozenInput:
@@ -376,11 +408,17 @@ def _parse_frozen(value: object) -> FrozenInput:
     )
 
 
-def _parse_observation(value: object) -> Observation | None:
+def _parse_observation(value: object, version: int) -> Observation | None:
     if value is None:
         return None
     raw = _object(value, "last_observation")
     expected = {field.name for field in dataclasses.fields(Observation)}
+    if version < 3:
+        expected -= {
+            "expected_record_revision",
+            "requested_record_revision",
+            "archived_record_revision",
+        }
     if set(raw) != expected:
         raise ReceiptFailure("invalid_state", "last_observation has unexpected fields", "inspect")
     return Observation(
@@ -395,6 +433,9 @@ def _parse_observation(value: object) -> Observation | None:
         cast(str | None, raw["active_revision"]),
         cast(str | None, raw["verification"]),
         cast(str | None, raw["error_code"]),
+        cast(str | None, raw.get("expected_record_revision")),
+        cast(str | None, raw.get("requested_record_revision")),
+        cast(str | None, raw.get("archived_record_revision")),
     )
 
 
@@ -416,18 +457,21 @@ def _parse_completion(value: object) -> Completion | None:
 
 def parse_receipt(value: object) -> Receipt:
     raw = _object(value, "receipt")
-    if set(raw) != {
+    expected_top_fields = {
         "version",
         "binding",
         "accepted_revision",
         "pending",
         "last_observation",
         "completion",
-    }:
+    }
+    if raw.get("version") == 3:
+        expected_top_fields.add("accepted_record_revision")
+    if set(raw) != expected_top_fields:
         raise ReceiptFailure("invalid_state", "receipt has unexpected fields", "inspect")
     version = raw.get("version")
-    if type(version) is not int or version not in (1, 2):
-        raise ReceiptFailure("invalid_state", "receipt version must be 1 or 2", "inspect")
+    if type(version) is not int or version not in (1, 2, 3):
+        raise ReceiptFailure("invalid_state", "receipt version must be 1, 2, or 3", "inspect")
     binding_raw = _object(raw.get("binding"), "binding")
     if set(binding_raw) != {"association_id", "name", "target", "config_fingerprint"}:
         raise ReceiptFailure("invalid_state", "binding has unexpected fields", "inspect")
@@ -444,10 +488,22 @@ def parse_receipt(value: object) -> Receipt:
         if set(pending_object) != {"intent", "dispatch_generation", "state"}:
             raise ReceiptFailure("invalid_state", "pending has unexpected fields", "inspect")
         intent_raw = _object(pending_object.get("intent"), "pending.intent")
-        operation = intent_raw.get("operation", "publish") if version == 2 else "publish"
+        operation = intent_raw.get("operation", "publish") if version >= 2 else "publish"
         expected_fields = (
             {"id", "expectation", "input"}
             if version == 1
+            else {
+                "id",
+                "expectation",
+                "input",
+                "operation",
+                "input_format",
+                "entry",
+                "render_profile_id",
+            }
+            if version == 3 and operation == "publish"
+            else {"id", "expectation", "archive_commit", "operation"}
+            if version == 3
             else {"id", "expectation", "input", "operation"}
             if operation == "publish"
             else {"id", "expectation", "archive_commit", "operation"}
@@ -458,10 +514,34 @@ def parse_receipt(value: object) -> Receipt:
         state = pending_object.get("state")
         if state not in {"uncertain", "retryable", "conflict"}:
             raise ReceiptFailure("invalid_state", "pending.state is invalid", "inspect")
-        expectation = _parse_expectation(intent_raw.get("expectation"))
+        expectation = _parse_expectation(intent_raw.get("expectation"), version)
         if operation == "publish":
+            input_format = intent_raw.get("input_format", "html")
+            entry = intent_raw.get("entry")
+            profile = intent_raw.get("render_profile_id")
+            if input_format not in {"html", "markdown"}:
+                raise ReceiptFailure("invalid_state", "pending input format is invalid", "inspect")
+            if entry is not None and not isinstance(entry, str):
+                raise ReceiptFailure("invalid_state", "pending entry is invalid", "inspect")
+            if profile is not None and not isinstance(profile, str):
+                raise ReceiptFailure(
+                    "invalid_state", "pending render profile is invalid", "inspect"
+                )
+            if version == 3 and (
+                (input_format == "markdown" and not profile)
+                or (input_format == "html" and (entry is not None or profile is not None))
+                or (input_format == "html" and expectation.record_revision is not None)
+            ):
+                raise ReceiptFailure(
+                    "invalid_state", "pending Markdown identity is invalid", "inspect"
+                )
             intent: Intent = PublishIntent(
-                attempt_id, expectation, _parse_frozen(intent_raw.get("input"))
+                attempt_id,
+                expectation,
+                _parse_frozen(intent_raw.get("input")),
+                cast(Literal["html", "markdown"], input_format),
+                entry,
+                profile,
             )
         else:
             commit = _string(intent_raw.get("archive_commit"), "pending.intent.archive_commit")
@@ -486,8 +566,9 @@ def parse_receipt(value: object) -> Receipt:
         ),
         _optional_revision(raw.get("accepted_revision"), "accepted_revision"),
         pending,
-        _parse_observation(raw.get("last_observation")),
+        _parse_observation(raw.get("last_observation"), version),
         _parse_completion(raw.get("completion")),
+        _optional_revision(raw.get("accepted_record_revision"), "accepted_record_revision"),
     )
 
 
@@ -798,6 +879,8 @@ def freeze_input(
     attempt_id: str,
     limits: Limits,
     command_budget: CommandBudget | None = None,
+    *,
+    keep_file_name: bool = False,
 ) -> FrozenInput:
     if command_budget is not None:
         command_budget.remaining()
@@ -834,6 +917,8 @@ def freeze_input(
     )
     try:
         if stat.S_ISREG(source_info.st_mode):
+            if keep_file_name:
+                input_path = temporary / source.name
             _copy_regular(source, input_path, "", digest, budget)
             kind: InputKind = "file"
         else:
@@ -848,7 +933,7 @@ def freeze_input(
         shutil.rmtree(temporary, ignore_errors=True)
         raise
     return FrozenInput(
-        str(final_attempt.relative_to(receipt_dir) / "input"),
+        str(final_attempt.relative_to(receipt_dir) / input_path.name),
         kind,
         digest.hexdigest(),
         budget.files,
@@ -946,6 +1031,10 @@ def _executor_command(
     expected_revision: str | None = None,
     request_id: str | None = None,
     archive_commit: str | None = None,
+    input_format: Literal["html", "markdown"] = "html",
+    entry: str | None = None,
+    expected_record_revision: str | None = None,
+    expected_render_profile_id: str | None = None,
 ) -> list[str]:
     executor = config.executor
     command = list(executor.command)
@@ -969,6 +1058,12 @@ def _executor_command(
         if operation == "publish":
             assert source is not None
             command.extend(["--source", str(source)])
+            if input_format == "markdown":
+                command.extend(["--format", "markdown"])
+                if entry is not None:
+                    command.extend(["--entry", entry])
+                if expected_render_profile_id is not None:
+                    command.extend(["--expected-render-profile-id", expected_render_profile_id])
         else:
             assert archive_commit is not None
             command.extend(["--archive-commit", archive_commit])
@@ -976,6 +1071,8 @@ def _executor_command(
             command.extend(["--target", config.target.base_url])
         if expected_revision is not None:
             command.extend(["--expected-revision", expected_revision])
+        if expected_record_revision is not None:
+            command.extend(["--expected-record-revision", expected_record_revision])
         command.extend(["--request-id", request_id])
     return command
 
@@ -1360,6 +1457,9 @@ def observation_from(payload: Mapping[str, object]) -> Observation:
         _payload_string(payload, "active_revision"),
         _verification_result(payload),
         _error_code(payload),
+        _payload_string(payload, "expected_record_revision"),
+        _payload_string(payload, "requested_record_revision"),
+        _payload_string(payload, "archived_record_revision"),
     )
 
 
@@ -1387,12 +1487,27 @@ def reduce_result(receipt: Receipt, result: SavedResult) -> Classification:
         )
 
     expected = pending.intent.expectation.revision
+    record_aware = isinstance(pending.intent, RestoreIntent) or (
+        receipt.version >= 3 and pending.intent.input_format == "markdown"
+    )
+    expected_record = pending.intent.expectation.record_revision
     schema = payload.get("schema_version")
     operation = _payload_string(payload, "operation")
     request_id = _payload_string(payload, "request_id")
     target = _payload_string(payload, "target")
     name = _payload_string(payload, "name")
     reported_expected = payload.get("expected_revision")
+    profile_mismatch = (
+        isinstance(pending.intent, PublishIntent)
+        and pending.intent.input_format == "markdown"
+        and payload.get("render_profile_id") != pending.intent.render_profile_id
+        and payload.get("outcome") == "error"
+        and isinstance(payload.get("error"), dict)
+        and cast(dict[str, object], payload["error"]).get("code") == "unsupported_render_profile"
+        and isinstance(payload.get("effects"), dict)
+        and cast(dict[str, object], payload["effects"]).get("archive_advanced") is False
+        and cast(dict[str, object], payload["effects"]).get("activated") is False
+    )
     correlated = (
         schema == 1
         and operation == ("publish" if isinstance(pending.intent, PublishIntent) else "restore")
@@ -1400,6 +1515,13 @@ def reduce_result(receipt: Receipt, result: SavedResult) -> Classification:
         and target == receipt.binding.target.base_url
         and name == receipt.binding.name
         and reported_expected == expected
+        and (not record_aware or payload.get("expected_record_revision") == expected_record)
+        and (
+            profile_mismatch
+            or not isinstance(pending.intent, PublishIntent)
+            or pending.intent.input_format != "markdown"
+            or payload.get("render_profile_id") == pending.intent.render_profile_id
+        )
     )
     if not correlated:
         return Classification(receipt, "rejected", "Publisher result failed receipt correlation")
@@ -1426,6 +1548,15 @@ def reduce_result(receipt: Receipt, result: SavedResult) -> Classification:
 
     observation = observation_from(payload)
     requested = observation.requested_revision
+    requested_record = observation.requested_record_revision
+    archived_record = observation.archived_record_revision
+    classification_receipt = (
+        dataclasses.replace(receipt, version=3)
+        if isinstance(pending.intent, RestoreIntent)
+        and receipt.version < 3
+        and (requested_record is not None or archived_record is not None)
+        else receipt
+    )
     active = observation.active_revision
     verification = observation.verification
     effects = payload.get("effects")
@@ -1446,6 +1577,7 @@ def reduce_result(receipt: Receipt, result: SavedResult) -> Classification:
         and not result.cancelled
     )
     verification_payload = payload.get("verification")
+    record_identity_matches = not record_aware or requested_record == archived_record
     same_revision_success = (
         process_finished
         and result.exit_code == 0
@@ -1454,17 +1586,55 @@ def reduce_result(receipt: Receipt, result: SavedResult) -> Classification:
         and payload["error"] is None
         and requested is not None
         and requested == active
+        and record_identity_matches
         and verification == "passed"
         and isinstance(verification_payload, dict)
         and _object(cast(object, verification_payload), "verification").get("revision") == requested
     )
     completion = _completion(result)
-    qualifies_activation = requested is not None and activated and active == requested
+    qualifies_activation = (
+        requested is not None and activated and active == requested and record_identity_matches
+    )
+
+    def accepted_record() -> str | None:
+        if record_aware:
+            return (
+                requested_record
+                if same_revision_success
+                else classification_receipt.accepted_record_revision
+            )
+        if activated or effects_raw.get("archive_advanced") is True:
+            return archived_record
+        return classification_receipt.accepted_record_revision
+
+    qualifies_record_only = (
+        same_revision_success
+        and outcome == "published"
+        and requested is not None
+        and requested == active
+        and not activated
+        and effects_raw.get("archive_advanced") is True
+    )
+
+    if qualifies_record_only:
+        accepted = dataclasses.replace(
+            classification_receipt,
+            accepted_revision=requested,
+            accepted_record_revision=accepted_record(),
+            last_observation=observation,
+            completion=completion,
+        )
+        return Classification(
+            dataclasses.replace(accepted, pending=None),
+            "completed",
+            "The publisher archived and verified the source record for the active output",
+        )
 
     if qualifies_activation:
         accepted = dataclasses.replace(
-            receipt,
+            classification_receipt,
             accepted_revision=requested,
+            accepted_record_revision=accepted_record(),
             last_observation=observation,
             completion=completion,
         )
@@ -1490,7 +1660,7 @@ def reduce_result(receipt: Receipt, result: SavedResult) -> Classification:
         retryable = dataclasses.replace(pending, state="retryable")
         return Classification(
             dataclasses.replace(
-                receipt,
+                classification_receipt,
                 pending=retryable,
                 last_observation=observation,
                 completion=completion,
@@ -1502,8 +1672,9 @@ def reduce_result(receipt: Receipt, result: SavedResult) -> Classification:
     if outcome == "unchanged" and same_revision_success:
         return Classification(
             dataclasses.replace(
-                receipt,
+                classification_receipt,
                 accepted_revision=requested,
+                accepted_record_revision=accepted_record(),
                 pending=None,
                 last_observation=observation,
                 completion=completion,
@@ -1515,7 +1686,7 @@ def reduce_result(receipt: Receipt, result: SavedResult) -> Classification:
         conflict = dataclasses.replace(pending, state="conflict")
         return Classification(
             dataclasses.replace(
-                receipt,
+                classification_receipt,
                 pending=conflict,
                 last_observation=observation,
                 completion=completion,
@@ -1524,7 +1695,9 @@ def reduce_result(receipt: Receipt, result: SavedResult) -> Classification:
             "The host rejected the original expectation",
         )
     return Classification(
-        dataclasses.replace(receipt, last_observation=observation, completion=completion),
+        dataclasses.replace(
+            classification_receipt, last_observation=observation, completion=completion
+        ),
         "uncertain",
         "The correlated result does not prove activation or verified identity",
     )
@@ -1685,14 +1858,29 @@ def _handoff(
         "original_expectation": intent_pending.intent.expectation.revision
         if intent_pending
         else None,
+        "original_record_expectation": intent_pending.intent.expectation.record_revision
+        if intent_pending
+        else None,
         "requested_revision": observation.requested_revision if observation else None,
+        "requested_record_revision": observation.requested_record_revision if observation else None,
+        "archived_record_revision": observation.archived_record_revision if observation else None,
         "active_revision": observation.active_revision if observation else None,
         "accepted_revision": receipt.accepted_revision if receipt else None,
+        "accepted_record_revision": receipt.accepted_record_revision if receipt else None,
         "pending_state": visible_pending.state if visible_pending else None,
         "snapshot": str(receipt_dir / intent_pending.intent.input.path)
         if receipt_dir is not None
         and intent_pending
         and isinstance(intent_pending.intent, PublishIntent)
+        else None,
+        "input_format": intent_pending.intent.input_format
+        if intent_pending and isinstance(intent_pending.intent, PublishIntent)
+        else None,
+        "entry": intent_pending.intent.entry
+        if intent_pending and isinstance(intent_pending.intent, PublishIntent)
+        else None,
+        "render_profile_id": intent_pending.intent.render_profile_id
+        if intent_pending and isinstance(intent_pending.intent, PublishIntent)
         else None,
         "archive_commit": intent_pending.intent.archive_commit
         if intent_pending and isinstance(intent_pending.intent, RestoreIntent)
@@ -1739,6 +1927,16 @@ def _dispatch(
 ) -> DispatchResult:
     pending = receipt.pending
     assert pending is not None
+    if (
+        isinstance(pending.intent, PublishIntent)
+        and pending.intent.input_format == "markdown"
+        and pending.intent.render_profile_id != RENDER_PROFILE_ID
+    ):
+        raise ReceiptFailure(
+            "unsupported_render_profile",
+            "The frozen Markdown renderer profile is not available in this installation",
+            "use_compatible_renderer",
+        )
     source = (
         verify_snapshot(receipt_dir, pending.intent.input, config.limits, budget)
         if isinstance(pending.intent, PublishIntent)
@@ -1752,6 +1950,10 @@ def _dispatch(
         pending.intent.expectation.revision,
         pending.intent.id,
         pending.intent.archive_commit if isinstance(pending.intent, RestoreIntent) else None,
+        pending.intent.input_format if isinstance(pending.intent, PublishIntent) else "html",
+        pending.intent.entry if isinstance(pending.intent, PublishIntent) else None,
+        pending.intent.expectation.record_revision,
+        pending.intent.render_profile_id if isinstance(pending.intent, PublishIntent) else None,
     )
     process = _run_process(
         command,
@@ -1861,11 +2063,27 @@ def _new_pending(
     expectation: Expectation,
     limits: Limits,
     budget: CommandBudget | None = None,
+    input_format: Literal["html", "markdown"] = "html",
+    entry: str | None = None,
 ) -> Receipt:
     attempt_id = uuid.uuid4().hex
-    frozen = freeze_input(source, receipt_dir, attempt_id, limits, budget)
-    pending = Pending(PublishIntent(attempt_id, expectation, frozen), 1, "uncertain")
-    prepared = dataclasses.replace(receipt, pending=pending, completion=None)
+    frozen = freeze_input(
+        source,
+        receipt_dir,
+        attempt_id,
+        limits,
+        budget,
+        keep_file_name=input_format == "markdown",
+    )
+    profile_id = RENDER_PROFILE_ID if input_format == "markdown" else None
+    intent = PublishIntent(attempt_id, expectation, frozen, input_format, entry, profile_id)
+    pending = Pending(intent, 1, "uncertain")
+    prepared = dataclasses.replace(
+        receipt,
+        version=3 if input_format == "markdown" else receipt.version,
+        pending=pending,
+        completion=None,
+    )
     _write_receipt(receipt_dir, prepared)
     return prepared
 
@@ -1874,8 +2092,9 @@ def _reviewed_replacement(
     receipt: Receipt,
     reviewed_revision: str | None,
     replaces_attempt: str | None,
+    reviewed_record_revision: str | None = None,
 ) -> Expectation | None:
-    if reviewed_revision is None and replaces_attempt is None:
+    if reviewed_revision is None and replaces_attempt is None and reviewed_record_revision is None:
         return None
     if reviewed_revision is None or replaces_attempt is None:
         raise ReceiptFailure(
@@ -1897,11 +2116,29 @@ def _reviewed_replacement(
             "The reviewed revision does not match the stored conflict observation",
             "inspect_receipt",
         )
-    return Expectation("reviewed", reviewed_revision, replaces_attempt)
+    if (
+        reviewed_record_revision is not None
+        and observation.archived_record_revision != reviewed_record_revision
+    ):
+        raise ReceiptFailure(
+            "stale_review",
+            "The reviewed record revision does not match the stored conflict observation",
+            "inspect_receipt",
+        )
+    return Expectation("reviewed", reviewed_revision, replaces_attempt, reviewed_record_revision)
 
 
 def _publish(arguments: argparse.Namespace, config_path: Path, started_at: float) -> int:
     source = Path(arguments.source).expanduser().absolute()
+    input_format = cast(Literal["html", "markdown"], getattr(arguments, "input_format", "html"))
+    entry = getattr(arguments, "entry", None)
+    reviewed_record_revision = getattr(arguments, "reviewed_record_revision", None)
+    if input_format == "html" and (entry is not None or reviewed_record_revision is not None):
+        raise ReceiptFailure(
+            "invalid_format_option",
+            "--entry and --reviewed-record-revision require --format markdown",
+            "fix_arguments",
+        )
     receipt_dir = (
         Path(arguments.receipt).expanduser().absolute()
         if arguments.receipt
@@ -1967,6 +2204,16 @@ def _publish(arguments: argparse.Namespace, config_path: Path, started_at: float
                 f"Receipt already exists: {receipt_path}",
                 "use_existing_or_choose_receipt",
             )
+        if arguments.new is not None and (
+            arguments.reviewed_revision is not None
+            or arguments.replaces_attempt is not None
+            or reviewed_record_revision is not None
+        ):
+            raise ReceiptFailure(
+                "invalid_review",
+                "A new publication cannot use reviewed revision arguments",
+                "remove_review_arguments",
+            )
         if not creating:
             receipt = load_receipt(receipt_dir)
             _validate_binding(receipt, config)
@@ -1974,7 +2221,10 @@ def _publish(arguments: argparse.Namespace, config_path: Path, started_at: float
             receipt = recovery.receipt
             if receipt.pending is not None:
                 reviewed = _reviewed_replacement(
-                    receipt, arguments.reviewed_revision, arguments.replaces_attempt
+                    receipt,
+                    arguments.reviewed_revision,
+                    arguments.replaces_attempt,
+                    reviewed_record_revision,
                 )
                 if reviewed is None:
                     raise ReceiptFailure(
@@ -1982,30 +2232,81 @@ def _publish(arguments: argparse.Namespace, config_path: Path, started_at: float
                         f"Receipt has unresolved attempt {receipt.pending.intent.id}",
                         "retry_or_review",
                     )
+                if input_format == "markdown":
+                    observed_record = (
+                        receipt.last_observation.archived_record_revision
+                        if receipt.last_observation is not None
+                        else None
+                    )
+                    if observed_record is not None and reviewed_record_revision is None:
+                        raise ReceiptFailure(
+                            "record_review_required",
+                            "Replacing this Markdown attempt requires --reviewed-record-revision",
+                            "review_record",
+                        )
                 expectation = reviewed
             else:
                 if (
                     arguments.reviewed_revision is not None
                     or arguments.replaces_attempt is not None
+                    or (reviewed_record_revision is not None and receipt.version >= 3)
                 ):
                     raise ReceiptFailure(
                         "invalid_review",
                         "No stored conflict can be replaced",
                         "publish",
                     )
-                expectation = Expectation("accepted", receipt.accepted_revision, None)
+                accepted_record_revision = (
+                    receipt.accepted_record_revision if input_format == "markdown" else None
+                )
+                if input_format == "markdown" and receipt.version < 3:
+                    process, payload = _status_payload(receipt, config, budget)
+                    if process.exit_code != 0 or payload is None:
+                        raise ReceiptFailure(
+                            "record_observation_failed",
+                            "Could not inspect the saved record before upgrading this receipt",
+                            "inspect_target",
+                        )
+                    observation = observation_from(payload)
+                    archived_record = observation.archived_record_revision
+                    if archived_record is not None and reviewed_record_revision is None:
+                        raise ReceiptFailure(
+                            "record_review_required",
+                            "This legacy receipt has no accepted record revision; pass "
+                            "--reviewed-record-revision after reviewing the archived record",
+                            "review_record",
+                        )
+                    if reviewed_record_revision != archived_record:
+                        raise ReceiptFailure(
+                            "stale_review",
+                            "The reviewed record revision does not match the current archive",
+                            "review_record",
+                        )
+                    accepted_record_revision = archived_record
+                    receipt = dataclasses.replace(
+                        receipt,
+                        version=3,
+                        accepted_record_revision=accepted_record_revision,
+                        last_observation=observation,
+                    )
+                expectation = Expectation(
+                    "accepted",
+                    receipt.accepted_revision,
+                    None,
+                    accepted_record_revision,
+                )
         else:
             name = arguments.new or arguments.adopt
             assert name is not None
             receipt = Receipt(
-                1,
+                3 if input_format == "markdown" else 1,
                 Binding(uuid.uuid4().hex, name, config.target, config.fingerprint),
                 None,
                 None,
                 None,
                 None,
             )
-            expectation = Expectation("accepted", None, None)
+            expectation = Expectation("accepted", None, None, None)
             if arguments.adopt is not None:
                 if arguments.reviewed_revision is None or arguments.replaces_attempt is not None:
                     raise ReceiptFailure(
@@ -2027,12 +2328,53 @@ def _publish(arguments: argparse.Namespace, config_path: Path, started_at: float
                         "The reviewed revision does not match current status",
                         "review_status",
                     )
-                receipt = dataclasses.replace(receipt, last_observation=observation)
-                expectation = Expectation("reviewed", arguments.reviewed_revision, None)
+                reviewed_record = observation.archived_record_revision
+                if input_format == "markdown" and reviewed_record is not None:
+                    if reviewed_record_revision is None:
+                        raise ReceiptFailure(
+                            "record_review_required",
+                            "Adopting this Markdown page requires --reviewed-record-revision",
+                            "review_record",
+                        )
+                    if reviewed_record_revision != reviewed_record:
+                        raise ReceiptFailure(
+                            "stale_review",
+                            "The reviewed record revision does not match current status",
+                            "review_record",
+                        )
+                if input_format == "markdown" and reviewed_record_revision != reviewed_record:
+                    raise ReceiptFailure(
+                        "stale_review",
+                        "The reviewed record revision does not match current status",
+                        "review_record",
+                    )
+                receipt = dataclasses.replace(
+                    receipt,
+                    accepted_revision=arguments.reviewed_revision,
+                    accepted_record_revision=(
+                        reviewed_record if input_format == "markdown" else None
+                    ),
+                    last_observation=observation,
+                )
+                expectation = Expectation(
+                    "reviewed",
+                    arguments.reviewed_revision,
+                    None,
+                    reviewed_record if input_format == "markdown" else None,
+                )
 
         _mutation_output_preflight(config, receipt.binding.name)
 
-        prepared = _new_pending(source, receipt_dir, receipt, expectation, config.limits, budget)
+        prepared = _new_pending(
+            source,
+            receipt_dir,
+            receipt,
+            expectation,
+            config.limits,
+            budget,
+            input_format,
+            entry,
+        )
         return _finish_dispatch(
             "publish",
             receipt_dir,
@@ -2054,7 +2396,10 @@ def _restore(arguments: argparse.Namespace, config_path: Path, started_at: float
         receipt = _recover_saved_result(receipt_dir, receipt).receipt
         if receipt.pending is not None:
             reviewed = _reviewed_replacement(
-                receipt, arguments.reviewed_revision, arguments.replaces_attempt
+                receipt,
+                arguments.reviewed_revision,
+                arguments.replaces_attempt,
+                getattr(arguments, "reviewed_record_revision", None),
             )
             if reviewed is None:
                 raise ReceiptFailure(
@@ -2062,13 +2407,32 @@ def _restore(arguments: argparse.Namespace, config_path: Path, started_at: float
                     f"Receipt has unresolved attempt {receipt.pending.intent.id}",
                     "retry_or_review",
                 )
+            if (
+                receipt.last_observation is not None
+                and receipt.last_observation.archived_record_revision is not None
+                and getattr(arguments, "reviewed_record_revision", None) is None
+            ):
+                raise ReceiptFailure(
+                    "record_review_required",
+                    "Replacing this restore attempt requires --reviewed-record-revision",
+                    "review_record",
+                )
             expectation = reviewed
         else:
-            if arguments.reviewed_revision is not None or arguments.replaces_attempt is not None:
+            if (
+                arguments.reviewed_revision is not None
+                or arguments.replaces_attempt is not None
+                or getattr(arguments, "reviewed_record_revision", None) is not None
+            ):
                 raise ReceiptFailure(
                     "invalid_review", "No stored conflict can be replaced", "restore"
                 )
-            expectation = Expectation("accepted", receipt.accepted_revision, None)
+            expectation = Expectation(
+                "accepted",
+                receipt.accepted_revision,
+                None,
+                receipt.accepted_record_revision if receipt.version >= 3 else None,
+            )
         attempt_id = uuid.uuid4().hex
         attempt_dir = _result_path(receipt_dir, attempt_id).parent
         attempt_dir.mkdir(mode=0o700)
@@ -2076,7 +2440,7 @@ def _restore(arguments: argparse.Namespace, config_path: Path, started_at: float
         intent = RestoreIntent(attempt_id, expectation, arguments.archive_commit)
         prepared = dataclasses.replace(
             receipt,
-            version=2,
+            version=3 if receipt.version >= 3 else 2,
             pending=Pending(intent, 1, "uncertain"),
             completion=None,
         )
@@ -2204,10 +2568,15 @@ def _parser() -> Parser:
     publish = commands.add_parser("publish")
     publish.add_argument("source")
     publish.add_argument("--receipt")
+    publish.add_argument(
+        "--format", dest="input_format", choices=("html", "markdown"), default="html"
+    )
+    publish.add_argument("--entry")
     identity = publish.add_mutually_exclusive_group()
     identity.add_argument("--new", type=_name)
     identity.add_argument("--adopt", type=_name)
     publish.add_argument("--reviewed-revision", type=_revision)
+    publish.add_argument("--reviewed-record-revision", type=_revision)
     publish.add_argument("--replaces-attempt", type=_attempt_id)
     publish.add_argument("--local-only", action="store_true")
 
@@ -2221,6 +2590,7 @@ def _parser() -> Parser:
     restore.add_argument("--receipt", required=True)
     restore.add_argument("--archive-commit", required=True)
     restore.add_argument("--reviewed-revision", type=_revision)
+    restore.add_argument("--reviewed-record-revision", type=_revision)
     restore.add_argument("--replaces-attempt", type=_attempt_id)
     return parser
 

@@ -38,7 +38,9 @@ scenario_path = root / "scenario.json"
 state_path = root / "state.json"
 calls_path = root / "calls.jsonl"
 scenario = json.loads(scenario_path.read_text())
-state = json.loads(state_path.read_text()) if state_path.exists() else {"active_revision": None}
+state = json.loads(state_path.read_text()) if state_path.exists() else {
+    "active_revision": None, "archived_record_revision": None
+}
 arguments = sys.argv[1:]
 operation = next(value for value in arguments if value in {"publish", "status"})
 
@@ -81,6 +83,10 @@ if operation == "status":
         "url": f"{target}{name}/",
         "expected_revision": None,
         "requested_revision": None,
+        "expected_record_revision": None,
+        "requested_record_revision": None,
+        "archived_record_revision": state.get("archived_record_revision"),
+        "render_profile_id": None,
         "active_revision": state["active_revision"],
         "effects": {"archive_advanced": False, "activated": False},
         "verification": {"result": "not_checked", "revision": None},
@@ -99,6 +105,11 @@ source = value("--source")
 digest = source_digest(source)
 requested = f"rev-{digest[:20]}"
 expected = value("--expected-revision")
+expected_record = value("--expected-record-revision")
+expected_render_profile_id = value("--expected-render-profile-id")
+input_format = value("--format") or "html"
+entry = value("--entry")
+requested_record = f"record-{digest[:20]}" if input_format == "markdown" else None
 request_id = value("--request-id")
 call = {
     "operation": "publish",
@@ -107,7 +118,13 @@ call = {
     "target": target,
     "request_id": request_id,
     "expected_revision": expected,
+    "expected_record_revision": expected_record,
+    "expected_render_profile_id": expected_render_profile_id,
+    "input_format": input_format,
+    "entry": entry,
+    "source": str(source),
     "requested_revision": requested,
+    "requested_record_revision": requested_record,
     "source_digest": digest,
 }
 with calls_path.open("a") as stream:
@@ -132,6 +149,15 @@ if mode == "preflight":
         "url": f"{target}{name}/",
         "expected_revision": expected,
         "requested_revision": requested,
+        "expected_record_revision": expected_record,
+        "requested_record_revision": requested_record,
+        "archived_record_revision": state.get("archived_record_revision"),
+        "render_profile_id": (
+            "markdown-it-py/4.2.0:commonmark:html-off:table-on:linkify-off:"
+            "template-reading-column-v1"
+            if input_format == "markdown"
+            else None
+        ),
         "active_revision": state["active_revision"],
         "effects": {"archive_advanced": False, "activated": False},
         "verification": {"result": "not_checked", "revision": None},
@@ -140,8 +166,10 @@ if mode == "preflight":
     raise SystemExit(1)
 
 active = state["active_revision"]
+previous_record = state.get("archived_record_revision")
 outcome = "published"
-activated = True
+activated = active != requested
+archive_advanced = activated
 verification = "passed"
 verification_revision = requested
 error = None
@@ -193,11 +221,17 @@ elif mode == "unknown_effects":
     error = failure("publication_outcome_unknown")
     exit_code = 1
 elif active == requested:
-    outcome = "unchanged"
-    activated = False
+    if input_format == "markdown" and previous_record != requested_record:
+        state["archived_record_revision"] = requested_record
+        archive_advanced = True
+    else:
+        outcome = "unchanged"
+        activated = False
 else:
     state["active_revision"] = requested
     active = requested
+    state["archived_record_revision"] = requested_record
+    archive_advanced = True
 state_path.write_text(json.dumps(state))
 payload = {
     "schema_version": 1,
@@ -209,8 +243,17 @@ payload = {
     "url": f"{target}{name}/",
     "expected_revision": expected,
     "requested_revision": requested,
+    "expected_record_revision": expected_record,
+    "requested_record_revision": requested_record,
+    "archived_record_revision": state.get("archived_record_revision"),
+    "render_profile_id": (
+        "markdown-it-py/4.2.0:commonmark:html-off:table-on:linkify-off:"
+        "template-reading-column-v1"
+        if input_format == "markdown"
+        else None
+    ),
     "active_revision": active,
-    "effects": {"archive_advanced": activated, "activated": activated},
+    "effects": {"archive_advanced": archive_advanced, "activated": activated},
     "verification": {
         "result": verification,
         "revision": verification_revision if verification != "not_checked" else None,
@@ -802,6 +845,357 @@ class HelperCliTest(ReceiptFixture):
         self.assertEqual(len(publish_calls), 2)
         self.assertEqual(publish_calls[1]["expected_revision"], revision_a)
         self.assertNotEqual(self.receipt(receipt_dir)["accepted_revision"], revision_a)
+
+    def test_markdown_receipt_freezes_single_file_name_and_renderer_profile(self) -> None:
+        source = self.root / "article.md"
+        source.write_text("# Article\n")
+
+        result = self.run_helper("publish", str(source), "--new", "article", "--format", "markdown")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        handoff = self.payload(result)
+        calls = [call for call in self.calls() if call["operation"] == "publish"]
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(cast(str, calls[0]["source"]).endswith("/article.md"))
+        self.assertEqual(
+            calls[0]["expected_render_profile_id"],
+            "markdown-it-py/4.2.0:commonmark:html-off:table-on:linkify-off:template-reading-column-v1",
+        )
+        self.assertEqual(handoff["input_format"], "markdown")
+        self.assertEqual(self.receipt(Path(str(source) + ".publish"))["version"], 3)
+
+    def test_markdown_receipt_v3_guards_both_identities_and_requires_legacy_record_review(
+        self,
+    ) -> None:
+        html_source = self.root / "legacy.html"
+        html_source.write_text("legacy output")
+        receipt_dir = self.root / "legacy.receipt"
+        first = self.run_helper(
+            "publish", str(html_source), "--new", "guide", "--receipt", str(receipt_dir)
+        )
+        self.assertEqual(first.returncode, 0, first.stderr)
+        legacy_receipt = self.receipt(receipt_dir)
+        legacy_revision = legacy_receipt["accepted_revision"]
+        self.assertEqual(legacy_receipt["version"], 1)
+
+        state = json.loads(self.state_path.read_text())
+        state["archived_record_revision"] = "reviewed-record"
+        self.state_path.write_text(json.dumps(state))
+        source = self.root / "docs"
+        source.mkdir()
+        (source / "index.md").write_text("# Guide\n")
+
+        blocked = self.run_helper(
+            "publish",
+            str(source),
+            "--receipt",
+            str(receipt_dir),
+            "--format",
+            "markdown",
+            "--entry",
+            "index.md",
+        )
+        self.assertEqual(blocked.returncode, 1)
+        blocked_error = cast(dict[str, object], self.payload(blocked)["error"])
+        self.assertEqual(blocked_error["code"], "record_review_required")
+        self.assertEqual(self.receipt(receipt_dir)["version"], 1)
+        self.assertEqual(len([call for call in self.calls() if call["operation"] == "publish"]), 1)
+
+        accepted = self.run_helper(
+            "publish",
+            str(source),
+            "--receipt",
+            str(receipt_dir),
+            "--format",
+            "markdown",
+            "--entry",
+            "index.md",
+            "--reviewed-record-revision",
+            "reviewed-record",
+        )
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        final_receipt = self.receipt(receipt_dir)
+        self.assertEqual(final_receipt["version"], 3)
+        self.assertNotEqual(final_receipt["accepted_revision"], legacy_revision)
+        self.assertEqual(
+            final_receipt["accepted_record_revision"],
+            self.payload(accepted)["requested_record_revision"],
+        )
+        publish_call = [call for call in self.calls() if call["operation"] == "publish"][-1]
+        self.assertEqual(publish_call["input_format"], "markdown")
+        self.assertEqual(publish_call["entry"], "index.md")
+        self.assertEqual(publish_call["expected_revision"], legacy_revision)
+        self.assertEqual(publish_call["expected_record_revision"], "reviewed-record")
+
+    def test_markdown_record_only_result_advances_the_receipt_pair(self) -> None:
+        expectation = receipt.Expectation("accepted", "output-a", None, "record-a")
+        intent = receipt.PublishIntent(
+            "attempt-a",
+            expectation,
+            receipt.FrozenInput("attempt-a/source", "directory", "digest", 1, 10),
+            "markdown",
+            "index.md",
+            "markdown-it-py/4.2.0:commonmark:html-off:table-on:linkify-off:template-reading-column-v1",
+        )
+        state = receipt.Receipt(
+            3,
+            receipt.Binding(
+                "association-a",
+                "guide",
+                receipt.TargetIdentity("local", "local", self.target),
+                "fingerprint-a",
+            ),
+            "output-a",
+            receipt.Pending(intent, 1, "uncertain"),
+            None,
+            None,
+            "record-a",
+        )
+        payload = {
+            "schema_version": 1,
+            "operation": "publish",
+            "request_id": "attempt-a",
+            "outcome": "published",
+            "target": self.target,
+            "name": "guide",
+            "expected_revision": "output-a",
+            "requested_revision": "output-a",
+            "active_revision": "output-a",
+            "expected_record_revision": "record-a",
+            "requested_record_revision": "record-b",
+            "archived_record_revision": "record-b",
+            "render_profile_id": intent.render_profile_id,
+            "effects": {"archive_advanced": True, "activated": False},
+            "verification": {"result": "passed", "revision": "output-a"},
+            "error": None,
+        }
+        result = receipt.SavedResult(
+            "attempt-a",
+            1,
+            "digest",
+            0,
+            False,
+            False,
+            json.dumps(payload),
+            "",
+            payload,
+            False,
+            False,
+        )
+
+        classification = receipt.reduce_result(state, result)
+
+        self.assertEqual(classification.kind, "completed")
+        self.assertIsNone(classification.receipt.pending)
+        self.assertEqual(classification.receipt.accepted_revision, "output-a")
+        self.assertEqual(classification.receipt.accepted_record_revision, "record-b")
+
+    def test_markdown_activation_without_verified_delivery_keeps_record_baseline(self) -> None:
+        profile = (
+            "markdown-it-py/4.2.0:commonmark:html-off:table-on:linkify-off:"
+            "template-reading-column-v1"
+        )
+        intent = receipt.PublishIntent(
+            "attempt-unverified",
+            receipt.Expectation("accepted", "output-a", None, "record-a"),
+            receipt.FrozenInput("attempt-unverified/source", "directory", "digest", 1, 10),
+            "markdown",
+            "index.md",
+            profile,
+        )
+        state = receipt.Receipt(
+            3,
+            receipt.Binding(
+                "association-a",
+                "guide",
+                receipt.TargetIdentity("local", "local", self.target),
+                "fingerprint-a",
+            ),
+            "output-a",
+            receipt.Pending(intent, 1, "uncertain"),
+            None,
+            None,
+            "record-a",
+        )
+        payload: dict[str, object] = {
+            "schema_version": 1,
+            "operation": "publish",
+            "request_id": intent.id,
+            "outcome": "error",
+            "target": self.target,
+            "name": "guide",
+            "url": f"{self.target}guide/",
+            "expected_revision": "output-a",
+            "requested_revision": "output-b",
+            "active_revision": "output-b",
+            "expected_record_revision": "record-a",
+            "requested_record_revision": "record-b",
+            "archived_record_revision": "record-b",
+            "render_profile_id": profile,
+            "effects": {"archive_advanced": True, "activated": True},
+            "verification": {"result": "failed", "revision": "wrong-output"},
+            "error": {
+                "code": "delivery_failure",
+                "phase": "verify",
+                "message": "delivery failed",
+                "next_action": {"kind": "retry", "required_inputs": []},
+            },
+        }
+        result = receipt.SavedResult(
+            intent.id,
+            1,
+            "digest",
+            1,
+            False,
+            False,
+            json.dumps(payload),
+            "",
+            payload,
+            False,
+            False,
+        )
+
+        classification = receipt.reduce_result(state, result)
+
+        self.assertEqual(classification.kind, "delivery_failed")
+        self.assertEqual(classification.receipt.accepted_revision, "output-b")
+        self.assertEqual(classification.receipt.accepted_record_revision, "record-a")
+
+    def test_record_aware_legacy_restore_upgrades_receipt_and_keeps_record_identity(self) -> None:
+        intent = receipt.RestoreIntent(
+            "attempt-restore",
+            receipt.Expectation("accepted", "output-current", None),
+            "archive-commit",
+        )
+        state = receipt.Receipt(
+            2,
+            receipt.Binding(
+                "association-legacy",
+                "guide",
+                receipt.TargetIdentity("local", "local", self.target),
+                "fingerprint-a",
+            ),
+            "output-current",
+            receipt.Pending(intent, 1, "uncertain"),
+            None,
+            None,
+        )
+        payload = {
+            "schema_version": 1,
+            "operation": "restore",
+            "request_id": intent.id,
+            "outcome": "published",
+            "target": self.target,
+            "name": "guide",
+            "url": f"{self.target}guide/",
+            "expected_revision": "output-current",
+            "requested_revision": "output-restored",
+            "active_revision": "output-restored",
+            "expected_record_revision": None,
+            "requested_record_revision": "record-restored",
+            "archived_record_revision": "record-restored",
+            "render_profile_id": None,
+            "effects": {"archive_advanced": False, "activated": True},
+            "verification": {"result": "passed", "revision": "output-restored"},
+            "error": None,
+        }
+        result = receipt.SavedResult(
+            intent.id,
+            1,
+            "digest",
+            0,
+            False,
+            False,
+            json.dumps(payload),
+            "",
+            payload,
+            False,
+            False,
+        )
+
+        classification = receipt.reduce_result(state, result)
+        serialized = receipt.receipt_dict(classification.receipt)
+
+        self.assertEqual(classification.kind, "completed")
+        self.assertEqual(classification.receipt.version, 3)
+        self.assertEqual(classification.receipt.accepted_record_revision, "record-restored")
+        self.assertEqual(serialized["accepted_record_revision"], "record-restored")
+        observation = cast(dict[str, object], serialized["last_observation"])
+        self.assertEqual(observation["requested_record_revision"], "record-restored")
+
+    def test_renderer_profile_mismatch_rejection_is_correlated_without_acceptance(self) -> None:
+        profile = (
+            "markdown-it-py/4.2.0:commonmark:html-off:table-on:linkify-off:"
+            "template-reading-column-v1"
+        )
+        intent = receipt.PublishIntent(
+            "attempt-profile",
+            receipt.Expectation("accepted", "output-a", None, "record-a"),
+            receipt.FrozenInput("attempt-profile/source/site.md", "file", "digest", 1, 10),
+            "markdown",
+            None,
+            profile,
+        )
+        state = receipt.Receipt(
+            3,
+            receipt.Binding(
+                "association-a",
+                "guide",
+                receipt.TargetIdentity("local", "local", self.target),
+                "fingerprint-a",
+            ),
+            "output-a",
+            receipt.Pending(intent, 1, "uncertain"),
+            None,
+            None,
+            "record-a",
+        )
+        payload: dict[str, object] = {
+            "schema_version": 1,
+            "operation": "publish",
+            "request_id": intent.id,
+            "outcome": "error",
+            "target": self.target,
+            "name": "guide",
+            "url": f"{self.target}guide/",
+            "expected_revision": "output-a",
+            "requested_revision": None,
+            "active_revision": "output-a",
+            "expected_record_revision": "record-a",
+            "requested_record_revision": None,
+            "archived_record_revision": "record-a",
+            "render_profile_id": "other-profile",
+            "effects": {"archive_advanced": False, "activated": False},
+            "verification": {"result": "not_checked", "revision": None},
+            "error": {
+                "code": "unsupported_render_profile",
+                "phase": "render",
+                "message": "unsupported renderer",
+                "next_action": {"kind": "use_compatible_renderer", "required_inputs": []},
+            },
+        }
+        result = receipt.SavedResult(
+            intent.id,
+            1,
+            "digest",
+            1,
+            False,
+            False,
+            json.dumps(payload),
+            "",
+            payload,
+            False,
+            False,
+        )
+
+        classification = receipt.reduce_result(state, result)
+
+        self.assertEqual(classification.kind, "retryable")
+        self.assertEqual(classification.receipt.accepted_revision, "output-a")
+        self.assertEqual(classification.receipt.accepted_record_revision, "record-a")
+        observation = classification.receipt.last_observation
+        assert observation is not None
+        self.assertEqual(observation.error_code, "unsupported_render_profile")
 
     def test_lost_response_retry_uses_saved_bytes_identity_and_expectation(
         self,

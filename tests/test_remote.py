@@ -28,6 +28,9 @@ def report(
     name: str | None = "release-notes",
     request_id: str | None = None,
     expected: str | None = None,
+    expected_record: str | None = None,
+    record_revision: str | None = None,
+    render_profile_id: str | None = None,
     outcome: str = "observed",
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
@@ -40,7 +43,11 @@ def report(
         "url": TARGET + name + "/" if name else None,
         "expected_revision": expected,
         "requested_revision": None,
+        "expected_record_revision": expected_record,
+        "requested_record_revision": None,
         "archived_revision": None,
+        "archived_record_revision": None,
+        "render_profile_id": render_profile_id,
         "archive_commit": None,
         "active_revision": None,
         "effects": {"archive_advanced": False, "activated": False},
@@ -64,11 +71,17 @@ def report(
         payload.update(
             {
                 "requested_revision": "rev-b" if operation in {"publish", "restore"} else None,
+                "requested_record_revision": record_revision,
                 "archived_revision": "rev-b",
+                "archived_record_revision": record_revision,
                 "archive_commit": "commit-b",
                 "active_revision": "rev-b",
                 "observation": {
-                    "saved": {"revision": "rev-b", "archive_commit": "commit-b"},
+                    "saved": {
+                        "revision": "rev-b",
+                        "record_revision": record_revision,
+                        "archive_commit": "commit-b",
+                    },
                     "selection": {
                         "state": "selected",
                         "revision": "rev-b",
@@ -128,8 +141,15 @@ class RemoteCliTest(unittest.TestCase):
                                          "argv": sys.argv[1:]}) + "\\n")
             if stage == "transfer":
                 source = Path(sys.argv[-2])
+                files = sorted(
+                    item.relative_to(source).as_posix()
+                    for item in source.rglob("*") if item.is_file()
+                )
+                index = next((name for name in ("index.html", "index.md") if name in files), None)
                 Path(os.environ["FIXTURE_SNAPSHOT"]).write_text(json.dumps({
-                    "source": str(source), "index": (source / "index.html").read_text(),
+                    "source": str(source),
+                    "index": (source / index).read_text() if index else None,
+                    "files": files,
                     "mode": source.parent.stat().st_mode & 0o777}))
             if os.environ.get("FIXTURE_HANG") == stage:
                 child = subprocess.Popen([sys.executable, "-c",
@@ -518,6 +538,92 @@ class RemoteCliTest(unittest.TestCase):
         self.assertNotIn("trap", command)
         self.assertIn("--expected-revision rev-a", command)
 
+    def test_markdown_transfer_preserves_raw_source_and_forwards_both_guards(self) -> None:
+        source = self.root / "docs"
+        (source / "assets").mkdir(parents=True)
+        (source / "index.md").write_text("# Guide\n")
+        (source / "assets" / "diagram.svg").write_text("<svg></svg>")
+        payload = report(
+            "publish",
+            request_id="attempt-markdown",
+            expected="output-a",
+            expected_record="record-a",
+            record_revision="record-b",
+            render_profile_id=(
+                "markdown-it-py/4.2.0:commonmark:html-off:table-on:linkify-off:"
+                "template-reading-column-v1"
+            ),
+            outcome="published",
+        )
+        arguments = [
+            "publish",
+            "--name",
+            "release-notes",
+            "--source",
+            str(source),
+            "--format",
+            "markdown",
+            "--entry",
+            "index.md",
+            "--target",
+            TARGET,
+            "--expected-revision",
+            "output-a",
+            "--expected-record-revision",
+            "record-a",
+            "--expected-render-profile-id",
+            "markdown-it-py/4.2.0:commonmark:html-off:table-on:linkify-off:template-reading-column-v1",
+            "--request-id",
+            "attempt-markdown",
+        ]
+        result = self.run_remote(
+            *arguments,
+            environment=self.environment | {"FIXTURE_STDOUT": json.dumps(payload)},
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(result.stdout), payload)
+        snapshot = json.loads(self.snapshot.read_text())
+        self.assertEqual(snapshot["files"], ["assets/diagram.svg", "index.md"])
+        self.assertEqual(snapshot["index"], "# Guide\n")
+        self.assertTrue(snapshot["source"].endswith("/source"))
+        command = shlex.split(self.records()[2]["argv"][-1])
+        self.assertIn("--format", command)
+        self.assertIn("markdown", command)
+        self.assertIn("--entry", command)
+        self.assertIn("index.md", command)
+        self.assertEqual(command[command.index("--expected-revision") + 1], "output-a")
+        self.assertEqual(command[command.index("--expected-record-revision") + 1], "record-a")
+        self.assertEqual(
+            command[command.index("--expected-render-profile-id") + 1],
+            "markdown-it-py/4.2.0:commonmark:html-off:table-on:linkify-off:template-reading-column-v1",
+        )
+
+    def test_markdown_file_transfer_keeps_file_input_shape(self) -> None:
+        source = self.root / "article.md"
+        source.write_text("# Article\n")
+        payload = report("plan", expected="output-a", outcome="planned")
+        result = self.run_remote(
+            "plan",
+            "--name",
+            "release-notes",
+            "--source",
+            str(source),
+            "--format",
+            "markdown",
+            "--target",
+            TARGET,
+            "--expected-revision",
+            "output-a",
+            environment=self.environment | {"FIXTURE_STDOUT": json.dumps(payload)},
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        snapshot = json.loads(self.snapshot.read_text())
+        self.assertEqual(snapshot["files"], ["article.md"])
+        command = shlex.split(self.records()[2]["argv"][-1])
+        self.assertTrue(command[command.index("--source") + 1].endswith("/source/article.md"))
+
     def test_transfer_failure_has_complete_common_envelope_and_exit_one(self) -> None:
         result = self.run_remote(
             *self.artifact_args(), environment=self.environment | {"FIXTURE_TRANSFER_EXIT": "23"}
@@ -802,7 +908,11 @@ class RemoteCliTest(unittest.TestCase):
         payload["archive_commit"] = "commit-b"
         payload["active_revision"] = "rev-b"
         payload["observation"] = {
-            "saved": {"revision": "rev-b", "archive_commit": "commit-b"},
+            "saved": {
+                "revision": "rev-b",
+                "record_revision": None,
+                "archive_commit": "commit-b",
+            },
             "selection": {
                 "state": "selected",
                 "revision": "rev-b",
@@ -830,7 +940,11 @@ class RemoteCliTest(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout), payload)
         payload["active_revision"] = None
         payload["observation"] = {
-            "saved": {"revision": "rev-b", "archive_commit": "commit-b"},
+            "saved": {
+                "revision": "rev-b",
+                "record_revision": None,
+                "archive_commit": "commit-b",
+            },
             "selection": {
                 "state": "degraded",
                 "revision": None,

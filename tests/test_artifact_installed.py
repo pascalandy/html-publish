@@ -150,7 +150,7 @@ class InstalledArtifactTest(unittest.TestCase):
                         "required": True,
                         "nargs": None,
                         "value_type": "string",
-                        "help": "HTML file or directory",
+                        "help": "HTML or Markdown file or directory",
                     }
                 ],
             )
