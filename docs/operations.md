@@ -341,8 +341,8 @@ tool, then select an absolute publisher config:
 uv tool install --from /absolute/path/html_publish-0.1.0-py3-none-any.whl html-publish
 html-publish --config /absolute/path/publisher.json host serve --port 4177
 html-publish --config /absolute/path/publisher.json --json host setup
-html-publish --config /absolute/path/publisher.json --json host setup --tailscale
 html-publish --config /absolute/path/publisher.json --json host setup --apply
+html-publish --config /absolute/path/publisher.json --json host route setup
 ```
 
 `host serve` stops on SIGINT or SIGTERM. `host setup` previews by default. Apply writes a record at
@@ -352,24 +352,30 @@ The default unit name is `html-publish.service`. Use `--unit-name html-publish-<
 verification installation. Apply starts or restarts the user unit, checks loopback health, and
 returns each completed or uncertain effect. Repeat apply returns `unchanged` without a restart.
 
-`host setup --tailscale` adds an opt-in route inspection to the read-only preview. It derives the
-node, HTTPS port, mount path, and loopback target from the configured public URL and listen port.
-The preview runs bounded Tailscale status commands and reports the selected route, node and Serve
-observations, prerequisites, blockers, route state, and proposed effects. A blocker in either the
-service or route observation clears all proposed effects. The preview does not create host state or
-change Tailscale. An equal route without an ownership record is foreign. Overlapping routes,
-conflicting handlers or ports, Funnel, node mismatch, and unfamiliar state block the preview.
+`host route setup` is a separate read-only preview for one already owned healthy service. It checks
+the exact recorded configuration, package, executable, unit, user-manager state, listener, and
+loopback health before it inspects Tailscale. The command has no route port or target override. It
+takes the loopback port from the service record and derives the HTTPS host, port, and mount from the
+configured public URL.
 
-Generic `host setup` and `host setup --apply` do not inspect or change Tailscale.
-`host setup --tailscale --apply` is unsupported. Configure external HTTPS delivery separately.
-Successful loopback health and a clear route preview do not verify the configured public URL. The
-preview reports `private_https_verified: false`. The isolated user-service job in
-`.github/workflows/host-systemd.yml` proves restart only after it passes on hosted Ubuntu. Private
-HTTPS proof needs an authenticated disposable node and a second tailnet client.
+Route ownership uses a separate unit-keyed record under
+`$XDG_STATE_HOME/html-publish/routes/<unit-basename>.json`, or under `~/.local/state` when the
+variable is unset. Preview reads that record but never creates or changes it. It reports the
+selected service, route, node and Serve observations, prerequisites, ownership, route decision,
+blockers, and proposed effects. An unrecorded equal route is foreign. Owned, pending, drifted,
+colliding, and unfamiliar state remain distinct decisions. Every blocker clears proposed effects.
 
-Installed-executable tests use controlled Tailscale status and Serve responses to prove route
-classification, blockers, proposed effects, bounded commands, and the absence of writes. This
-controlled preview evidence does not prove private HTTPS delivery.
+`host route setup --apply` is reserved for issue #59 and fails before configuration or external
+reads. Ordinary `host setup` and `host setup --apply` remain service-only and never inspect or
+change Tailscale. Route preview reports private HTTPS as `not_checked`. Private HTTPS proof needs
+an authenticated disposable node and a second tailnet client. The existing `om1` installer remains
+a separate deployment workflow with its own route lifecycle and evidence.
+
+Installed-executable tests retain controlled CLI results, Tailscale command logs, source and wheel
+identity, and before-and-after manifests. They cover route decisions, blockers, a nondefault service
+port, early apply rejection, and the absence of writes. This controlled evidence does not prove
+private HTTPS delivery. The isolated user-service job in `.github/workflows/host-systemd.yml`
+proves restart only after it passes on hosted Ubuntu.
 
 To remove the isolated verification installation, read its record first and compare the current
 unit bytes, mode, and effective `FragmentPath`. If they still match,

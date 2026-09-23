@@ -138,8 +138,9 @@ class Verification:
 | `remote.py` | Private raw-source upload, bounded SSH execution, host-result correlation, and attempt staging cleanup |
 | `receipt.py` | Caller binding, frozen publish or restore intent, accepted output and record revisions, observation, local lock, and saved-result recovery |
 | `server.py` | Read-only HTTP delivery of selected files, without publication mutations |
-| `host.py` | Desired Linux host setup, user-unit ownership record, systemd observations, and loopback health |
-| `tailscale.py` | Read-only Tailscale node and Serve route inspection for host setup previews |
+| `host.py` | Linux service setup, its ownership record, systemd observations, loopback health, and owned-service inspection |
+| `host_route.py` | Route ownership record, route decision, blockers, proposed effects, and future route apply |
+| `tailscale.py` | Bounded Tailscale node and Serve reads and supported wire-format parsing |
 
 `_git.py` is a private mechanism shared by capture and storage. It owns the one sanitized Git invocation policy and exposes no publication decisions
 
@@ -167,16 +168,22 @@ archive and active selection.
 handler as `html-publish-server`. `host setup` compares a `HostSpec` with observed user-manager,
 unit, and record state. Preview writes nothing. Apply stores intent and completed
 effects under the user's XDG state directory. `host.py` mutates only its own unit and record.
-It does not enter `PublicationStore` or change publication bytes. With `--tailscale`, preview asks
-`tailscale.py` to inspect the authenticated node and the selected Serve route. The route comes from
-the configured public URL and loopback port. Inspection owns no Tailscale state and proposes no
-service or route effects when either observation has a blocker. Apply never inspects Tailscale, and
-`host setup --tailscale --apply` is unsupported. The controlled `om1` installer in `deploy.py`
-remains a separate source-checkout deployment path.
+It does not enter `PublicationStore` or change publication bytes. `host route setup` first asks
+`host.py` to inspect the selected owned service. The exact recorded configuration, executable,
+package, unit, manager state, listener, and loopback health must remain current. The route command
+accepts no independent port or target. It derives the loopback target from the service record.
+
+`host_route.py` compares that healthy service with the Tailscale observation and a separate
+unit-keyed route record under the user's XDG state directory. `tailscale.py` reads the authenticated
+node and Serve state without assigning ownership. Route preview never writes the route record or
+changes the service, Tailscale, publications, or receipts. `host route setup --apply` is reserved
+for issue #59 and fails before configuration or external reads. Ordinary `host setup --apply`
+remains service-only. The controlled `om1` installer in `deploy.py` remains a separate
+source-checkout deployment path.
 Setup uses one lock in the host-record directory across unit names. It re-reads the selected config
 and installed package bytes before external writes. External HTTPS delivery is configured separately
-and remains outside generic host setup's verification scope. The Tailscale preview reports
-`private_https_verified: false`; it does not prove private HTTPS delivery.
+and remains outside generic host setup's verification scope. Route preview reports private HTTPS as
+`not_checked`; it does not prove private HTTPS delivery.
 
 `plan` and `publish` share one decision over the requested output and record revisions, their
 expectations, the saved pair, and the active output selection. The result is `create`, `update`,
@@ -235,4 +242,4 @@ transaction framework, journal, daemon, and database.
 
 ## Verification boundary
 
-Tests drive the real CLI with temporary Git and runtime directories. A controlled loopback HTTP server proves publisher behavior. Installed-executable tests provide controlled Tailscale status and Serve responses, check the reported route state, and confirm that preview writes nothing. They do not prove Tailscale authorization, private HTTPS delivery, browser freshness, host durability, or production readiness.
+Tests drive the real CLI with temporary Git and runtime directories. A controlled loopback HTTP server proves publisher behavior. Installed-executable tests retain controlled command results, status-command logs, source and wheel identity, and before-and-after manifests. They cover service health, route ownership states, Tailscale blockers, and the absence of preview writes. They do not prove Tailscale authorization, private HTTPS delivery, browser freshness, host durability, or production readiness.
