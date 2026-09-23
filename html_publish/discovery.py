@@ -50,22 +50,34 @@ def command_schema(parser: argparse.ArgumentParser, executable: str) -> dict[str
     globals_ = [_option(action) for action in parser._actions if action.option_strings]
     commands: list[dict[str, object]] = []
     global_flags = {flag for action in parser._actions for flag in action.option_strings}
-    for name, command in choices.items():
-        commands.append(
-            {
-                "name": name,
-                "description": command.description,
-                "options": [
-                    _option(action)
-                    for action in command._actions
-                    if action.option_strings
-                    and action.dest != "help"
-                    and not set(action.option_strings) <= global_flags
-                ],
-                "examples": list(command._defaults["_examples"]),
-                "effects": list(command._defaults["_effects"]),
-            }
+
+    def describe(name: str, command: argparse.ArgumentParser) -> dict[str, object]:
+        result: dict[str, object] = {
+            "name": name,
+            "description": command.description,
+            "options": [
+                _option(action)
+                for action in command._actions
+                if action.option_strings
+                and action.dest != "help"
+                and not set(action.option_strings) <= global_flags
+            ],
+            "examples": list(command._defaults["_examples"]),
+            "effects": list(command._defaults["_effects"]),
+        }
+        nested = next(
+            (action for action in command._actions if isinstance(action.choices, dict)),
+            None,
         )
+        if nested is not None:
+            nested_choices = cast(dict[str, argparse.ArgumentParser], nested.choices)
+            result["commands"] = [
+                describe(child_name, child) for child_name, child in nested_choices.items()
+            ]
+        return result
+
+    for name, command in choices.items():
+        commands.append(describe(name, command))
     return {
         "schema_version": 1,
         "executable": executable,

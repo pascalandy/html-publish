@@ -8,12 +8,20 @@ import re
 import signal
 import sys
 from collections.abc import Generator, Mapping
+from dataclasses import asdict
 from pathlib import Path
 from types import FrameType
 from typing import Literal, NoReturn, cast
 from urllib.parse import urlparse
 
 from html_publish import __version__, _git
+from html_publish.configuration import (
+    ClientConfig,
+    data_root,
+    init_document,
+    read_document,
+    selected_path,
+)
 from html_publish.delivery import publication_url
 from html_publish.discovery import (
     command_schema,
@@ -109,7 +117,7 @@ def _globals(command: argparse.ArgumentParser, version: str) -> None:
         "--config",
         type=Path,
         default=argparse.SUPPRESS,
-        help="publisher JSON configuration file (required for publication operations)",
+        help="JSON configuration file; defaults to the role's user config",
     )
     command.add_argument(
         "--json",
@@ -144,7 +152,7 @@ def _parser(json_version: bool = False) -> Parser:
     parser.add_argument(
         "--config",
         type=Path,
-        help="publisher JSON configuration file (required for publication operations)",
+        help="JSON configuration file; defaults to the role's user config",
     )
     parser.add_argument("--json", action="store_true", help="write one JSON object to stdout")
     parser.add_argument(
@@ -315,6 +323,70 @@ def _parser(json_version: bool = False) -> Parser:
         effects=("reads command definitions only",),
     )
     _globals(schema, version)
+
+    config_command = register_command(
+        commands,
+        "config",
+        "create or inspect explicit publisher and client configuration",
+        examples=("html-publish config validate --role publisher",),
+        effects=("init writes only the selected config file", "show and validate read only"),
+    )
+    _globals(config_command, version)
+    config_actions = config_command.add_subparsers(dest="config_action", required=True)
+    for action in ("init", "show", "validate"):
+        item = register_command(
+            config_actions,
+            action,
+            f"{action} a publisher or client configuration",
+            examples=(
+                "html-publish config init --role publisher --config publisher.json "
+                "--base-url https://review.example/pages/"
+                if action == "init"
+                else f"html-publish config {action} --role publisher --config publisher.json",
+            ),
+            effects=("writes only the selected config file",)
+            if action == "init"
+            else ("reads configuration only",),
+        )
+        item.add_argument("--role", choices=("publisher", "client"), required=True)
+        if action == "init":
+            item.add_argument("--base-url", required=True, help="canonical target URL ending in /")
+            item.add_argument("--archive", type=Path, help="publisher bare Git archive path")
+            item.add_argument("--runtime", type=Path, help="publisher runtime directory")
+            item.add_argument(
+                "--allow-http", action="store_true", help="allow an HTTP loopback test target"
+            )
+            item.add_argument("--target-id", help="stable client target identity")
+            item.add_argument(
+                "--execution", choices=("local", "remote"), help="client execution kind"
+            )
+            item.add_argument(
+                "--publisher-config", type=Path, help="absolute local publisher config path"
+            )
+            item.add_argument("--host", help="SSH destination as user@host")
+            item.add_argument(
+                "--remote-executable", help="absolute publisher executable path on SSH host"
+            )
+            item.add_argument("--remote-config", help="absolute publisher config path on SSH host")
+            item.add_argument(
+                "--incoming-root", help="absolute private incoming directory on SSH host"
+            )
+        _globals(item, version)
+
+    doctor = register_command(
+        commands,
+        "doctor",
+        "inspect local prerequisites; opt in to network reads",
+        examples=("html-publish doctor --role publisher --config publisher.json --json",),
+        effects=(
+            "reads local configuration and prerequisites",
+            "--network probes configured SSH and HTTP targets",
+            "never repairs state",
+        ),
+    )
+    doctor.add_argument("--role", choices=("publisher", "client"), required=True)
+    doctor.add_argument("--network", action="store_true", help="allow bounded SSH and HTTP reads")
+    _globals(doctor, version)
     return parser
 
 
@@ -375,9 +447,13 @@ def load_config(path: Path) -> Config:
         raise PublishError(
             "invalid_config",
             "config",
-            f"The configuration could not be read: {error}",
+            f"The publisher configuration at {path} could not be read: {error}",
             "fix_config",
         ) from error
+    return parse_publisher(raw)
+
+
+def parse_publisher(raw: dict[str, object]) -> Config:
     allowed = {"archive", "runtime", "base_url", "allow_http", "object_format", "limits"}
     unknown = set(raw) - allowed
     if unknown:
@@ -706,20 +782,238 @@ def _print_report(report: Report, json_output: bool) -> int:
     return 1 if report.error else 0
 
 
+def _config_result(
+    operation: str,
+    role: str | None,
+    path: Path | None,
+    source: str | None,
+    outcome: str,
+    *,
+    values: Mapping[str, object] | None = None,
+    origins: dict[str, str] | None = None,
+    checks: list[dict[str, str]] | None = None,
+    network: bool = False,
+    failure: Failure | None = None,
+) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "operation": operation,
+        "role": role,
+        "outcome": outcome,
+        "config": {"path": str(path), "source": source} if path is not None else None,
+        "values": values,
+        "origins": origins,
+        "scope": "network" if network else "local",
+        "checks": checks,
+        "effects": {"config_written": outcome == "config_written"},
+        "error": _failure_dict(failure),
+    }
+
+
+def _emit_config(payload: dict[str, object], json_output: bool, exit_code: Literal[0, 1, 2]) -> int:
+    if json_output:
+        return emit_json(payload, exit_code)
+    if payload["error"] is not None:
+        error = cast(dict[str, object], payload["error"])
+        print(f"html-publish: {error['message']}", file=sys.stderr)
+        if payload["operation"] == "doctor" and payload["checks"] is not None:
+            for check in cast(list[dict[str, str]], payload["checks"]):
+                if check["status"] == "fail":
+                    print(
+                        f"  {check['id']}: {check['detail']}. {check['next_step']}",
+                        file=sys.stderr,
+                    )
+    else:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return exit_code
+
+
+def _init_raw(parsed: argparse.Namespace) -> dict[str, object]:
+    if parsed.role == "publisher":
+        invalid = (
+            "target_id",
+            "execution",
+            "publisher_config",
+            "host",
+            "remote_executable",
+            "remote_config",
+            "incoming_root",
+        )
+        if any(getattr(parsed, name) is not None for name in invalid):
+            raise UsageFailure("client options cannot be used for publisher config init")
+        root = (
+            data_root() / "html-publish"
+            if parsed.archive is None or parsed.runtime is None
+            else None
+        )
+        archive = parsed.archive or cast(Path, root) / "archive.git"
+        runtime = parsed.runtime or cast(Path, root) / "runtime"
+        return {
+            "archive": str(archive.expanduser().absolute()),
+            "runtime": str(runtime.expanduser().absolute()),
+            "base_url": parsed.base_url,
+            "allow_http": parsed.allow_http,
+            "object_format": "sha1",
+            "limits": {},
+        }
+    if parsed.archive is not None or parsed.runtime is not None or parsed.allow_http:
+        raise UsageFailure("publisher options cannot be used for client config init")
+    if parsed.target_id is None or parsed.execution is None:
+        raise UsageFailure("client config init requires --target-id and --execution")
+    if parsed.execution == "local":
+        if parsed.publisher_config is None:
+            raise UsageFailure("local client config init requires --publisher-config")
+        if any(
+            getattr(parsed, name) is not None
+            for name in ("host", "remote_executable", "remote_config", "incoming_root")
+        ):
+            raise UsageFailure("SSH options cannot be used with local execution")
+        execution: dict[str, object] = {
+            "kind": "local",
+            "command": ["html-publish"],
+            "publisher_config": str(parsed.publisher_config.expanduser()),
+        }
+    else:
+        if parsed.publisher_config is not None:
+            raise UsageFailure("--publisher-config is only for local execution")
+        missing = [
+            flag
+            for name, flag in (
+                ("host", "--host"),
+                ("remote_executable", "--remote-executable"),
+                ("remote_config", "--remote-config"),
+                ("incoming_root", "--incoming-root"),
+            )
+            if getattr(parsed, name) is None
+        ]
+        if missing:
+            raise UsageFailure("remote client config init requires " + ", ".join(missing))
+        execution = {
+            "kind": "remote",
+            "command": ["html-publish-remote"],
+            "host": parsed.host,
+            "remote_executable": parsed.remote_executable,
+            "remote_config": parsed.remote_config,
+            "incoming_root": parsed.incoming_root,
+        }
+    return {
+        "schema_version": 1,
+        "target": {"id": parsed.target_id, "base_url": parsed.base_url},
+        "execution": execution,
+        "limits": {},
+    }
+
+
+def _run_config(parsed: argparse.Namespace) -> int:
+    role = cast(Literal["publisher", "client"], parsed.role)
+    action = parsed.config_action if parsed.operation == "config" else "doctor"
+    if action == "init" and parsed.config is None:
+        raise UsageFailure("config init requires an explicit --config path")
+    path, source = selected_path(role, parsed.config)
+    parsed.selected_config_path = path
+    parsed.config_source = source
+    if action == "init":
+        outcome = init_document(path, _init_raw(parsed), role)
+        return _emit_config(
+            _config_result("config.init", role, path, source, outcome), parsed.json, 0
+        )
+    raw, config = read_document(role, path)
+    values: dict[str, object]
+    origins: dict[str, str]
+    raw_limits = cast(dict[str, object], raw.get("limits", {}))
+    if isinstance(config, ClientConfig):
+        raw_execution = cast(dict[str, object], raw["execution"])
+        execution = asdict(config.executor)
+        values = {
+            **raw,
+            "execution": execution,
+            "limits": asdict(config.limits),
+            "fingerprint": config.fingerprint,
+        }
+        origins = {
+            "schema_version": "file",
+            "target.id": "file",
+            "target.base_url": "file",
+            "fingerprint": "derived",
+            **{
+                f"execution.{name}": "file" if name in raw_execution else "default"
+                for name in execution
+            },
+        }
+        if config.executor.kind == "local":
+            origins["execution.host"] = "derived"
+    else:
+        values = {
+            "archive": str(config.archive),
+            "runtime": str(config.runtime),
+            "base_url": config.base_url,
+            "allow_http": config.allow_http,
+            "object_format": config.object_format,
+            "limits": asdict(config.limits),
+        }
+        origins = {
+            name: "file" if name in raw else "default" for name in values if name != "limits"
+        }
+    limits = cast(dict[str, object], values["limits"])
+    origins.update(
+        {f"limits.{name}": "file" if name in raw_limits else "default" for name in limits}
+    )
+    if parsed.command_seconds is not None:
+        origins["limits.command_seconds"] = "argument"
+        limits["command_seconds"] = parsed.command_seconds
+    if action == "doctor":
+        from html_publish.doctor import run_doctor
+
+        checks = run_doctor(
+            role, config, network=parsed.network, command_seconds=parsed.command_seconds
+        )
+        failed = any(check["status"] == "fail" for check in checks)
+        result = _config_result(
+            "doctor",
+            role,
+            path,
+            source,
+            "error" if failed else "diagnosed",
+            values=values,
+            origins=origins,
+            checks=checks,
+            network=parsed.network,
+            failure=Failure(
+                "diagnostic_failed",
+                "doctor",
+                "One or more prerequisite checks failed",
+                "inspect_checks",
+            )
+            if failed
+            else None,
+        )
+        return _emit_config(result, parsed.json, 1 if failed else 0)
+    result = _config_result(
+        f"config.{action}",
+        role,
+        path,
+        source,
+        "valid",
+        values=values if action == "show" else None,
+        origins=origins if action == "show" else None,
+    )
+    return _emit_config(result, parsed.json, 0)
+
+
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     json_output = "--json" in arguments
-    operation = next((value for value in arguments if value in OPERATIONS), None)
-    parsed: argparse.Namespace | None = None
+    parsed = argparse.Namespace()
     config: Config | None = None
     try:
         parser = _parser(json_output)
-        parsed = parser.parse_args(arguments)
+        parser.parse_args(arguments, namespace=parsed)
         if parsed.operation == "schema":
             return emit_json(command_schema(parser, "html-publish"), 0)
-        if parsed.config is None:
-            raise UsageFailure("--config is required")
-        config = load_config(parsed.config)
+        if parsed.operation in {"config", "doctor"}:
+            return _run_config(parsed)
+        config_path, _ = selected_path("publisher", parsed.config)
+        config = load_config(config_path)
         command_seconds = parsed.command_seconds or config.limits.command_seconds
         deadline = Deadline.start(command_seconds)
         with _command_alarm(command_seconds):
@@ -764,6 +1058,27 @@ def main(argv: list[str] | None = None) -> int:
         return _print_report(report, parsed.json)
     except UsageFailure as error:
         failure = Failure("invalid_usage", "usage", str(error), "fix_arguments")
+        operation = getattr(parsed, "operation", None)
+        if operation in {"config", "doctor"} and not hasattr(parsed, "role"):
+            return _emit_config(
+                _config_result(operation, None, None, None, "error", failure=failure),
+                json_output,
+                2,
+            )
+        if operation in {"config", "doctor"}:
+            action = parsed.config_action if parsed.operation == "config" else "doctor"
+            return _emit_config(
+                _config_result(
+                    f"config.{action}" if action != "doctor" else "doctor",
+                    getattr(parsed, "role", None),
+                    getattr(parsed, "selected_config_path", getattr(parsed, "config", None)),
+                    getattr(parsed, "config_source", None),
+                    "error",
+                    failure=failure,
+                ),
+                json_output,
+                2,
+            )
         if json_output:
             return emit_json(
                 usage_report(
@@ -780,6 +1095,21 @@ def main(argv: list[str] | None = None) -> int:
             print(f"html-publish: {error}", file=sys.stderr)
         return 2
     except PublishError as error:
+        operation = getattr(parsed, "operation", None)
+        if operation in {"config", "doctor"}:
+            action = parsed.config_action if parsed.operation == "config" else "doctor"
+            return _emit_config(
+                _config_result(
+                    f"config.{action}" if action != "doctor" else "doctor",
+                    getattr(parsed, "role", None),
+                    getattr(parsed, "selected_config_path", getattr(parsed, "config", None)),
+                    getattr(parsed, "config_source", None),
+                    "error",
+                    failure=error.failure,
+                ),
+                json_output,
+                1,
+            )
         error_operation: Operation
         error_operation = cast(
             Operation,

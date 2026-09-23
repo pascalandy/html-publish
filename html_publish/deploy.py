@@ -20,9 +20,9 @@ from types import FrameType
 from typing import NoReturn, Protocol, cast
 from urllib.parse import urlparse
 
-DEFAULT_STATE_ROOT = Path("/home/pascal/.local/share/html-publish")
-DEFAULT_CONFIG = Path("/home/pascal/.config/html-publish/publisher.json")
-DEFAULT_UNIT = Path("/home/pascal/.config/systemd/user/html-publish.service")
+from html_publish.configuration import config_root, data_root
+from html_publish.model import PublishError
+
 DEFAULT_BASE_URL = "https://om1.donkey-arcturus.ts.net:8444/html-publish/"
 DEFAULT_LISTEN_URL = "http://127.0.0.1:4177"
 SERVE_PATH = "/html-publish"
@@ -787,9 +787,9 @@ def _parser() -> argparse.ArgumentParser:
         prog="python -m html_publish.deploy",
         description="Install, check, or roll back the controlled om1 deployment",
     )
-    parser.add_argument("--state-root", type=Path, default=DEFAULT_STATE_ROOT)
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
-    parser.add_argument("--unit", type=Path, default=DEFAULT_UNIT)
+    parser.add_argument("--state-root", type=Path)
+    parser.add_argument("--config", type=Path)
+    parser.add_argument("--unit", type=Path)
     commands = parser.add_subparsers(dest="operation", required=True)
     install_parser = commands.add_parser("install", help="build and activate a source checkout")
     install_parser.add_argument("--source", type=Path, default=Path.cwd())
@@ -806,7 +806,24 @@ def main(
     probe: Probe = _probe,
 ) -> int:
     arguments = _parser().parse_args(argv)
-    layout = Layout(arguments.state_root, arguments.config, arguments.unit)
+    try:
+        layout = Layout(
+            arguments.state_root or data_root() / "html-publish",
+            arguments.config or config_root() / "html-publish" / "publisher.json",
+            arguments.unit or config_root() / "systemd" / "user" / "html-publish.service",
+        )
+    except PublishError as error:
+        print(
+            json.dumps(
+                {
+                    "operation": arguments.operation,
+                    "outcome": "error",
+                    "error": error.failure.message,
+                }
+            ),
+            file=sys.stderr,
+        )
+        return 1
     previous_handlers = {
         signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGINT)
     }

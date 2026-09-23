@@ -16,7 +16,10 @@ from pathlib import Path
 from typing import Any, cast
 
 ROOT = Path(__file__).resolve().parents[1]
-TARGET = "https://om1.donkey-arcturus.ts.net:8444/html-publish/"
+TARGET = "https://review.example/pages/"
+HOST_EXECUTABLE = "/usr/local/bin/html-publish"
+HOST_CONFIG = "/etc/html-publish/publisher.json"
+INCOMING_ROOT = "/tmp/html-publish/incoming"
 
 
 def report(
@@ -166,7 +169,22 @@ class RemoteCliTest(unittest.TestCase):
         self.temporary.cleanup()
 
     def command(self, *arguments: str) -> list[str]:
-        return [sys.executable, "-m", "html_publish.remote", *arguments]
+        return [
+            sys.executable,
+            "-m",
+            "html_publish.remote",
+            "--host",
+            "operator@example.test",
+            "--remote-executable",
+            HOST_EXECUTABLE,
+            "--remote-config",
+            HOST_CONFIG,
+            "--target",
+            TARGET,
+            "--incoming-root",
+            INCOMING_ROOT,
+            *arguments,
+        ]
 
     def run_remote(
         self, *arguments: str, environment: dict[str, str] | None = None
@@ -230,6 +248,40 @@ class RemoteCliTest(unittest.TestCase):
             self.assertIn("operator@example.test", invocation["argv"])
             self.assertIn("/usr/local/bin/html-publish", invocation["argv"][-1])
             self.assertIn("/etc/html-publish/publisher.json", invocation["argv"][-1])
+
+    def test_explicit_host_overrides_client_file_without_rewriting_it(self) -> None:
+        client = self.root / "client.json"
+        client.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "target": {"id": "review", "base_url": TARGET},
+                    "execution": {
+                        "kind": "remote",
+                        "command": ["html-publish-remote"],
+                        "host": "saved@example.test",
+                        "remote_executable": HOST_EXECUTABLE,
+                        "remote_config": HOST_CONFIG,
+                        "incoming_root": INCOMING_ROOT,
+                    },
+                    "limits": {},
+                }
+            )
+        )
+        before = client.read_bytes()
+        result = self.run_remote(
+            "--config",
+            str(client),
+            "--host",
+            "override@example.test",
+            "status",
+            "--name",
+            "release-notes",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(result.stdout), report("status"))
+        self.assertIn("override@example.test", self.records()[-1]["argv"])
+        self.assertEqual(client.read_bytes(), before)
 
     def failure(
         self, operation: str, code: str, phase: str, message: str, action: str, required: list[str]
@@ -348,9 +400,9 @@ class RemoteCliTest(unittest.TestCase):
                 self.assertEqual(
                     shlex.split(argv[-1]),
                     [
-                        "/home/pascal/.local/share/html-publish/current/.venv/bin/html-publish",
+                        HOST_EXECUTABLE,
                         "--config",
-                        "/home/pascal/.config/html-publish/publisher.json",
+                        HOST_CONFIG,
                         "--json",
                         *forwarded,
                     ],

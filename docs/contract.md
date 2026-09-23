@@ -42,6 +42,39 @@ usage error writes one JSON v1 error object to stdout when `--json` is set, with
 exit 2; plain usage errors write diagnostics to stderr. Remote operation results
 remain JSON by default. No discovery command performs a publication mutation.
 
+## Explicit configuration and diagnostics
+
+`config init`, `config show`, and `config validate` require a publisher or client role.
+`doctor` also requires a role. An explicit `--config` selects one file. Otherwise these
+read commands select `$XDG_CONFIG_HOME/html-publish/<role>.json`, or
+`~/.config/html-publish/<role>.json` when that environment variable is unset. A
+relative nonempty XDG directory is invalid. No command searches the current project
+for configuration. Init requires an explicit file path and refuses to replace an
+existing different file. An identical init leaves the existing bytes and metadata
+untouched. Init writes only that config file and missing parent directories.
+The six low-level publisher operations select the publisher user file when `--config`
+is absent. Mutations still require an explicit `--target` matching that file.
+
+Publisher configuration retains its six existing root fields and validation rules.
+New publisher files use `$XDG_DATA_HOME/html-publish/` or
+`~/.local/share/html-publish/` for default archive and runtime paths. Client files
+use receipt schema version 1 and bind an explicit target ID, URL, and local or remote
+execution. Identity-bearing client strings are preserved when read. The generic
+remote executable has no personal destination defaults. It requires complete
+destination flags or a selected remote client file before transport begins.
+Legacy client files retain their original identity strings and nullable remote
+transport fields. Doctor flags incomplete transport, and the remote executable
+refuses it before dispatch. Operator state, config, and user-unit path defaults
+follow the invoking user's XDG or home directories.
+
+Show and validate read configuration without creating publisher or receipt state.
+Validate checks structure and values, including paths that have not been initialized.
+Doctor reports local prerequisite checks without repair. Network and SSH reads require
+`--network`. A doctor warning for an uninitialized path is distinct from invalid
+configuration. Diagnostic reports use a separate versioned envelope and never imply
+that a publication revision was accepted, archived, selected, or verified. These
+commands retain exit 0 for success, 1 for operational failure, and 2 for usage.
+
 ## S1. System and ownership
 
 An agent should operate on a publication, not coordinate infrastructure:
