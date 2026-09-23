@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Literal, cast
 from urllib.parse import urlsplit
 
-RouteState = Literal["absent", "foreign", "collision", "unknown"]
+RouteState = Literal["absent", "equal", "changed", "collision", "unknown"]
 _KNOWN_SECTIONS = frozenset({"Web", "TCP", "AllowFunnel", "Foreground", "Services"})
 
 
@@ -33,8 +33,6 @@ class RouteInspection:
     prerequisites: dict[str, bool]
     state: RouteState
     blockers: tuple[RouteBlocker, ...]
-    proposed_effects: tuple[Literal["tailscale_serve_route"], ...]
-    private_https_verified: bool = False
 
 
 class _InspectionError(Exception):
@@ -171,7 +169,7 @@ def _run_json(args: list[str]) -> dict[str, object]:
     return cast(dict[str, object], payload)
 
 
-def _node(payload: dict[str, object]) -> str:
+def _node(payload: dict[str, object]) -> tuple[str, str]:
     self_value = payload.get("Self")
     if payload.get("BackendState") != "Running" or not isinstance(self_value, dict):
         raise _InspectionError(
@@ -179,14 +177,22 @@ def _node(payload: dict[str, object]) -> str:
             "Tailscale has no running authenticated node",
             "authenticate_tailscale",
         )
-    dns_name = cast(dict[str, object], self_value).get("DNSName")
-    if not isinstance(dns_name, str) or "." not in dns_name or any(c.isspace() for c in dns_name):
+    self_node = cast(dict[str, object], self_value)
+    node_id = self_node.get("ID")
+    dns_name = self_node.get("DNSName")
+    if (
+        not isinstance(node_id, str)
+        or not node_id
+        or not isinstance(dns_name, str)
+        or "." not in dns_name
+        or any(c.isspace() for c in dns_name)
+    ):
         raise _InspectionError(
             "node_unavailable",
-            "Tailscale status has no valid Self.DNSName",
+            "Tailscale status has no valid Self.ID and Self.DNSName",
             "authenticate_tailscale",
         )
-    return dns_name.lower().removesuffix(".")
+    return node_id, dns_name.lower().removesuffix(".")
 
 
 def _section(payload: dict[str, object], name: str) -> dict[str, object]:
@@ -342,21 +348,16 @@ def _serve(
             ),
         )
     if selected_handler == {"Proxy": selected.target} and not blockers:
-        foreign = RouteBlocker(
-            "route_foreign",
-            "The selected Tailscale Serve route exists without an ownership record",
-            "choose_unclaimed_mount_or_adopt_in_issue_59",
-        )
-        return observation, "foreign", (foreign,)
+        return observation, "equal", ()
     if selected_handler is not None and selected_handler != {"Proxy": selected.target}:
-        blockers.insert(
-            0,
-            RouteBlocker(
-                "route_collision",
-                "The selected Tailscale Serve route has a different handler",
-                "choose_unclaimed_mount",
-            ),
+        changed = RouteBlocker(
+            "route_changed",
+            "The selected Tailscale Serve route has a different handler",
+            "inspect_selected_route",
         )
+        if not blockers:
+            return observation, "changed", (changed,)
+        blockers.insert(0, changed)
     return observation, "collision" if blockers else "absent", tuple(blockers)
 
 
@@ -382,7 +383,6 @@ def _unknown(
         },
         "unknown",
         (error.blocker,),
-        (),
     )
 
 
@@ -392,12 +392,15 @@ def inspect_route(base_url: str, listen_port: int) -> RouteInspection:
     except _InspectionError as error:
         return _unknown(None, error)
     try:
-        authenticated_node = _node(_run_json(["tailscale", "status", "--json", "--peers=false"]))
+        node_id, authenticated_node = _node(
+            _run_json(["tailscale", "status", "--json", "--peers=false"])
+        )
     except _InspectionError as error:
         return _unknown(selected, error)
 
     matches = authenticated_node == selected.node
     node: dict[str, object] = {
+        "id": node_id,
         "dns_name": authenticated_node,
         "matches_selected": matches,
     }
@@ -440,5 +443,4 @@ def inspect_route(base_url: str, listen_port: int) -> RouteInspection:
         },
         state,
         blockers,
-        ("tailscale_serve_route",) if state == "absent" else (),
     )
