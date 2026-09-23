@@ -220,6 +220,542 @@ class PublisherCliTest(unittest.TestCase):
         self.assertFalse(self.archive.exists())
         self.assertFalse(self.runtime.exists())
 
+    def test_markdown_source_only_revision_is_private_and_does_not_reactivate(self) -> None:
+        source = self.root / "docs"
+        source.mkdir()
+        entry = source / "index.md"
+        entry.write_text("---\ntitle: private-one\n---\n# Guide\n\nReadable text.\n")
+        arguments = (
+            "--name",
+            "guide",
+            "--source",
+            str(source),
+            "--format",
+            "markdown",
+            "--target",
+            self.base_url,
+        )
+        first = self.run_cli("publish", *arguments)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        first_payload = self.payload(first)
+        first_output = first_payload["requested_revision"]
+        first_record = first_payload["requested_record_revision"]
+        first_link = os.readlink(self.runtime / "public" / "guide")
+        served = urllib.request.urlopen(f"{self.base_url}guide/").read()
+        self.assertEqual(
+            served, (self.runtime / "releases" / first_output / "index.html").read_bytes()
+        )
+        self.assertNotIn(b"private-one", served)
+        for private_path in ("source/index.md", "record/provenance.json"):
+            with self.assertRaises(urllib.error.HTTPError) as missing:
+                urllib.request.urlopen(f"{self.base_url}guide/{private_path}")
+            self.assertEqual(missing.exception.code, 404)
+        release_paths = {
+            path.relative_to(self.runtime / "releases" / first_output).as_posix()
+            for path in (self.runtime / "releases" / first_output).rglob("*")
+            if path.is_file()
+        }
+        self.assertEqual(release_paths, {"index.html"})
+
+        entry.write_text("---\ntitle: private-two\n---\n# Guide\n\nReadable text.\n")
+        second = self.run_cli(
+            "publish",
+            *arguments,
+            "--expected-revision",
+            first_output,
+            "--expected-record-revision",
+            first_record,
+        )
+        self.assertEqual(second.returncode, 0, second.stderr)
+        second_payload = self.payload(second)
+        self.assertEqual(second_payload["outcome"], "published")
+        self.assertEqual(second_payload["requested_revision"], first_output)
+        self.assertNotEqual(second_payload["requested_record_revision"], first_record)
+        self.assertEqual(second_payload["effects"], {"archive_advanced": True, "activated": False})
+        self.assertEqual(os.readlink(self.runtime / "public" / "guide"), first_link)
+        self.assertEqual(urllib.request.urlopen(f"{self.base_url}guide/").read(), served)
+        self.assertEqual(
+            second_payload["archived_record_revision"], second_payload["requested_record_revision"]
+        )
+        self.assertIn("record_revision", second_payload["observation"]["saved"])
+        source_blob = self.git(
+            "rev-parse",
+            f"{second_payload['archive_commit']}:guide/record/source/index.md",
+        )
+        archived_source = self.git("cat-file", "blob", source_blob)
+        self.assertIn("private-two", archived_source)
+
+    def test_markdown_guards_competing_source_edits_and_updates_rendered_output(self) -> None:
+        source = self.root / "docs"
+        source.mkdir()
+        entry = source / "index.md"
+        entry.write_text("---\nprivate: one\n---\n# Guide\n\nFirst body.\n")
+        args = (
+            "--name",
+            "guide",
+            "--source",
+            str(source),
+            "--format",
+            "markdown",
+            "--target",
+            self.base_url,
+        )
+        first = self.run_cli("publish", *args)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        first_payload = self.payload(first)
+        output_revision = first_payload["requested_revision"]
+        first_record = first_payload["requested_record_revision"]
+
+        entry.write_text("---\nprivate: two\n---\n# Guide\n\nFirst body.\n")
+        source_only = self.run_cli(
+            "publish",
+            *args,
+            "--expected-revision",
+            output_revision,
+            "--expected-record-revision",
+            first_record,
+        )
+        self.assertEqual(source_only.returncode, 0, source_only.stderr)
+        second_payload = self.payload(source_only)
+        second_record = second_payload["requested_record_revision"]
+
+        entry.write_text("---\nprivate: three\n---\n# Guide\n\nFirst body.\n")
+        head_before_conflict = self.git("rev-parse", "refs/heads/published")
+        conflict = self.run_cli(
+            "publish",
+            *args,
+            "--expected-revision",
+            output_revision,
+            "--expected-record-revision",
+            first_record,
+        )
+        self.assertEqual(conflict.returncode, 1)
+        conflict_payload = self.payload(conflict)
+        self.assertEqual(conflict_payload["error"]["code"], "revision_conflict")
+        self.assertEqual(conflict_payload["archived_record_revision"], second_record)
+        self.assertEqual(self.git("rev-parse", "refs/heads/published"), head_before_conflict)
+
+        entry.write_text("---\nprivate: four\n---\n# Guide\n\nChanged body.\n")
+        changed = self.run_cli(
+            "publish",
+            *args,
+            "--expected-revision",
+            output_revision,
+            "--expected-record-revision",
+            second_record,
+        )
+        self.assertEqual(changed.returncode, 0, changed.stderr)
+        changed_payload = self.payload(changed)
+        self.assertNotEqual(changed_payload["requested_revision"], output_revision)
+        self.assertEqual(
+            changed_payload["requested_record_revision"],
+            changed_payload["archived_record_revision"],
+        )
+        self.assertEqual(changed_payload["active_revision"], changed_payload["requested_revision"])
+        self.assertEqual(
+            urllib.request.urlopen(f"{self.base_url}guide/").status,
+            200,
+        )
+
+    def test_markdown_ambiguity_collisions_unresolved_links_and_render_failure(self) -> None:
+        source = self.root / "valid"
+        source.mkdir()
+        entry = source / "index.md"
+        entry.write_text("# Guide\n\n[Missing](missing.md) and [[Unknown]].\n")
+        args = (
+            "--name",
+            "guide",
+            "--source",
+            str(source),
+            "--format",
+            "markdown",
+            "--target",
+            self.base_url,
+        )
+        initial = self.run_cli("publish", *args)
+        self.assertEqual(initial.returncode, 0, initial.stderr)
+        initial_payload = self.payload(initial)
+        self.assertEqual(
+            set(initial_payload["warnings"]),
+            {"unresolved_markdown_link", "unresolved_wikilink"},
+        )
+        rendered = (
+            self.runtime / "releases" / initial_payload["requested_revision"] / "index.html"
+        ).read_text()
+        self.assertIn("Missing", rendered)
+        self.assertIn("[[Unknown]]", rendered)
+        self.assertNotIn('href="missing.html"', rendered)
+        self.assertIn("<p>Missing and [[Unknown]].</p>", rendered)
+        current_link = os.readlink(self.runtime / "public" / "guide")
+        current_head = self.git("rev-parse", "refs/heads/published")
+
+        ambiguous = self.root / "ambiguous"
+        ambiguous.mkdir()
+        (ambiguous / "index.md").write_text("# Index")
+        (ambiguous / "README.md").write_text("# Readme")
+        ambiguous_result = self.run_cli(
+            "publish",
+            "--name",
+            "guide",
+            "--source",
+            str(ambiguous),
+            "--format",
+            "markdown",
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            initial_payload["requested_revision"],
+            "--expected-record-revision",
+            initial_payload["requested_record_revision"],
+        )
+        self.assertEqual(ambiguous_result.returncode, 1)
+        self.assertEqual(self.payload(ambiguous_result)["error"]["code"], "ambiguous_entry")
+
+        explicit_entry = self.run_cli(
+            "plan",
+            "--name",
+            "guide",
+            "--source",
+            str(ambiguous),
+            "--format",
+            "markdown",
+            "--entry",
+            "index.md",
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            initial_payload["requested_revision"],
+            "--expected-record-revision",
+            initial_payload["requested_record_revision"],
+        )
+        self.assertEqual(explicit_entry.returncode, 0, explicit_entry.stderr)
+        self.assertEqual(self.payload(explicit_entry)["prediction"], "update")
+
+        missing_entry = self.root / "missing-entry"
+        missing_entry.mkdir()
+        (missing_entry / "notes.md").write_text("# Notes")
+        missing_entry_result = self.run_cli(
+            "plan",
+            "--name",
+            "guide",
+            "--source",
+            str(missing_entry),
+            "--format",
+            "markdown",
+            "--target",
+            self.base_url,
+        )
+        self.assertEqual(missing_entry_result.returncode, 1)
+        self.assertEqual(self.payload(missing_entry_result)["error"]["code"], "missing_entry")
+
+        collisions = self.root / "collisions"
+        collisions.mkdir()
+        (collisions / "index.md").write_text("# Index")
+        (collisions / "page.md").write_text("# Page")
+        (collisions / "page.html").write_text("would collide")
+        collision_result = self.run_cli(
+            "publish",
+            "--name",
+            "guide",
+            "--source",
+            str(collisions),
+            "--format",
+            "markdown",
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            initial_payload["requested_revision"],
+            "--expected-record-revision",
+            initial_payload["requested_record_revision"],
+        )
+        self.assertEqual(collision_result.returncode, 1)
+        self.assertEqual(self.payload(collision_result)["error"]["code"], "output_collision")
+
+        duplicates = self.root / "duplicates"
+        duplicates.mkdir()
+        (duplicates / "index.md").write_text("# Index")
+        (duplicates / "INDEX.md").write_text("# Duplicate")
+        duplicate_result = self.run_cli(
+            "publish",
+            "--name",
+            "guide",
+            "--source",
+            str(duplicates),
+            "--format",
+            "markdown",
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            initial_payload["requested_revision"],
+            "--expected-record-revision",
+            initial_payload["requested_record_revision"],
+        )
+        self.assertEqual(duplicate_result.returncode, 1)
+        self.assertEqual(self.payload(duplicate_result)["error"]["code"], "duplicate_input")
+
+        entry.write_text("---\nno closing delimiter\n# Broken\n")
+        render_failure = self.run_cli(
+            "publish",
+            *args,
+            "--expected-revision",
+            initial_payload["requested_revision"],
+            "--expected-record-revision",
+            initial_payload["requested_record_revision"],
+        )
+        self.assertEqual(render_failure.returncode, 1)
+        self.assertEqual(self.payload(render_failure)["error"]["code"], "frontmatter_unterminated")
+        self.assertEqual(os.readlink(self.runtime / "public" / "guide"), current_link)
+        self.assertEqual(self.git("rev-parse", "refs/heads/published"), current_head)
+
+    def test_markdown_restore_uses_the_exact_archived_output_and_source_record(self) -> None:
+        source = self.root / "docs"
+        source.mkdir()
+        (source / "index.md").write_text("# First\n\nFirst body.\n")
+        (source / "next.md").write_text("# Next\n")
+        args = (
+            "--name",
+            "guide",
+            "--source",
+            str(source),
+            "--format",
+            "markdown",
+            "--target",
+            self.base_url,
+        )
+        first = self.run_cli("publish", *args)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        first_payload = self.payload(first)
+        first_commit = first_payload["archive_commit"]
+        first_revision = first_payload["requested_revision"]
+        first_record = first_payload["requested_record_revision"]
+        first_source_blob = self.git("rev-parse", f"{first_commit}:guide/record/source/index.md")
+        first_source = self.git("cat-file", "blob", first_source_blob)
+
+        (source / "index.md").write_text("# Second\n\nSecond body.\n")
+        second = self.run_cli(
+            "publish",
+            *args,
+            "--expected-revision",
+            first_revision,
+            "--expected-record-revision",
+            first_record,
+        )
+        self.assertEqual(second.returncode, 0, second.stderr)
+        second_payload = self.payload(second)
+        restore = self.run_cli(
+            "restore",
+            "--name",
+            "guide",
+            "--archive-commit",
+            first_commit,
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            second_payload["requested_revision"],
+            "--expected-record-revision",
+            second_payload["requested_record_revision"],
+        )
+        self.assertEqual(restore.returncode, 0, restore.stderr)
+        restored = self.payload(restore)
+        self.assertEqual(restored["requested_revision"], first_revision)
+        self.assertEqual(restored["requested_record_revision"], first_record)
+        restored_source_blob = self.git(
+            "rev-parse", f"{restored['archive_commit']}:guide/record/source/index.md"
+        )
+        self.assertEqual(self.git("cat-file", "blob", restored_source_blob), first_source)
+        self.assertEqual(
+            urllib.request.urlopen(f"{self.base_url}guide/next.html").read(),
+            (self.runtime / "releases" / first_revision / "next.html").read_bytes(),
+        )
+        public_files = {
+            path.relative_to(self.runtime / "releases" / first_revision).as_posix()
+            for path in (self.runtime / "releases" / first_revision).rglob("*")
+            if path.is_file()
+        }
+        self.assertEqual(public_files, {"index.html", "next.html"})
+
+    def test_markdown_static_render_rewrites_document_links_and_copies_assets(self) -> None:
+        source = self.root / "docs"
+        (source / "nested").mkdir(parents=True)
+        (source / "assets").mkdir()
+        (source / "index.md").write_text(
+            "---\nprivate: this stays private\n---\n"
+            "# Reading\n\nA **readable** paragraph.\n\n"
+            "- First item\n- Second item\n\n"
+            "```python\nprint('static')\n```\n\n"
+            "| Name | Value |\n| --- | --- |\n| Item | 1 |\n\n"
+            "[Next](nested/guide.md?view=full#next), [[nested/guide|Guide]], and [[guide]].\n\n"
+            "![Diagram](assets/diagram.svg)\n\n<script>alert(1)</script>\n"
+        )
+        (source / "nested" / "guide.md").write_text("# Guide\n\n## Next\n\nNext section.\n")
+        (source / "assets" / "diagram.svg").write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg"></svg>'
+        )
+
+        result = self.run_cli(
+            "publish",
+            "--name",
+            "guide",
+            "--source",
+            str(source),
+            "--format",
+            "markdown",
+            "--target",
+            self.base_url,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = self.payload(result)
+        revision = payload["requested_revision"]
+        index = (self.runtime / "releases" / revision / "index.html").read_text()
+        self.assertIn('<h1 id="reading">Reading</h1>', index)
+        self.assertIn("<strong>readable</strong>", index)
+        self.assertIn("<ul>", index)
+        self.assertIn('class="language-python"', index)
+        self.assertIn('role="region" aria-label="Markdown table"', index)
+        self.assertIn('href="nested/guide.html?view=full#next"', index)
+        self.assertIn('href="nested/guide.html">Guide</a>', index)
+        self.assertIn('href="nested/guide.html">guide</a>', index)
+        self.assertIn('src="assets/diagram.svg"', index)
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", index)
+        self.assertNotIn("<script>alert(1)</script>", index)
+        self.assertNotIn("this stays private", index)
+        self.assertEqual(
+            (self.runtime / "releases" / revision / "assets" / "diagram.svg").read_text(),
+            '<svg xmlns="http://www.w3.org/2000/svg"></svg>',
+        )
+        provenance_blob = self.git(
+            "rev-parse", f"{payload['archive_commit']}:guide/record/provenance.json"
+        )
+        provenance = json.loads(self.git("cat-file", "blob", provenance_blob))
+        self.assertEqual(
+            provenance["source_to_output"],
+            {
+                "assets/diagram.svg": "assets/diagram.svg",
+                "index.md": "index.html",
+                "nested/guide.md": "nested/guide.html",
+            },
+        )
+
+    def test_markdown_ambiguous_wikilink_stays_visible_and_warns(self) -> None:
+        source = self.root / "wiki"
+        (source / "one").mkdir(parents=True)
+        (source / "two").mkdir()
+        (source / "index.md").write_text("# Wiki\n\n[[guide]]\n")
+        (source / "one" / "guide.md").write_text("# One\n")
+        (source / "two" / "guide.md").write_text("# Two\n")
+
+        result = self.run_cli(
+            "publish",
+            "--name",
+            "wiki",
+            "--source",
+            str(source),
+            "--format",
+            "markdown",
+            "--target",
+            self.base_url,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = self.payload(result)
+        self.assertIn("unresolved_wikilink", payload["warnings"])
+        index = (
+            self.runtime / "releases" / payload["requested_revision"] / "index.html"
+        ).read_text()
+        self.assertIn("<p>[[guide]]</p>", index)
+
+    def test_markdown_single_file_publishes_as_index_and_keeps_original_name_private(self) -> None:
+        source = self.root / "article.md"
+        source.write_text("# Single document\n\nBody.\n")
+
+        result = self.run_cli(
+            "publish",
+            "--name",
+            "article",
+            "--source",
+            str(source),
+            "--format",
+            "markdown",
+            "--target",
+            self.base_url,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = self.payload(result)
+        revision = payload["requested_revision"]
+        public_root = self.runtime / "releases" / revision
+        self.assertEqual({path.name for path in public_root.iterdir()}, {"index.html"})
+        self.assertIn("Single document", (public_root / "index.html").read_text())
+        source_blob = self.git(
+            "rev-parse", f"{payload['archive_commit']}:article/record/source/article.md"
+        )
+        archived_source = subprocess.run(
+            ["git", f"--git-dir={self.archive}", "cat-file", "blob", source_blob],
+            capture_output=True,
+            check=True,
+        ).stdout
+        self.assertEqual(archived_source, source.read_bytes())
+
+    def test_identical_html_noop_and_absent_reactivation_preserve_markdown_archive(self) -> None:
+        source = self.root / "docs"
+        source.mkdir()
+        (source / "index.md").write_text("# Same output\n")
+        markdown = self.run_cli(
+            "publish",
+            "--name",
+            "guide",
+            "--source",
+            str(source),
+            "--format",
+            "markdown",
+            "--target",
+            self.base_url,
+        )
+        self.assertEqual(markdown.returncode, 0, markdown.stderr)
+        initial = self.payload(markdown)
+        revision = initial["requested_revision"]
+        record_revision = initial["requested_record_revision"]
+        archive_commit = initial["archive_commit"]
+
+        html = self.root / "same-output.html"
+        html.write_bytes((self.runtime / "releases" / revision / "index.html").read_bytes())
+        noop = self.run_cli(
+            "publish",
+            "--name",
+            "guide",
+            "--source",
+            str(html),
+            "--target",
+            self.base_url,
+        )
+        self.assertEqual(noop.returncode, 0, noop.stderr)
+        noop_payload = self.payload(noop)
+        self.assertEqual(noop_payload["outcome"], "unchanged")
+        self.assertEqual(noop_payload["archive_commit"], archive_commit)
+        self.assertEqual(noop_payload["archived_record_revision"], record_revision)
+        self.assertEqual(noop_payload["effects"], {"archive_advanced": False, "activated": False})
+
+        (self.runtime / "public" / "guide").unlink()
+        reactivated = self.run_cli(
+            "publish",
+            "--name",
+            "guide",
+            "--source",
+            str(html),
+            "--target",
+            self.base_url,
+        )
+        self.assertEqual(reactivated.returncode, 0, reactivated.stderr)
+        reactivated_payload = self.payload(reactivated)
+        self.assertEqual(reactivated_payload["outcome"], "published")
+        self.assertEqual(reactivated_payload["archive_commit"], archive_commit)
+        self.assertEqual(reactivated_payload["archived_record_revision"], record_revision)
+        self.assertEqual(
+            reactivated_payload["effects"],
+            {"archive_advanced": False, "activated": True},
+        )
+
     def test_newline_temporary_parent_preserves_served_bytes(self) -> None:
         temporary_parent = self.root / "temporary\nparent"
         temporary_parent.mkdir()
@@ -1075,7 +1611,11 @@ class PublisherCliTest(unittest.TestCase):
                 "url": None,
                 "expected_revision": None,
                 "requested_revision": None,
+                "expected_record_revision": None,
+                "requested_record_revision": None,
                 "archived_revision": None,
+                "archived_record_revision": None,
+                "render_profile_id": None,
                 "archive_commit": None,
                 "active_revision": None,
                 "effects": {"archive_advanced": False, "activated": False},

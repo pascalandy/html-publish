@@ -5,10 +5,12 @@ build-backend = "hatchling.build"
 [project]
 name = "html-publish"
 version = "0.1.0"
-description = "Private static HTML publishing with stable URLs and local Git history"
+description = "Private static page publishing with stable URLs and local Git history"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "markdown-it-py==4.2.0",
+]
 
 [project.scripts]
 html-publish = "html_publish.cli:entrypoint"

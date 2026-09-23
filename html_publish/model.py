@@ -8,8 +8,11 @@ from typing import Literal, NewType
 
 Name = NewType("Name", str)
 Revision = NewType("Revision", str)
+RecordRevision = NewType("RecordRevision", str)
 Commit = NewType("Commit", str)
 RelativePath = NewType("RelativePath", str)
+InputFormat = Literal["html", "markdown"]
+SourceKind = Literal["file", "directory"]
 Operation = Literal["plan", "publish", "status", "verify", "history", "restore"]
 
 
@@ -82,14 +85,50 @@ class CapturedSite:
 
 
 @dataclass(frozen=True)
+class CapturedSourceEntry:
+    path: RelativePath
+    size: int
+
+
+@dataclass(frozen=True)
+class CapturedSource:
+    root: Path
+    kind: SourceKind
+    entries: tuple[CapturedSourceEntry, ...]
+    total_bytes: int
+
+
+@dataclass(frozen=True)
+class CapturedRecord:
+    root: Path
+    entries: tuple[FileEntry, ...]
+    revision: RecordRevision
+    total_bytes: int
+
+
+@dataclass(frozen=True)
+class PreparedPublication:
+    site: CapturedSite
+    record: CapturedRecord | None = None
+    render_profile_id: str | None = None
+
+
+@dataclass(frozen=True)
 class StoredSite:
     revision: Revision
     entries: tuple[FileEntry, ...]
 
 
 @dataclass(frozen=True)
+class StoredRecord:
+    revision: RecordRevision
+    entries: tuple[FileEntry, ...]
+
+
+@dataclass(frozen=True)
 class SavedPage:
     site: StoredSite
+    record: StoredRecord | None
     commit: Commit
 
 
@@ -121,7 +160,9 @@ class StatusEntry:
 class HistoryEntry:
     archive_commit: Commit
     revision: Revision
+    record_revision: RecordRevision | None
     changes: Mapping[str, list[str]]
+    record_changes: Mapping[str, list[str]]
 
 
 @dataclass(frozen=True)
@@ -169,6 +210,9 @@ class Report:
     details: Mapping[str, object] = field(default_factory=_empty_details)
     status_entries: tuple[StatusEntry, ...] = ()
     warning_details: tuple[WarningDetail, ...] = ()
+    expected_record_revision: RecordRevision | None = None
+    requested_record_revision: RecordRevision | None = None
+    render_profile_id: str | None = None
 
 
 class PublishError(Exception):

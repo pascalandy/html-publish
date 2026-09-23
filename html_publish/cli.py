@@ -41,6 +41,7 @@ from html_publish.model import (
     Name,
     Operation,
     PublishError,
+    RecordRevision,
     Report,
     Revision,
     Selection,
@@ -183,7 +184,8 @@ def _parser(json_version: bool = False) -> Parser:
     )
     parser = Parser(
         prog="html-publish",
-        description="Publish private static HTML with a stable URL and local Git history. "
+        description="Publish private static pages with stable URLs and local Git history. "
+        "Accept HTML directly or render Markdown to static HTML. "
         "Use artifact publish for durable receipts and safe fresh-session updates. "
         "The root plan, publish, status, verify, history, and restore commands "
         "address the publisher directly.",
@@ -223,7 +225,17 @@ def _parser(json_version: bool = False) -> Parser:
         help="publication name (lowercase letters, digits, single hyphens; max 80)",
     )
     plan.add_argument(
-        "--source", required=True, type=Path, help="HTML file or directory to capture"
+        "--source", required=True, type=Path, help="HTML or Markdown file or directory"
+    )
+    plan.add_argument(
+        "--format",
+        dest="input_format",
+        choices=("html", "markdown"),
+        default="html",
+        help="input format (default: html)",
+    )
+    plan.add_argument(
+        "--entry", help="Markdown directory entry file; otherwise index.md or README.md is selected"
     )
     plan.add_argument(
         "--target", required=True, help="publication base URL (must match configuration)"
@@ -234,6 +246,11 @@ def _parser(json_version: bool = False) -> Parser:
         help="expected active revision used for the prediction; "
         "omit for a first publication or identical retry",
     )
+    plan.add_argument(
+        "--expected-record-revision",
+        type=RecordRevision,
+        help="expected latest private source-record revision for Markdown publication",
+    )
     _globals(plan, version)
 
     publish = register_command(
@@ -243,6 +260,8 @@ def _parser(json_version: bool = False) -> Parser:
         examples=(
             "html-publish --config publisher.json --json publish --name release-notes "
             "--source ./page.html --target https://host.example/pages/",
+            "html-publish --config publisher.json --json publish --name guide "
+            "--source ./docs --format markdown --target https://host.example/pages/",
         ),
         effects=("may advance archive", "may activate page", "probes delivery"),
     )
@@ -253,7 +272,17 @@ def _parser(json_version: bool = False) -> Parser:
         help="publication name (lowercase letters, digits, single hyphens; max 80)",
     )
     publish.add_argument(
-        "--source", required=True, type=Path, help="HTML file or directory to capture"
+        "--source", required=True, type=Path, help="HTML or Markdown file or directory"
+    )
+    publish.add_argument(
+        "--format",
+        dest="input_format",
+        choices=("html", "markdown"),
+        default="html",
+        help="input format (default: html)",
+    )
+    publish.add_argument(
+        "--entry", help="Markdown directory entry file; otherwise index.md or README.md is selected"
     )
     publish.add_argument(
         "--target", required=True, help="publication base URL (must match configuration)"
@@ -263,6 +292,11 @@ def _parser(json_version: bool = False) -> Parser:
         type=Revision,
         help="expected active revision to replace different content; "
         "omit for a first publication or identical retry",
+    )
+    publish.add_argument(
+        "--expected-record-revision",
+        type=RecordRevision,
+        help="expected latest private source-record revision for Markdown publication",
     )
     publish.add_argument(
         "--request-id", help="caller attempt ID echoed in the result for reconciliation"
@@ -351,6 +385,11 @@ def _parser(json_version: bool = False) -> Parser:
         "--expected-revision", type=Revision, help="expected active revision for guarded restore"
     )
     restore.add_argument(
+        "--expected-record-revision",
+        type=RecordRevision,
+        help="expected latest private source-record revision for guarded restore",
+    )
+    restore.add_argument(
         "--request-id", help="caller attempt ID echoed in the result for reconciliation"
     )
     _globals(restore, version)
@@ -382,7 +421,17 @@ def _parser(json_version: bool = False) -> Parser:
         ),
         effects=("saves immutable pending input", "may publish and verify"),
     )
-    artifact_publish.add_argument("source", help="HTML file or directory")
+    artifact_publish.add_argument("source", help="HTML or Markdown file or directory")
+    artifact_publish.add_argument(
+        "--format",
+        dest="input_format",
+        choices=("html", "markdown"),
+        default="html",
+        help="input format (default: html)",
+    )
+    artifact_publish.add_argument(
+        "--entry", help="Markdown directory entry file; otherwise index.md or README.md"
+    )
     artifact_publish.add_argument(
         "--receipt", help="private receipt directory; defaults to SOURCE.publish"
     )
@@ -391,6 +440,10 @@ def _parser(json_version: bool = False) -> Parser:
     identity.add_argument("--adopt", type=_name, help="bind an existing name after review")
     artifact_publish.add_argument(
         "--reviewed-revision", help="reviewed active revision for adoption or conflict replacement"
+    )
+    artifact_publish.add_argument(
+        "--reviewed-record-revision",
+        help="reviewed private record revision when upgrading a legacy receipt",
     )
     artifact_publish.add_argument(
         "--replaces-attempt", help="stored conflicting attempt ID; requires --reviewed-revision"
@@ -442,6 +495,10 @@ def _parser(json_version: bool = False) -> Parser:
     )
     artifact_restore.add_argument(
         "--reviewed-revision", help="reviewed active revision for conflict replacement"
+    )
+    artifact_restore.add_argument(
+        "--reviewed-record-revision",
+        help="reviewed private record revision for conflict replacement",
     )
     artifact_restore.add_argument(
         "--replaces-attempt", help="stored conflicting attempt ID; requires --reviewed-revision"
@@ -854,6 +911,7 @@ def _state_dict(state: LocalState) -> dict[str, object]:
         if state.saved is None
         else {
             "revision": state.saved.site.revision,
+            "record_revision": state.saved.record.revision if state.saved.record else None,
             "archive_commit": state.saved.commit,
         },
         "selection": _selection_dict(state.selection),
@@ -926,6 +984,15 @@ def project_report(payload: dict[str, object], mode: ReportMode) -> dict[str, ob
             values = differences.get(key)
             if isinstance(values, list):
                 differences[key] = collection(f"/differences/{key}", cast(list[object], values))
+    record_differences = payload.get("record_differences")
+    if isinstance(record_differences, dict):
+        record_differences = cast(dict[str, object], record_differences)
+        for key in ("added", "changed", "deleted"):
+            values = record_differences.get(key)
+            if isinstance(values, list):
+                record_differences[key] = collection(
+                    f"/record_differences/{key}", cast(list[object], values)
+                )
     entries = payload.get("entries")
     if payload.get("operation") == "history" and isinstance(entries, list):
         for index, entry in enumerate(cast(list[object], entries)):
@@ -940,6 +1007,16 @@ def project_report(payload: dict[str, object], mode: ReportMode) -> dict[str, ob
                         changes[key] = collection(
                             f"/entries/{index}/changes/{key}", cast(list[object], values)
                         )
+                record_changes = typed_entry.get("record_changes")
+                if isinstance(record_changes, dict):
+                    typed_record_changes = cast(dict[str, object], record_changes)
+                    for key in ("added", "changed", "deleted"):
+                        values = typed_record_changes.get(key)
+                        if isinstance(values, list):
+                            typed_record_changes[key] = collection(
+                                f"/entries/{index}/record_changes/{key}",
+                                cast(list[object], values),
+                            )
     for path, container, key in (
         ("/error/message", payload.get("error"), "message"),
         ("/verification/detail", payload.get("verification"), "detail"),
@@ -975,7 +1052,13 @@ def report_dict(report: Report, mode: ReportMode = "detail") -> dict[str, object
         "url": report.url,
         "expected_revision": report.expected_revision,
         "requested_revision": report.requested_revision,
+        "expected_record_revision": report.expected_record_revision,
+        "requested_record_revision": report.requested_record_revision,
         "archived_revision": state.saved.site.revision if state and state.saved else None,
+        "archived_record_revision": (
+            state.saved.record.revision if state and state.saved and state.saved.record else None
+        ),
+        "render_profile_id": report.render_profile_id,
         "archive_commit": state.saved.commit if state and state.saved else None,
         "active_revision": state.selection.revision
         if state and state.selection.kind == "selected"
@@ -1007,6 +1090,7 @@ def usage_report(
     target: str | None = None,
     name: Name | None = None,
     expected_revision: Revision | None = None,
+    expected_record_revision: RecordRevision | None = None,
     request_id: str | None = None,
     mode: ReportMode = "detail",
 ) -> dict[str, object]:
@@ -1020,6 +1104,7 @@ def usage_report(
                 publication_url(target, name) if target is not None and name is not None else None,
                 request_id=request_id,
                 expected_revision=expected_revision,
+                expected_record_revision=expected_record_revision,
                 error=failure,
             ),
             mode,
@@ -1034,7 +1119,11 @@ def usage_report(
         "url": None,
         "expected_revision": None,
         "requested_revision": None,
+        "expected_record_revision": None,
+        "requested_record_revision": None,
         "archived_revision": None,
+        "archived_record_revision": None,
+        "render_profile_id": None,
         "archive_commit": None,
         "active_revision": None,
         "effects": {"archive_advanced": False, "activated": False},
@@ -1371,6 +1460,9 @@ def main(argv: list[str] | None = None) -> int:
                     parsed.source,
                     parsed.target,
                     parsed.expected_revision,
+                    parsed.input_format,
+                    parsed.entry,
+                    parsed.expected_record_revision,
                 )
             elif parsed.operation == "publish":
                 report = store.publish(
@@ -1379,6 +1471,9 @@ def main(argv: list[str] | None = None) -> int:
                     parsed.target,
                     parsed.expected_revision,
                     parsed.request_id,
+                    parsed.input_format,
+                    parsed.entry,
+                    parsed.expected_record_revision,
                 )
             elif parsed.operation == "verify":
                 report = store.verify_page(parsed.name)
@@ -1393,6 +1488,7 @@ def main(argv: list[str] | None = None) -> int:
                     parsed.target,
                     parsed.expected_revision,
                     parsed.request_id,
+                    parsed.expected_record_revision,
                 )
             else:
                 report = store.status(
@@ -1446,6 +1542,7 @@ def main(argv: list[str] | None = None) -> int:
                     target=getattr(parsed, "target", None),
                     name=getattr(parsed, "name", None),
                     expected_revision=getattr(parsed, "expected_revision", None),
+                    expected_record_revision=getattr(parsed, "expected_record_revision", None),
                     request_id=getattr(parsed, "request_id", None),
                     mode=getattr(parsed, "report", _requested_report_mode(arguments)),
                 ),
@@ -1485,6 +1582,7 @@ def main(argv: list[str] | None = None) -> int:
             publication_url(target, name) if target is not None and name is not None else None,
             request_id=getattr(parsed, "request_id", None),
             expected_revision=getattr(parsed, "expected_revision", None),
+            expected_record_revision=getattr(parsed, "expected_record_revision", None),
             error=error.failure,
         )
         return _print_report(report, json_output, getattr(parsed, "report", "detail"))

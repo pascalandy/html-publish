@@ -20,7 +20,7 @@ from typing import Literal, NoReturn, cast
 from urllib.parse import urlparse
 
 from html_publish import __version__
-from html_publish.artifact import capture
+from html_publish.artifact import capture, capture_source
 from html_publish.cli import ReportMode, bound_report_text, emit_json, report_dict, usage_report
 from html_publish.configuration import ClientConfig, read_document, selected_path
 from html_publish.delivery import publication_url
@@ -29,14 +29,17 @@ from html_publish.discovery import (
     register_command,
     version_payload,
 )
+from html_publish.markdown import RENDER_PROFILE_ID
 from html_publish.model import (
     Deadline,
     Effects,
     Failure,
+    InputFormat,
     Limits,
     Name,
     Operation,
     PublishError,
+    RecordRevision,
     Report,
     Revision,
 )
@@ -103,6 +106,9 @@ class ArtifactRequest:
     expected_revision: str | None
     request_id: str | None
     report: ReportMode = "detail"
+    input_format: InputFormat = "html"
+    entry: str | None = None
+    expected_record_revision: str | None = None
 
 
 @dataclass(frozen=True)
@@ -140,6 +146,7 @@ class RestoreRequest:
     expected_revision: str | None
     request_id: str
     report: ReportMode = "detail"
+    expected_record_revision: str | None = None
 
 
 Request = ArtifactRequest | StatusRequest | VerifyRequest | HistoryRequest | RestoreRequest
@@ -298,7 +305,20 @@ def _parser(json_version: bool = False) -> Parser:
             help="publication name (lowercase letters, digits, single hyphens; max 80)",
         )
         command.add_argument(
-            "--source", required=True, type=Path, help="HTML file or directory to upload"
+            "--source",
+            required=True,
+            type=Path,
+            help="HTML or Markdown file or directory to upload",
+        )
+        command.add_argument(
+            "--format",
+            dest="input_format",
+            choices=("html", "markdown"),
+            default="html",
+            help="input format (default: html)",
+        )
+        command.add_argument(
+            "--entry", help="Markdown directory entry file; otherwise index.md or README.md"
         )
         command.add_argument(
             "--expected-revision",
@@ -309,6 +329,10 @@ def _parser(json_version: bool = False) -> Parser:
                 else "expected active revision to replace different content; "
                 "omit for a first publication or identical retry"
             ),
+        )
+        command.add_argument(
+            "--expected-record-revision",
+            help="expected latest private source-record revision for Markdown publication",
         )
         if operation == "publish":
             command.add_argument("--request-id", help="caller attempt ID echoed in the result")
@@ -415,6 +439,7 @@ def _parser(json_version: bool = False) -> Parser:
         help="reachable commit containing the revision to restore",
     )
     restore.add_argument("--expected-revision", help="expected active revision for guarded restore")
+    restore.add_argument("--expected-record-revision", help="expected private record revision")
     restore.add_argument("--request-id", help="caller attempt ID echoed in the result")
     restore.add_argument(
         "--report", choices=("detail", "summary"), default="detail", help=REPORT_HELP
@@ -529,7 +554,13 @@ def _parse(arguments: list[str]) -> tuple[RemoteSettings, Request]:
             cast(str | None, parsed.expected_revision),
             request_id,
             cast(ReportMode, parsed.report),
+            cast(str | None, parsed.expected_record_revision),
         )
+    input_format = cast(InputFormat, parsed.input_format)
+    entry = cast(str | None, parsed.entry)
+    expected_record_revision = cast(str | None, parsed.expected_record_revision)
+    if input_format == "html" and (entry is not None or expected_record_revision is not None):
+        raise UsageFailure("--entry and --expected-record-revision require --format markdown")
     return settings, ArtifactRequest(
         operation,
         name,
@@ -537,6 +568,9 @@ def _parse(arguments: list[str]) -> tuple[RemoteSettings, Request]:
         cast(str | None, parsed.expected_revision),
         request_id,
         cast(ReportMode, parsed.report),
+        input_format,
+        entry,
+        expected_record_revision,
     )
 
 
@@ -582,6 +616,7 @@ def _usage_payload(arguments: list[str], failure: Failure) -> dict[str, object]:
         valid_target = False
     request_id = _argument_value(arguments, "--request-id")
     expected_revision = _argument_value(arguments, "--expected-revision")
+    expected_record_revision = _argument_value(arguments, "--expected-record-revision")
     return usage_report(
         operation,
         failure,
@@ -589,6 +624,11 @@ def _usage_payload(arguments: list[str], failure: Failure) -> dict[str, object]:
         name=name,
         request_id=request_id,
         expected_revision=Revision(expected_revision) if expected_revision is not None else None,
+        expected_record_revision=(
+            RecordRevision(expected_record_revision)
+            if expected_record_revision is not None
+            else None
+        ),
         mode=mode,
     )
 
@@ -605,6 +645,14 @@ def _expected_revision(request: Request) -> str | None:
     return None
 
 
+def _expected_record_revision(request: Request) -> str | None:
+    if isinstance(request, ArtifactRequest):
+        return request.expected_record_revision
+    if isinstance(request, RestoreRequest):
+        return request.expected_record_revision
+    return None
+
+
 def _failure_payload(
     settings: RemoteSettings,
     request: Request,
@@ -614,6 +662,7 @@ def _failure_payload(
 ) -> dict[str, object]:
     name = request.name
     expected_revision = _expected_revision(request)
+    expected_record_revision = _expected_record_revision(request)
     return report_dict(
         Report(
             request.operation,
@@ -625,6 +674,14 @@ def _failure_payload(
             expected_revision=Revision(expected_revision)
             if expected_revision is not None
             else None,
+            expected_record_revision=RecordRevision(expected_record_revision)
+            if expected_record_revision is not None
+            else None,
+            render_profile_id=(
+                RENDER_PROFILE_ID
+                if isinstance(request, ArtifactRequest) and request.input_format == "markdown"
+                else None
+            ),
             effects=effects or Effects(),
             error=failure,
             details=details or {},
@@ -714,6 +771,12 @@ def _remote_arguments(
         )
         if request.expected_revision is not None:
             arguments.extend(["--expected-revision", request.expected_revision])
+        if request.input_format == "markdown":
+            arguments.extend(["--format", "markdown"])
+            if request.entry is not None:
+                arguments.extend(["--entry", request.entry])
+        if request.expected_record_revision is not None:
+            arguments.extend(["--expected-record-revision", request.expected_record_revision])
         if request.request_id is not None:
             arguments.extend(["--request-id", request.request_id])
         return arguments
@@ -737,6 +800,8 @@ def _remote_arguments(
         arguments.extend(["--archive-commit", request.archive_commit, "--target", settings.target])
         if request.expected_revision is not None:
             arguments.extend(["--expected-revision", request.expected_revision])
+        if request.expected_record_revision is not None:
+            arguments.extend(["--expected-record-revision", request.expected_record_revision])
         arguments.extend(["--request-id", request.request_id])
     return arguments
 
@@ -796,18 +861,27 @@ def _validate_verification(value: object) -> dict[str, object]:
 
 
 def _validate_observation(
-    value: object, report: Mapping[str, object] | None = None
+    value: object,
+    report: Mapping[str, object] | None = None,
+    *,
+    require_record_identity: bool = False,
 ) -> dict[str, object] | None:
     saved_revision: object = None
+    saved_record_revision: object = None
     archive_commit: object = None
     active_revision: object = None
     selection: dict[str, object] | None = None
     if value is not None:
         observation = _report_object(value, {"saved", "selection"}, "observation")
         if observation["saved"] is not None:
-            saved = _report_object(
-                observation["saved"], {"revision", "archive_commit"}, "saved state"
+            saved_raw = _report_object(
+                observation["saved"],
+                {"revision", "archive_commit"},
+                "saved state",
             )
+            if require_record_identity and "record_revision" not in saved_raw:
+                raise ProtocolFailure("The host result saved state omits its record revision")
+            saved = saved_raw
             if any(
                 not isinstance(saved[key], str) or not saved[key]
                 for key in ("revision", "archive_commit")
@@ -816,6 +890,9 @@ def _validate_observation(
                     "The host result saved revision and commit must be nonempty text"
                 )
             saved_revision, archive_commit = saved["revision"], saved["archive_commit"]
+            saved_record_revision = saved.get("record_revision")
+            if saved_record_revision is not None and not isinstance(saved_record_revision, str):
+                raise ProtocolFailure("The host result saved record revision is invalid")
         selection = _report_object(
             observation["selection"],
             {"state", "revision", "integrity_checked", "detail"},
@@ -839,6 +916,7 @@ def _validate_observation(
             raise ProtocolFailure("The absent or unobserved selection cannot claim a revision")
     if report is not None and (
         report["archived_revision"] != saved_revision
+        or report.get("archived_record_revision") != saved_record_revision
         or report["archive_commit"] != archive_commit
         or report["active_revision"] != active_revision
     ):
@@ -890,6 +968,13 @@ def _validate_report_projection(payload: dict[str, object], request: Request) ->
             paths = differences.get(key)
             if isinstance(paths, list):
                 expected[f"/differences/{key}"] = cast(list[object], paths)
+    record_differences = payload.get("record_differences")
+    if isinstance(record_differences, dict):
+        record_differences = cast(dict[str, object], record_differences)
+        for key in ("added", "changed", "deleted"):
+            paths = record_differences.get(key)
+            if isinstance(paths, list):
+                expected[f"/record_differences/{key}"] = cast(list[object], paths)
     entries = payload.get("entries")
     if request.operation == "history" and isinstance(entries, list):
         for index, entry in enumerate(cast(list[object], entries)):
@@ -902,6 +987,15 @@ def _validate_report_projection(payload: dict[str, object], request: Request) ->
                     paths = changes.get(key)
                     if isinstance(paths, list):
                         expected[f"/entries/{index}/changes/{key}"] = cast(list[object], paths)
+                record_changes = typed_entry.get("record_changes")
+                if isinstance(record_changes, dict):
+                    record_changes = cast(dict[str, object], record_changes)
+                    for key in ("added", "changed", "deleted"):
+                        paths = record_changes.get(key)
+                        if isinstance(paths, list):
+                            expected[f"/entries/{index}/record_changes/{key}"] = cast(
+                                list[object], paths
+                            )
     if set(collections) != set(expected):
         raise ProtocolFailure("The host report collection metadata is incomplete")
     for path, paths in expected.items():
@@ -999,9 +1093,30 @@ def _validate_host_payload(
         raise ProtocolFailure("The host result request ID does not match the request")
     if payload.get("expected_revision") != _expected_revision(request):
         raise ProtocolFailure("The host result expectation does not match the request")
+    record_aware_request = isinstance(request, RestoreRequest) or (
+        isinstance(request, ArtifactRequest) and request.input_format == "markdown"
+    )
+    record_identity_fields = {
+        "expected_record_revision",
+        "requested_record_revision",
+        "archived_record_revision",
+        "render_profile_id",
+    }
+    if record_aware_request and not record_identity_fields.issubset(payload):
+        raise ProtocolFailure("The host result is missing Markdown record identity fields")
+    if payload.get("expected_record_revision") != _expected_record_revision(request):
+        raise ProtocolFailure("The host record expectation does not match the request")
     if any(
-        payload[key] is not None and not isinstance(payload[key], str)
-        for key in ("requested_revision", "archived_revision", "archive_commit", "active_revision")
+        payload.get(key) is not None and not isinstance(payload.get(key), str)
+        for key in (
+            "requested_revision",
+            "requested_record_revision",
+            "archived_revision",
+            "archived_record_revision",
+            "archive_commit",
+            "active_revision",
+            "render_profile_id",
+        )
     ):
         raise ProtocolFailure("The host result revision fields are invalid")
     outcome = payload.get("outcome")
@@ -1033,14 +1148,30 @@ def _validate_host_payload(
         effect_values[key] is None for key in ("archive_advanced", "activated")
     ):
         raise ProtocolFailure("The host success result has unknown effects")
-    if outcome == "published" and effect_values["activated"] is not True:
-        raise ProtocolFailure("The published host result does not report activation")
+    record_only_published = (
+        outcome == "published"
+        and record_aware_request
+        and effect_values["archive_advanced"] is True
+        and effect_values["activated"] is False
+        and payload["requested_revision"] == payload["active_revision"]
+        and payload["requested_record_revision"] == payload["archived_record_revision"]
+    )
+    if (
+        outcome == "published"
+        and effect_values["activated"] is not True
+        and not record_only_published
+    ):
+        raise ProtocolFailure(
+            "The published host result reports neither activation nor record-only archive"
+        )
     if (outcome == "unchanged" or exit_code == 2) and any(
         effect_values[key] is not False for key in ("archive_advanced", "activated")
     ):
         raise ProtocolFailure("The host result effects disagree with its outcome")
     verification = _validate_verification(payload["verification"])
-    selection = _validate_observation(payload["observation"], payload)
+    selection = _validate_observation(
+        payload["observation"], payload, require_record_identity=record_aware_request
+    )
     if request.operation == "status" and request.name is None:
         entries = payload.get("entries")
         if not isinstance(entries, list):
@@ -1129,6 +1260,11 @@ def _validate_host_payload(
                 raise ProtocolFailure(
                     "The published host result does not archive its requested revision"
                 )
+            if (
+                record_aware_request
+                and payload["requested_record_revision"] != payload["archived_record_revision"]
+            ):
+                raise ProtocolFailure("The successful host result does not archive its record")
     return cast(ExitCode, exit_code)
 
 
@@ -1319,18 +1455,19 @@ def _run_artifact(
     deadline: Deadline,
 ) -> int:
     staging = settings.incoming_root / uuid.uuid4().hex
-    remote_source = staging / "site"
+    remote_source = staging / ("source" if request.input_format == "markdown" else "site")
     try:
         with tempfile.TemporaryDirectory(prefix="html-publish-remote-") as temporary:
             workspace = Path(temporary)
             os.chmod(workspace, 0o700)
-            captured = capture(
-                request.source,
-                workspace,
-                "sha1",
-                Limits(command_seconds=settings.command_seconds),
-                deadline,
-            )
+            limits = Limits(command_seconds=settings.command_seconds)
+            if request.input_format == "markdown":
+                captured_source = capture_source(request.source, workspace, limits, deadline)
+                captured = captured_source
+                if captured_source.kind == "file":
+                    remote_source /= request.source.name
+            else:
+                captured = capture(request.source, workspace, "sha1", limits, deadline)
             transport_deadline = _transport_deadline(deadline, settings.command_seconds)
             mkdir = (
                 shlex.join(["umask", "077"]) + " && " + shlex.join(["mkdir", "--", str(staging)])

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import json
 import os
 import stat
 import tempfile
@@ -19,7 +20,10 @@ from html_publish.delivery import (
     resolve_host,
     verify,
 )
+from html_publish.markdown import RENDER_PROFILE_ID
+from html_publish.markdown import prepare as prepare_markdown
 from html_publish.model import (
+    CapturedRecord,
     CapturedSite,
     Commit,
     Config,
@@ -28,15 +32,19 @@ from html_publish.model import (
     Failure,
     FileEntry,
     HistoryEntry,
+    InputFormat,
     LocalState,
     Name,
+    PreparedPublication,
     PublishError,
+    RecordRevision,
     RelativePath,
     Report,
     Revision,
     SavedPage,
     Selection,
     StatusEntry,
+    StoredRecord,
     StoredSite,
     Verification,
 )
@@ -44,7 +52,7 @@ from html_publish.model import (
 ARCHIVE_REF = "refs/heads/published"
 _PublishingOperation = Literal["publish", "restore"]
 _DIFF_CAP_BYTES = 64 * 1024
-_PublicationDecision = Literal["create", "update", "unchanged"]
+_PublicationDecision = Literal["create", "update", "unchanged", "record"]
 
 
 def _fsync_directory(path: Path) -> None:
@@ -109,6 +117,99 @@ def _decide_publication(
         "Different content is saved while the active publication is absent",
         "review_conflict",
         ("archived_revision", "requested_revision"),
+    )
+
+
+def _record_revision(record: StoredRecord | CapturedRecord | None) -> RecordRevision | None:
+    return record.revision if record is not None else None
+
+
+def _decide_markdown(
+    state: LocalState,
+    prepared: PreparedPublication,
+    expected_revision: Revision | None,
+    expected_record_revision: RecordRevision | None,
+) -> _PublicationDecision | Failure:
+    selection = state.selection
+    if selection.kind == "degraded":
+        return Failure(
+            "state_degraded",
+            "guard",
+            selection.detail or "The selected export is degraded",
+            "inspect",
+        )
+    if selection.kind == "unobserved":
+        return Failure(
+            "state_unobserved",
+            "guard",
+            selection.detail or "Selected state could not be observed",
+            "inspect",
+        )
+
+    saved = state.saved
+    requested_site = prepared.site.revision
+    requested_record = _record_revision(prepared.record)
+    archived_record = _record_revision(saved.record) if saved is not None else None
+    active = selection.revision if selection.kind == "selected" else None
+    saved_pair_matches = (
+        saved is not None
+        and saved.site.revision == requested_site
+        and archived_record == requested_record
+    )
+
+    if active == requested_site and saved_pair_matches:
+        return "unchanged"
+    if saved_pair_matches:
+        return "create" if active is None else "update"
+
+    if active == requested_site:
+        if expected_revision == active and expected_record_revision == archived_record:
+            return "record"
+        return Failure(
+            "revision_conflict",
+            "guard",
+            "The source record does not match the expected archived record revision",
+            "review_conflict",
+            (
+                "expected_revision",
+                "active_revision",
+                "expected_record_revision",
+                "archived_record_revision",
+                "requested_record_revision",
+            ),
+        )
+
+    if active is not None:
+        if expected_revision == active and expected_record_revision == archived_record:
+            return "update"
+        return Failure(
+            "revision_conflict",
+            "guard",
+            "The active output or archived source record changed since it was reviewed",
+            "review_conflict",
+            (
+                "expected_revision",
+                "active_revision",
+                "expected_record_revision",
+                "archived_record_revision",
+                "requested_revision",
+                "requested_record_revision",
+            ),
+        )
+
+    if saved is None and expected_revision is None and expected_record_revision is None:
+        return "create"
+    return Failure(
+        "revision_conflict",
+        "guard",
+        "Saved state changed while the active publication is absent",
+        "review_conflict",
+        (
+            "expected_revision",
+            "archived_revision",
+            "expected_record_revision",
+            "archived_record_revision",
+        ),
     )
 
 
@@ -271,6 +372,24 @@ class PublicationStore:
             return None
         return site_entry.object_id
 
+    def _page_record_tree_at(self, commit: str, name: Name) -> str | None:
+        root_entries = _git.read_tree(self.config.archive, f"{commit}^{{tree}}", self.deadline)
+        name_entry = next((entry for entry in root_entries if entry.name == str(name)), None)
+        if name_entry is None or name_entry.kind != "tree":
+            return None
+        name_entries = _git.read_tree(self.config.archive, name_entry.object_id, self.deadline)
+        record_entry = next((entry for entry in name_entries if entry.name == "record"), None)
+        if record_entry is None:
+            return None
+        if record_entry.kind != "tree":
+            raise PublishError(
+                "archive_corrupt",
+                "archive",
+                f"The archived record for {name} is not a tree",
+                "inspect",
+            )
+        return record_entry.object_id
+
     def _site(self, revision: str) -> StoredSite:
         output = _git.command(
             self.config.archive,
@@ -303,6 +422,65 @@ class PublicationStore:
             entries.append(FileEntry(RelativePath(path), size, object_id.decode("ascii")))
         return StoredSite(Revision(revision), tuple(entries))
 
+    def _record(self, revision: str) -> StoredRecord:
+        output = _git.command(
+            self.config.archive,
+            ["ls-tree", "-r", "-l", "-z", revision],
+            self.deadline,
+        )
+        entries: list[FileEntry] = []
+        for record in output.split(b"\0"):
+            if not record:
+                continue
+            metadata, raw_path = record.split(b"\t", 1)
+            mode, kind, object_id, raw_size = metadata.split(b" ", 3)
+            if mode != b"100644" or kind != b"blob":
+                raise PublishError(
+                    "archive_corrupt",
+                    "archive",
+                    f"The saved record contains an unsupported Git entry: {raw_path!r}",
+                    "inspect",
+                )
+            try:
+                path = raw_path.decode("utf-8", "strict")
+                size = int(raw_size)
+            except (UnicodeDecodeError, ValueError) as error:
+                raise PublishError(
+                    "archive_corrupt",
+                    "archive",
+                    "The saved record contains invalid path or size data",
+                    "inspect",
+                ) from error
+            parts = PurePosixPath(path).parts
+            safe_source_path = (
+                len(parts) >= 2
+                and parts[0] == "source"
+                and all(
+                    part not in {"", ".", ".."}
+                    and not part.startswith(".")
+                    and "\\" not in part
+                    and all(ord(character) >= 32 and ord(character) != 127 for character in part)
+                    for part in parts
+                )
+            )
+            if path != "provenance.json" and not safe_source_path:
+                raise PublishError(
+                    "archive_corrupt",
+                    "archive",
+                    f"The saved record has an unexpected path: {path}",
+                    "inspect",
+                )
+            entries.append(FileEntry(RelativePath(path), size, object_id.decode("ascii")))
+        paths = {str(entry.path) for entry in entries}
+        if "provenance.json" not in paths or not any(path.startswith("source/") for path in paths):
+            raise PublishError(
+                "archive_corrupt",
+                "archive",
+                "The saved Markdown record is missing source or provenance",
+                "inspect",
+            )
+        return StoredRecord(RecordRevision(revision), tuple(entries))
+
     def _saved(self, name: Name) -> SavedPage | None:
         head = self._head()
         if head is None:
@@ -313,7 +491,15 @@ class PublicationStore:
         commit_output = (
             _git.command(
                 self.config.archive,
-                ["log", "-1", "--format=%H", head, "--", f"{name}/site"],
+                [
+                    "log",
+                    "-1",
+                    "--format=%H",
+                    head,
+                    "--",
+                    f"{name}/site",
+                    f"{name}/record",
+                ],
                 self.deadline,
             )
             .decode()
@@ -326,7 +512,9 @@ class PublicationStore:
                 f"The saved page has no reachable history entry: {name}",
                 "inspect",
             )
-        return SavedPage(self._site(revision), Commit(commit_output))
+        record_tree = self._page_record_tree_at(head, name)
+        record = self._record(record_tree) if record_tree is not None else None
+        return SavedPage(self._site(revision), record, Commit(commit_output))
 
     def _reachable(self, name: Name, revision: Revision) -> bool:
         head = self._head()
@@ -350,7 +538,7 @@ class PublicationStore:
         output = (
             _git.command(
                 self.config.archive,
-                ["rev-list", head, "--", f"{name}/site"],
+                ["rev-list", head, "--", f"{name}/site", f"{name}/record"],
                 self.deadline,
             )
             .decode()
@@ -466,8 +654,14 @@ class PublicationStore:
         except (OSError, PublishError) as error:
             return LocalState(None, Selection("unobserved", detail=str(error)))
 
-    def _save(self, name: Name, captured: CapturedSite, expected_head: str | None) -> SavedPage:
+    def _save(
+        self,
+        name: Name,
+        prepared: PreparedPublication,
+        expected_head: str | None,
+    ) -> SavedPage:
         self._ensure_archive()
+        captured = prepared.site
         file_blobs: list[tuple[PurePosixPath, str]] = []
         for entry in captured.entries:
             source = captured.root.joinpath(*PurePosixPath(str(entry.path)).parts)
@@ -489,6 +683,31 @@ class PublicationStore:
                 "inspect",
             )
 
+        stored_record: StoredRecord | None = None
+        record_tree: str | None = None
+        if prepared.record is not None:
+            record_blobs: list[tuple[PurePosixPath, str]] = []
+            for entry in prepared.record.entries:
+                source = prepared.record.root.joinpath(*PurePosixPath(str(entry.path)).parts)
+                blob = _git.hash_file(self.config.archive, source, self.deadline, write=True)
+                if blob != entry.blob:
+                    raise PublishError(
+                        "archive_failure",
+                        "archive",
+                        f"Git produced a different blob identity for record path {entry.path}",
+                        "inspect",
+                    )
+                record_blobs.append((PurePosixPath(str(entry.path)), blob))
+            record_tree = _git.make_site_tree(self.config.archive, record_blobs, self.deadline)
+            if record_tree != str(prepared.record.revision):
+                raise PublishError(
+                    "archive_failure",
+                    "archive",
+                    "The archive produced a different record revision from capture",
+                    "inspect",
+                )
+            stored_record = StoredRecord(RecordRevision(record_tree), prepared.record.entries)
+
         root_entries: list[_git.TreeEntry] = []
         name_entries: list[_git.TreeEntry] = []
         if expected_head is not None:
@@ -507,8 +726,10 @@ class PublicationStore:
                 name_entries = list(
                     _git.read_tree(self.config.archive, existing_name.object_id, self.deadline)
                 )
-        name_entries = [entry for entry in name_entries if entry.name != "site"]
+        name_entries = [entry for entry in name_entries if entry.name not in {"site", "record"}]
         name_entries.append(_git.TreeEntry("040000", "tree", site_tree, "site"))
+        if record_tree is not None:
+            name_entries.append(_git.TreeEntry("040000", "tree", record_tree, "record"))
         name_tree = _git.make_tree(self.config.archive, name_entries, self.deadline)
         root_entries = [entry for entry in root_entries if entry.name != str(name)]
         root_entries.append(_git.TreeEntry("040000", "tree", name_tree, str(name)))
@@ -522,7 +743,9 @@ class PublicationStore:
                 self.config.archive,
                 commit_args,
                 self.deadline,
-                input_bytes=f"publish {name} {captured.revision}\n".encode(),
+                input_bytes=(
+                    f"publish {name} {captured.revision} {record_tree or 'html'}\n"
+                ).encode(),
             )
             .decode()
             .strip()
@@ -535,6 +758,7 @@ class PublicationStore:
         )
         return SavedPage(
             StoredSite(Revision(site_tree), captured.entries),
+            stored_record,
             Commit(commit),
         )
 
@@ -584,6 +808,55 @@ class PublicationStore:
             "deleted": sorted(old.keys() - new.keys()),
         }
 
+    def _diff_record(
+        self,
+        before: StoredRecord | None,
+        after: CapturedRecord | None,
+    ) -> dict[str, object]:
+        old = {str(entry.path): entry.blob for entry in before.entries} if before else {}
+        new = {str(entry.path): entry.blob for entry in after.entries} if after else {}
+        return {
+            "added": sorted(new.keys() - old.keys()),
+            "changed": sorted(path for path in new.keys() & old.keys() if new[path] != old[path]),
+            "deleted": sorted(old.keys() - new.keys()),
+        }
+
+    def _prepare(
+        self,
+        source: Path,
+        input_format: InputFormat,
+        entry: str | None,
+        expected_record_revision: RecordRevision | None,
+        workspace: Path,
+        object_format: str,
+    ) -> PreparedPublication:
+        if input_format == "markdown":
+            return prepare_markdown(
+                source,
+                workspace,
+                object_format,
+                self.config.limits,
+                self.deadline,
+                entry=entry,
+            )
+        if entry is not None:
+            raise PublishError(
+                "invalid_entry",
+                "validate",
+                "--entry requires --format markdown",
+                "fix_arguments",
+            )
+        if expected_record_revision is not None:
+            raise PublishError(
+                "invalid_record_guard",
+                "validate",
+                "--expected-record-revision requires --format markdown",
+                "fix_arguments",
+            )
+        return PreparedPublication(
+            capture(source, workspace, object_format, self.config.limits, self.deadline)
+        )
+
     def _verify(
         self,
         name: Name,
@@ -618,17 +891,30 @@ class PublicationStore:
         self,
         operation: _PublishingOperation,
         name: Name,
-        captured: CapturedSite,
+        prepared: PreparedPublication,
         target: str,
         expected_revision: Revision | None,
+        expected_record_revision: RecordRevision | None,
         request_id: str | None,
     ) -> Report:
+        captured = prepared.site
+        requested_record = _record_revision(prepared.record)
+        record_aware = prepared.record is not None or operation == "restore"
         effects = Effects()
         verification = Verification()
         try:
             with self._lock(create=True):
                 state = self._state(name, full=True)
-                decision = _decide_publication(state, captured.revision, expected_revision)
+                decision = (
+                    _decide_markdown(
+                        state,
+                        prepared,
+                        expected_revision,
+                        expected_record_revision,
+                    )
+                    if record_aware
+                    else _decide_publication(state, captured.revision, expected_revision)
+                )
                 if isinstance(decision, Failure):
                     raise PublishError(
                         decision.code,
@@ -657,6 +943,36 @@ class PublicationStore:
                     for path in sorted(previous_paths - active_paths)
                     if not any(new_path.startswith(f"{path}/") for new_path in active_paths)
                 )
+                if decision == "record":
+                    assert state.selection.kind == "selected"
+                    assert state.selection.release is not None
+                    saved = self._save(name, prepared, self._head())
+                    effects = Effects(True, False)
+                    verification = self._verify(
+                        name,
+                        saved.site.revision,
+                        state.selection.release,
+                        saved.site,
+                    )
+                    return Report(
+                        operation,
+                        "published",
+                        target,
+                        name,
+                        publication_url(target, name),
+                        request_id,
+                        expected_revision,
+                        captured.revision,
+                        self._state(name, full=True),
+                        effects,
+                        verification,
+                        captured.warnings,
+                        warning_details=captured.warning_details,
+                        expected_record_revision=expected_record_revision,
+                        requested_record_revision=requested_record,
+                        render_profile_id=prepared.render_profile_id,
+                        details={"publication_kind": "record_only"},
+                    )
                 if decision == "unchanged":
                     assert state.selection.kind == "selected"
                     assert state.selection.release is not None
@@ -682,12 +998,29 @@ class PublicationStore:
                         verification,
                         captured.warnings,
                         warning_details=captured.warning_details,
+                        expected_record_revision=expected_record_revision,
+                        requested_record_revision=requested_record,
+                        render_profile_id=prepared.render_profile_id,
                     )
                 saved = state.saved
-                if saved is None or saved.site.revision != captured.revision:
+                saved_pair_matches = (
+                    saved is not None
+                    and saved.site.revision == captured.revision
+                    and _record_revision(saved.record) == requested_record
+                )
+                if (
+                    not record_aware
+                    and operation == "publish"
+                    and decision == "create"
+                    and saved is not None
+                    and saved.site.revision == captured.revision
+                ):
+                    saved_pair_matches = True
+                if not saved_pair_matches:
                     expected_head = self._head()
-                    saved = self._save(name, captured, expected_head)
+                    saved = self._save(name, prepared, expected_head)
                     effects = Effects(True, False)
+                assert saved is not None
                 release = self._materialize(saved.site)
                 staged_link = self.config.runtime / "staging" / f"link-{uuid.uuid4().hex}"
                 public_link = self.config.runtime / "public" / str(name)
@@ -734,6 +1067,9 @@ class PublicationStore:
                     verification,
                     captured.warnings,
                     warning_details=captured.warning_details,
+                    expected_record_revision=expected_record_revision,
+                    requested_record_revision=requested_record,
+                    render_profile_id=prepared.render_profile_id,
                 )
         except (OSError, PublishError) as error:
             failure = (
@@ -766,6 +1102,9 @@ class PublicationStore:
                 captured.warnings,
                 failure,
                 warning_details=captured.warning_details,
+                expected_record_revision=expected_record_revision,
+                requested_record_revision=requested_record,
+                render_profile_id=prepared.render_profile_id,
             )
 
     def plan(
@@ -774,21 +1113,27 @@ class PublicationStore:
         source: Path,
         target: str,
         expected_revision: Revision | None = None,
+        input_format: InputFormat = "html",
+        entry: str | None = None,
+        expected_record_revision: RecordRevision | None = None,
     ) -> Report:
-        captured: CapturedSite | None = None
+        prepared: PreparedPublication | None = None
         state: LocalState | None = None
+        render_profile_id = RENDER_PROFILE_ID if input_format == "markdown" else None
         try:
             self._check_target(target)
             self._check_source_separation(source)
             object_format = self._archive_format()
             with tempfile.TemporaryDirectory(prefix="html-publish-plan-") as temporary:
-                captured = capture(
+                prepared = self._prepare(
                     source,
+                    input_format,
+                    entry,
+                    expected_record_revision,
                     Path(temporary),
                     object_format,
-                    self.config.limits,
-                    self.deadline,
                 )
+                captured = prepared.site
                 with self._lock(create=False):
                     state = self._state(name, full=True)
                     selected_site = (
@@ -798,10 +1143,15 @@ class PublicationStore:
                         if state.saved
                         else None
                     )
-                    decision = _decide_publication(
-                        state,
-                        captured.revision,
-                        expected_revision,
+                    decision = (
+                        _decide_markdown(
+                            state,
+                            prepared,
+                            expected_revision,
+                            expected_record_revision,
+                        )
+                        if prepared.record is not None
+                        else _decide_publication(state, captured.revision, expected_revision)
                     )
                 prediction = "conflict" if isinstance(decision, Failure) else decision
                 details = {
@@ -814,6 +1164,13 @@ class PublicationStore:
                         "max_files": self.config.limits.max_files,
                     },
                 }
+                if prepared.record is not None:
+                    details["source_file_count"] = len(prepared.record.entries) - 1
+                    details["source_and_provenance_byte_count"] = prepared.record.total_bytes
+                    details["record_differences"] = self._diff_record(
+                        state.saved.record if state.saved is not None else None,
+                        prepared.record,
+                    )
                 return Report(
                     "plan",
                     "planned",
@@ -826,6 +1183,9 @@ class PublicationStore:
                     warnings=captured.warnings,
                     warning_details=captured.warning_details,
                     details=details,
+                    expected_record_revision=expected_record_revision,
+                    requested_record_revision=_record_revision(prepared.record),
+                    render_profile_id=prepared.render_profile_id,
                 )
         except (OSError, PublishError) as error:
             failure = (
@@ -840,9 +1200,12 @@ class PublicationStore:
                 name,
                 publication_url(target, name),
                 expected_revision=expected_revision,
-                requested_revision=captured.revision if captured else None,
+                requested_revision=prepared.site.revision if prepared else None,
                 state=state,
                 error=failure,
+                expected_record_revision=expected_record_revision,
+                requested_record_revision=_record_revision(prepared.record) if prepared else None,
+                render_profile_id=prepared.render_profile_id if prepared else render_profile_id,
             )
 
     def publish(
@@ -852,8 +1215,12 @@ class PublicationStore:
         target: str,
         expected_revision: Revision | None,
         request_id: str | None,
+        input_format: InputFormat = "html",
+        entry: str | None = None,
+        expected_record_revision: RecordRevision | None = None,
     ) -> Report:
-        captured: CapturedSite | None = None
+        prepared: PreparedPublication | None = None
+        render_profile_id = RENDER_PROFILE_ID if input_format == "markdown" else None
         try:
             self._check_target(target)
             self._check_source_separation(source)
@@ -873,15 +1240,18 @@ class PublicationStore:
                 request_id,
                 expected_revision,
                 error=failure,
+                expected_record_revision=expected_record_revision,
+                render_profile_id=render_profile_id,
             )
         with tempfile.TemporaryDirectory(prefix="html-publish-capture-") as temporary:
             try:
-                captured = capture(
+                prepared = self._prepare(
                     source,
+                    input_format,
+                    entry,
+                    expected_record_revision,
                     Path(temporary),
                     object_format,
-                    self.config.limits,
-                    self.deadline,
                 )
             except (OSError, PublishError) as error:
                 failure = (
@@ -897,15 +1267,21 @@ class PublicationStore:
                     publication_url(target, name),
                     request_id,
                     expected_revision,
-                    captured.revision if captured else None,
+                    prepared.site.revision if prepared else None,
                     error=failure,
+                    expected_record_revision=expected_record_revision,
+                    requested_record_revision=(
+                        _record_revision(prepared.record) if prepared else None
+                    ),
+                    render_profile_id=prepared.render_profile_id if prepared else render_profile_id,
                 )
             return self._publish_captured(
                 "publish",
                 name,
-                captured,
+                prepared,
                 target,
                 expected_revision,
+                expected_record_revision,
                 request_id,
             )
 
@@ -999,6 +1375,31 @@ class PublicationStore:
             "deleted": sorted(old_paths.keys() - new_paths.keys()),
         }
 
+    def _record_entry_changes(
+        self,
+        newer: str | None,
+        older: str | None,
+    ) -> dict[str, list[str]]:
+        new_paths = (
+            {str(entry.path): entry.blob for entry in self._record(newer).entries}
+            if newer is not None
+            else {}
+        )
+        old_paths = (
+            {str(entry.path): entry.blob for entry in self._record(older).entries}
+            if older is not None
+            else {}
+        )
+        return {
+            "added": sorted(new_paths.keys() - old_paths.keys()),
+            "changed": sorted(
+                path
+                for path in new_paths.keys() & old_paths.keys()
+                if new_paths[path] != old_paths[path]
+            ),
+            "deleted": sorted(old_paths.keys() - new_paths.keys()),
+        }
+
     def history(
         self,
         name: Name,
@@ -1033,8 +1434,23 @@ class PublicationStore:
                     )
                 older_commit = window[index + 1] if index + 1 < len(window) else None
                 older = self._page_tree_at(older_commit, name) if older_commit is not None else None
+                record_revision = self._page_record_tree_at(commit, name)
+                older_record = (
+                    self._page_record_tree_at(older_commit, name)
+                    if older_commit is not None
+                    else None
+                )
                 changes = self._entry_changes(name, revision, older)
-                entries.append(HistoryEntry(Commit(commit), Revision(revision), changes))
+                record_changes = self._record_entry_changes(record_revision, older_record)
+                entries.append(
+                    HistoryEntry(
+                        Commit(commit),
+                        Revision(revision),
+                        RecordRevision(record_revision) if record_revision is not None else None,
+                        changes,
+                        record_changes,
+                    )
+                )
             details: dict[str, object] = {
                 "total": len(commits),
                 "truncated": truncated,
@@ -1043,7 +1459,9 @@ class PublicationStore:
                     {
                         "archive_commit": entry.archive_commit,
                         "archived_revision": entry.revision,
+                        "archived_record_revision": entry.record_revision,
                         "changes": dict(entry.changes),
+                        "record_changes": dict(entry.record_changes),
                     }
                     for entry in entries
                 ],
@@ -1112,8 +1530,9 @@ class PublicationStore:
         target: str,
         expected_revision: Revision | None,
         request_id: str | None,
+        expected_record_revision: RecordRevision | None = None,
     ) -> Report:
-        captured: CapturedSite | None = None
+        prepared: PreparedPublication | None = None
         try:
             self._check_target(target)
             commits = self._page_commits(name)
@@ -1149,8 +1568,30 @@ class PublicationStore:
                 request_id,
                 expected_revision,
                 error=failure,
+                expected_record_revision=expected_record_revision,
             )
-        site = self._site(revision)
+        try:
+            site = self._site(revision)
+            record_tree = self._page_record_tree_at(archive_commit, name)
+            stored_record = self._record(record_tree) if record_tree is not None else None
+        except (OSError, PublishError) as error:
+            failure = (
+                error.failure
+                if isinstance(error, PublishError)
+                else Failure("operation_failure", "restore", str(error), "inspect")
+            )
+            return Report(
+                "restore",
+                "error",
+                target,
+                name,
+                publication_url(target, name),
+                request_id,
+                expected_revision,
+                Revision(revision),
+                error=failure,
+                expected_record_revision=expected_record_revision,
+            )
         with tempfile.TemporaryDirectory(prefix="html-publish-restore-") as temporary:
             try:
                 root = Path(temporary) / "site"
@@ -1163,7 +1604,7 @@ class PublicationStore:
                     os.chmod(destination, 0o644)
                     total_bytes += entry.size
                 warnings, warning_details = warnings_for(root / "index.html", site.entries)
-                captured = CapturedSite(
+                captured_site = CapturedSite(
                     root,
                     site.entries,
                     Revision(revision),
@@ -1171,6 +1612,52 @@ class PublicationStore:
                     warnings,
                     warning_details,
                 )
+                captured_record: CapturedRecord | None = None
+                profile_id: str | None = None
+                if stored_record is not None:
+                    record_root = Path(temporary) / "record"
+                    record_root.mkdir()
+                    record_bytes = 0
+                    for record_entry in stored_record.entries:
+                        destination = record_root.joinpath(
+                            *PurePosixPath(str(record_entry.path)).parts
+                        )
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        _git.export_blob(
+                            self.config.archive,
+                            record_entry.blob,
+                            destination,
+                            self.deadline,
+                        )
+                        os.chmod(destination, 0o644)
+                        record_bytes += record_entry.size
+                    try:
+                        provenance = json.loads(
+                            (record_root / "provenance.json").read_text(encoding="utf-8")
+                        )
+                    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                        raise PublishError(
+                            "archive_corrupt",
+                            "restore",
+                            "The Markdown provenance cannot be read",
+                            "inspect",
+                        ) from error
+                    profile = provenance.get("render_profile_id")
+                    if not isinstance(profile, str):
+                        raise PublishError(
+                            "archive_corrupt",
+                            "restore",
+                            "The Markdown provenance has no renderer profile identity",
+                            "inspect",
+                        )
+                    profile_id = profile
+                    captured_record = CapturedRecord(
+                        record_root,
+                        stored_record.entries,
+                        stored_record.revision,
+                        record_bytes,
+                    )
+                prepared = PreparedPublication(captured_site, captured_record, profile_id)
             except (OSError, PublishError) as error:
                 failure = (
                     error.failure
@@ -1187,13 +1674,19 @@ class PublicationStore:
                     expected_revision,
                     Revision(revision),
                     error=failure,
+                    expected_record_revision=expected_record_revision,
+                    requested_record_revision=(
+                        _record_revision(prepared.record) if prepared else None
+                    ),
+                    render_profile_id=prepared.render_profile_id if prepared else None,
                 )
             return self._publish_captured(
                 "restore",
                 name,
-                captured,
+                prepared,
                 target,
                 expected_revision,
+                expected_record_revision,
                 request_id,
             )
 

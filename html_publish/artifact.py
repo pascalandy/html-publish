@@ -12,13 +12,18 @@ from urllib.parse import unquote, urlsplit
 
 from html_publish import _git
 from html_publish.model import (
+    CapturedRecord,
     CapturedSite,
+    CapturedSource,
+    CapturedSourceEntry,
     Deadline,
     FileEntry,
     Limits,
     PublishError,
+    RecordRevision,
     RelativePath,
     Revision,
+    SourceKind,
     WarningDetail,
 )
 
@@ -37,7 +42,11 @@ def _valid_component(component: str) -> bool:
     )
 
 
-def _iter_source(source: Path) -> Iterator[tuple[Path, PurePosixPath]]:
+def _iter_source(
+    source: Path,
+    *,
+    single_file_name: str = "index.html",
+) -> Iterator[tuple[Path, PurePosixPath]]:
     source_info = source.lstat()
     if stat.S_ISLNK(source_info.st_mode):
         raise PublishError(
@@ -47,7 +56,14 @@ def _iter_source(source: Path) -> Iterator[tuple[Path, PurePosixPath]]:
             "fix_input",
         )
     if stat.S_ISREG(source_info.st_mode):
-        yield source, PurePosixPath("index.html")
+        if not _valid_component(single_file_name):
+            raise PublishError(
+                "unsafe_input",
+                "capture",
+                f"The source filename is unsafe: {single_file_name!r}",
+                "fix_input",
+            )
+        yield source, PurePosixPath(single_file_name)
         return
     if not stat.S_ISDIR(source_info.st_mode):
         raise PublishError(
@@ -284,7 +300,116 @@ def capture(
             "A directory artifact must contain index.html",
             "fix_input",
         )
-    blobs = _git.hash_files(identity_repo, site_root, [path for path, _ in staged], deadline)
+    entries, revision = _identified_entries(identity_repo, site_root, staged, deadline)
+    warnings, warning_details = warnings_for(site_root / "index.html", tuple(entries))
+    return CapturedSite(
+        site_root,
+        tuple(entries),
+        Revision(revision),
+        total_bytes,
+        warnings,
+        warning_details,
+    )
+
+
+def capture_source(
+    source: Path,
+    workspace: Path,
+    limits: Limits,
+    deadline: Deadline,
+) -> CapturedSource:
+    source_info = source.lstat()
+    if stat.S_ISREG(source_info.st_mode):
+        kind: SourceKind = "file"
+    elif stat.S_ISDIR(source_info.st_mode):
+        kind = "directory"
+    else:
+        raise PublishError(
+            "unsafe_input",
+            "capture",
+            "The document source must be a regular file or directory",
+            "fix_input",
+        )
+    source_root = workspace / "record" / "source"
+    source_root.mkdir(parents=True)
+    staged: list[tuple[PurePosixPath, int]] = []
+    total_bytes = 0
+    for source_file, relative in _iter_source(source, single_file_name=source.name):
+        if len(staged) >= limits.max_files:
+            raise PublishError(
+                "input_limit",
+                "capture",
+                "The document exceeds the configured file limit",
+                "reduce_input",
+            )
+        destination = source_root.joinpath(*relative.parts)
+        size = _copy_stable(source_file, destination, deadline, limits.max_bytes - total_bytes)
+        total_bytes += size
+        staged.append((relative, size))
+    current = source.lstat()
+    before = (source_info.st_dev, source_info.st_ino, source_info.st_size, source_info.st_mtime_ns)
+    after = (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns)
+    if before != after:
+        raise PublishError(
+            "source_changed",
+            "capture",
+            f"The document source changed during capture: {source}",
+            "retry",
+        )
+    if not staged:
+        raise PublishError(
+            "invalid_input",
+            "capture",
+            "The document contains no files",
+            "fix_input",
+        )
+    staged.sort(key=lambda item: item[0].as_posix().encode("utf-8"))
+    return CapturedSource(
+        source_root,
+        kind,
+        tuple(CapturedSourceEntry(RelativePath(path.as_posix()), size) for path, size in staged),
+        total_bytes,
+    )
+
+
+def capture_record(
+    source: CapturedSource,
+    provenance: bytes,
+    workspace: Path,
+    object_format: str,
+    deadline: Deadline,
+) -> CapturedRecord:
+    record_root = source.root.parent
+    provenance_path = record_root / "provenance.json"
+    with provenance_path.open("xb") as destination:
+        destination.write(provenance)
+        destination.flush()
+        os.fsync(destination.fileno())
+    os.chmod(provenance_path, 0o644)
+    staged = [
+        (PurePosixPath("source") / PurePosixPath(str(entry.path)), entry.size)
+        for entry in source.entries
+    ]
+    staged.append((PurePosixPath("provenance.json"), len(provenance)))
+    staged.sort(key=lambda item: item[0].as_posix().encode("utf-8"))
+    identity_repo = workspace / "record-identity.git"
+    _git.init_bare(identity_repo, object_format, deadline)
+    entries, revision = _identified_entries(identity_repo, record_root, staged, deadline)
+    return CapturedRecord(
+        record_root,
+        entries,
+        RecordRevision(revision),
+        source.total_bytes + len(provenance),
+    )
+
+
+def _identified_entries(
+    identity_repo: Path,
+    root: Path,
+    staged: list[tuple[PurePosixPath, int]],
+    deadline: Deadline,
+) -> tuple[tuple[FileEntry, ...], str]:
+    blobs = _git.hash_files(identity_repo, root, [path for path, _ in staged], deadline)
     entries = [
         FileEntry(RelativePath(path.as_posix()), size, blob)
         for (path, size), blob in zip(staged, blobs, strict=True)
@@ -295,12 +420,4 @@ def capture(
         [(PurePosixPath(str(entry.path)), entry.blob) for entry in entries],
         deadline,
     )
-    warnings, warning_details = warnings_for(site_root / "index.html", tuple(entries))
-    return CapturedSite(
-        site_root,
-        tuple(entries),
-        Revision(revision),
-        total_bytes,
-        warnings,
-        warning_details,
-    )
+    return tuple(entries), revision
