@@ -112,6 +112,13 @@ state_path = pathlib.Path(os.environ['FAKE_SYSTEMCTL_STATE'])
 state = json.loads(state_path.read_text()) if state_path.exists() else {}
 unit = pathlib.Path(os.environ['XDG_CONFIG_HOME']) / 'systemd/user/html-publish-test.service'
 if 'show' in args:
+    if os.environ.get('FAKE_BLOCK_ROUTES_AFTER_INTENT') == 'yes':
+        route_record = (
+            pathlib.Path(os.environ['XDG_STATE_HOME'])
+            / 'html-publish/routes/html-publish-test.json'
+        )
+        if route_record.exists():
+            route_record.parent.chmod(0)
     if os.environ.get('FAKE_DRIFT_HOST_RECORD_ON_SHOW') == 'yes':
         record_path = (
             pathlib.Path(os.environ['XDG_STATE_HOME'])
@@ -155,10 +162,46 @@ log_path = pathlib.Path(os.environ['FAKE_TAILSCALE_LOG'])
 with log_path.open('a') as log:
     log.write(json.dumps(args, separators=(',', ':')) + '\\n')
 if args == ['status', '--json', '--peers=false']:
+    if os.environ.get('FAKE_DRIFT_CONFIG_ON_TAILSCALE_STATUS') == 'yes':
+        config_path = pathlib.Path(os.environ['FAKE_CONFIG'])
+        config = json.loads(config_path.read_text())
+        config['limits'] = {'command_seconds': 121}
+        config_path.write_text(json.dumps(config))
+        os.environ.pop('FAKE_DRIFT_CONFIG_ON_TAILSCALE_STATUS')
     print(pathlib.Path(os.environ['FAKE_TAILSCALE_STATUS']).read_text())
     sys.exit(0)
 if args == ['serve', 'status', '--json']:
-    print(pathlib.Path(os.environ['FAKE_TAILSCALE_SERVE']).read_text())
+    path = pathlib.Path(os.environ['FAKE_TAILSCALE_SERVE'])
+    drift_on = os.environ.get('FAKE_DRIFT_SERVE_ON_STATUS')
+    if drift_on is not None:
+        commands = [json.loads(line) for line in log_path.read_text().splitlines()]
+        if commands.count(['serve', 'status', '--json']) == int(drift_on):
+            state = json.loads(path.read_text())
+            state.setdefault('TCP', {})['9443'] = {'HTTPS': True}
+            path.write_text(json.dumps(state))
+    print(path.read_text())
+    sys.exit(0)
+if (len(args) == 5 and args[:2] == ['serve', '--bg']
+        and args[2].startswith('--https=') and args[3].startswith('--set-path=')):
+    mode = os.environ.get('FAKE_SERVE_MODE', 'success')
+    if mode != 'fail_before':
+        path = pathlib.Path(os.environ['FAKE_TAILSCALE_SERVE'])
+        state = json.loads(path.read_text())
+        if mode != 'no_write':
+            port = args[2].removeprefix('--https=')
+            mount = args[3].removeprefix('--set-path=')
+            authority = 'preview.test.ts.net:' + port
+            state.setdefault('TCP', {})[port] = {'HTTPS': True}
+            handlers = state.setdefault('Web', {}).setdefault(
+                authority, {'Handlers': {}}
+            )['Handlers']
+            handlers[mount] = {'Proxy': args[4]}
+            if mode == 'mutate_unrelated':
+                state.setdefault('TCP', {})['9443'] = {'HTTPS': True}
+            path.write_text(json.dumps(state))
+    if mode in {'fail_before', 'fail_after'}:
+        print('simulated Serve failure', file=sys.stderr)
+        sys.exit(23)
     sys.exit(0)
 print('unexpected tailscale command: ' + ' '.join(args), file=sys.stderr)
 sys.exit(64)
@@ -176,6 +219,10 @@ sys.exit(64)
         cls.temp.cleanup()
 
     def setUp(self) -> None:
+        self.env.pop("FAKE_SERVE_MODE", None)
+        self.env.pop("FAKE_DRIFT_SERVE_ON_STATUS", None)
+        self.env.pop("FAKE_DRIFT_CONFIG_ON_TAILSCALE_STATUS", None)
+        self.env.pop("FAKE_BLOCK_ROUTES_AFTER_INTENT", None)
         self.archive = self.base / f"{self._testMethodName}.git"
         self.runtime = self.base / f"{self._testMethodName}-runtime"
         self.config = self.base / f"{self._testMethodName}.json"
@@ -738,16 +785,434 @@ sys.exit(64)
         )
         self.assertEqual(report["proposed_effects"], [])
 
-    def test_route_apply_is_rejected_before_config_or_inspection(self) -> None:
-        self.config.write_text("not json")
-        result, report = self.route_command("--apply")
+    def test_route_apply_creates_and_repeats_without_serve_write(self) -> None:
+        self.config.write_text(
+            json.dumps(
+                {
+                    "archive": str(self.archive),
+                    "runtime": str(self.runtime),
+                    "base_url": "https://preview.test.ts.net/pages/",
+                    "allow_http": False,
+                }
+            )
+        )
+        unrelated = {"Proxy": "http://127.0.0.1:9000"}
+        serve = {
+            "TCP": {"8444": {"HTTPS": True}},
+            "Web": {"preview.test.ts.net:8444": {"Handlers": {"/other": unrelated}}},
+        }
+        Path(self.env["FAKE_TAILSCALE_SERVE"]).write_text(json.dumps(serve))
+        self.seed_preserved_state()
+        with self.healthy_owned_service():
+            before = self.state_manifest()
+            result, report = self.route_command("--apply", assert_unchanged=False)
+            after = self.state_manifest()
+            command_count = len(self.tailscale_commands())
+            repeat_result, repeat = self.route_command("--apply")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(report["outcome"], "applied")
+        self.assertEqual(report["route_state"], "owned")
+        self.assertEqual(
+            report["effects"],
+            {
+                "route_intent": "completed",
+                "tailscale_serve_route": "completed",
+                "route_completion": "completed",
+            },
+        )
+        record_path = Path(str(report["record_path"]))
+        self.assertEqual(record_path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(json.loads(record_path.read_text())["status"], "owned")
+        self.assertEqual(
+            self.tailscale_commands()[6],
+            [
+                "serve",
+                "--bg",
+                "--https=443",
+                "--set-path=/pages/",
+                f"http://127.0.0.1:{self.port}",
+            ],
+        )
+        self.assertEqual(len(self.tailscale_commands()), command_count + 2)
+        self.assertEqual(repeat_result.returncode, 0)
+        self.assertEqual(repeat["outcome"], "unchanged")
+        self.assertEqual(
+            json.loads(Path(self.env["FAKE_TAILSCALE_SERVE"]).read_text())["Web"][
+                "preview.test.ts.net:8444"
+            ]["Handlers"]["/other"],
+            unrelated,
+        )
+        for key in (
+            "config",
+            "unit",
+            "service_record",
+            "service_state",
+            "archive_sentinel",
+            "runtime_sentinel",
+            "receipt",
+        ):
+            self.assertEqual(before[key], after[key], key)
 
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertEqual(report["outcome"], "error")
-        self.assertEqual(cast(dict[str, object], report["error"])["code"], "invalid_usage")
-        self.assertIn("issue #59", str(cast(dict[str, object], report["error"])["message"]))
-        self.assertEqual(self.tailscale_commands(), [])
-        self.assertEqual(self.systemctl_commands(), [])
+    def test_route_apply_blocks_foreign_collision_and_funnel_entries(self) -> None:
+        self.config.write_text(
+            json.dumps(
+                {
+                    "archive": str(self.archive),
+                    "runtime": str(self.runtime),
+                    "base_url": "https://preview.test.ts.net/pages/",
+                    "allow_http": False,
+                }
+            )
+        )
+        cases = (
+            (
+                {
+                    "TCP": {"443": {"HTTPS": True}},
+                    "Web": {
+                        "preview.test.ts.net:443": {
+                            "Handlers": {"/pages/": {"Proxy": f"http://127.0.0.1:{self.port}"}}
+                        }
+                    },
+                },
+                "route_foreign",
+            ),
+            (
+                {
+                    "TCP": {"443": {"HTTPS": True}},
+                    "Web": {
+                        "preview.test.ts.net:443": {
+                            "Handlers": {"/pages/child": {"Proxy": "http://127.0.0.1:9000"}}
+                        }
+                    },
+                },
+                "route_overlap",
+            ),
+            (
+                {"TCP": {"443": {"HTTPS": True}}, "AllowFunnel": {"preview.test.ts.net:443": True}},
+                "funnel_entry",
+            ),
+            (
+                {
+                    "TCP": {"443": {"HTTPS": True}},
+                    "AllowFunnel": {"preview.test.ts.net:443": False},
+                },
+                "funnel_entry",
+            ),
+            (
+                {
+                    "TCP": {"443": {"HTTPS": True}},
+                    "AllowFunnel": {"preview.test.ts.net:443": "maybe"},
+                },
+                "unknown_serve_state",
+            ),
+        )
+        self.seed_preserved_state()
+        with self.healthy_owned_service():
+            for serve, code in cases:
+                with self.subTest(code=code, serve=serve):
+                    Path(self.env["FAKE_TAILSCALE_SERVE"]).write_text(json.dumps(serve))
+                    Path(self.env["FAKE_TAILSCALE_LOG"]).write_text("")
+                    result, report = self.route_command("--apply")
+                    self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                    self.assertEqual(report["outcome"], "blocked")
+                    self.assertIn(
+                        code,
+                        {item["code"] for item in cast(list[dict[str, str]], report["blockers"])},
+                    )
+                    self.assertFalse(
+                        any(
+                            command[:2] == ["serve", "--bg"]
+                            for command in self.tailscale_commands()
+                        )
+                    )
+                    self.assertFalse(Path(str(report["record_path"])).exists())
+
+    def test_route_apply_recovers_only_matching_absent_pending_attempt(self) -> None:
+        self.config.write_text(
+            json.dumps(
+                {
+                    "archive": str(self.archive),
+                    "runtime": str(self.runtime),
+                    "base_url": "https://preview.test.ts.net/pages/",
+                    "allow_http": False,
+                }
+            )
+        )
+        Path(self.env["FAKE_TAILSCALE_SERVE"]).write_text("{}")
+        self.seed_preserved_state()
+        with self.healthy_owned_service():
+            self.env["FAKE_SERVE_MODE"] = "fail_before"
+            failed_result, failed = self.route_command("--apply", assert_unchanged=False)
+            record_path = Path(str(failed["record_path"]))
+            pending = json.loads(record_path.read_text())
+            self.env.pop("FAKE_SERVE_MODE")
+            retry_result, retry = self.route_command("--apply", assert_unchanged=False)
+        self.assertEqual(failed_result.returncode, 1)
+        self.assertEqual(failed["outcome"], "pending")
+        self.assertEqual(
+            failed["effects"],
+            {
+                "route_intent": "completed",
+                "tailscale_serve_route": "unknown",
+                "route_completion": "not_started",
+            },
+        )
+        self.assertEqual(pending["status"], "pending")
+        self.assertEqual(retry_result.returncode, 0, retry_result.stdout + retry_result.stderr)
+        self.assertEqual(retry["outcome"], "applied")
+        self.assertEqual(cast(dict[str, str], retry["effects"])["route_intent"], "unchanged")
+        self.assertNotIn("attempt_id", json.loads(record_path.read_text()))
+
+    def test_route_apply_keeps_pending_after_unacknowledged_write(self) -> None:
+        self.config.write_text(
+            json.dumps(
+                {
+                    "archive": str(self.archive),
+                    "runtime": str(self.runtime),
+                    "base_url": "https://preview.test.ts.net/pages/",
+                    "allow_http": False,
+                }
+            )
+        )
+        Path(self.env["FAKE_TAILSCALE_SERVE"]).write_text("{}")
+        self.seed_preserved_state()
+        with self.healthy_owned_service():
+            self.env["FAKE_SERVE_MODE"] = "fail_after"
+            failed_result, failed = self.route_command("--apply", assert_unchanged=False)
+            self.env.pop("FAKE_SERVE_MODE")
+            command_count = len(self.tailscale_commands())
+            retry_result, retry = self.route_command("--apply")
+        self.assertEqual(failed_result.returncode, 1)
+        self.assertEqual(failed["outcome"], "pending")
+        self.assertEqual(
+            cast(dict[str, str], failed["effects"])["tailscale_serve_route"], "completed"
+        )
+        self.assertEqual(
+            json.loads(Path(str(failed["record_path"])).read_text())["status"], "pending"
+        )
+        self.assertEqual(retry_result.returncode, 1)
+        self.assertEqual(retry["outcome"], "blocked")
+        self.assertEqual(len(self.tailscale_commands()), command_count + 2)
+
+    def test_route_apply_blocks_preflight_and_config_drift(self) -> None:
+        self.config.write_text(
+            json.dumps(
+                {
+                    "archive": str(self.archive),
+                    "runtime": str(self.runtime),
+                    "base_url": "https://preview.test.ts.net/pages/",
+                    "allow_http": False,
+                }
+            )
+        )
+        Path(self.env["FAKE_TAILSCALE_SERVE"]).write_text("{}")
+        self.seed_preserved_state()
+        with self.healthy_owned_service():
+            self.env["FAKE_DRIFT_SERVE_ON_STATUS"] = "2"
+            route_result, route_report = self.route_command("--apply", assert_unchanged=False)
+            self.env.pop("FAKE_DRIFT_SERVE_ON_STATUS")
+            Path(self.env["FAKE_TAILSCALE_LOG"]).write_text("")
+            self.env["FAKE_DRIFT_CONFIG_ON_TAILSCALE_STATUS"] = "yes"
+            config_result, config_report = self.route_command("--apply", assert_unchanged=False)
+            self.env.pop("FAKE_DRIFT_CONFIG_ON_TAILSCALE_STATUS")
+        self.assertEqual(route_result.returncode, 1)
+        self.assertIn(
+            "route_preflight_drift",
+            {item["code"] for item in cast(list[dict[str, str]], route_report["blockers"])},
+        )
+        self.assertEqual(config_result.returncode, 1)
+        self.assertIn(
+            "config_drift",
+            {item["code"] for item in cast(list[dict[str, str]], config_report["blockers"])},
+        )
+        self.assertFalse(
+            any(command[:2] == ["serve", "--bg"] for command in self.tailscale_commands())
+        )
+        self.assertFalse(Path(str(route_report["record_path"])).exists())
+
+    def test_route_apply_leaves_pending_when_surrounding_state_changes(self) -> None:
+        self.config.write_text(
+            json.dumps(
+                {
+                    "archive": str(self.archive),
+                    "runtime": str(self.runtime),
+                    "base_url": "https://preview.test.ts.net/pages/",
+                    "allow_http": False,
+                }
+            )
+        )
+        Path(self.env["FAKE_TAILSCALE_SERVE"]).write_text("{}")
+        self.seed_preserved_state()
+        with self.healthy_owned_service():
+            self.env["FAKE_SERVE_MODE"] = "mutate_unrelated"
+            result, report = self.route_command("--apply", assert_unchanged=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(report["outcome"], "pending")
+        self.assertIn(
+            "serve_postcheck_failed",
+            {item["code"] for item in cast(list[dict[str, str]], report["blockers"])},
+        )
+        self.assertEqual(
+            json.loads(Path(str(report["record_path"])).read_text())["status"], "pending"
+        )
+        self.assertEqual(
+            cast(dict[str, str], report["effects"])["tailscale_serve_route"], "unknown"
+        )
+
+    def test_route_apply_rechecks_after_pending_intent_before_serve(self) -> None:
+        self.config.write_text(
+            json.dumps(
+                {
+                    "archive": str(self.archive),
+                    "runtime": str(self.runtime),
+                    "base_url": "https://preview.test.ts.net/pages/",
+                    "allow_http": False,
+                }
+            )
+        )
+        Path(self.env["FAKE_TAILSCALE_SERVE"]).write_text("{}")
+        self.seed_preserved_state()
+        with self.healthy_owned_service():
+            self.env["FAKE_DRIFT_SERVE_ON_STATUS"] = "3"
+            result, report = self.route_command("--apply", assert_unchanged=False)
+            self.env.pop("FAKE_DRIFT_SERVE_ON_STATUS")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(report["outcome"], "blocked")
+        self.assertIn(
+            "route_preflight_drift",
+            {item["code"] for item in cast(list[dict[str, str]], report["blockers"])},
+        )
+        self.assertEqual(
+            cast(dict[str, str], report["effects"]),
+            {
+                "route_intent": "completed",
+                "tailscale_serve_route": "not_started",
+                "route_completion": "not_started",
+            },
+        )
+        self.assertEqual(
+            json.loads(Path(str(report["record_path"])).read_text())["status"], "pending"
+        )
+        self.assertFalse(
+            any(command[:2] == ["serve", "--bg"] for command in self.tailscale_commands())
+        )
+
+    def test_route_apply_reports_post_intent_inspection_error(self) -> None:
+        self.config.write_text(
+            json.dumps(
+                {
+                    "archive": str(self.archive),
+                    "runtime": str(self.runtime),
+                    "base_url": "https://preview.test.ts.net/pages/",
+                    "allow_http": False,
+                }
+            )
+        )
+        Path(self.env["FAKE_TAILSCALE_SERVE"]).write_text("{}")
+        self.seed_preserved_state()
+        routes = self.base / "state-home/html-publish/routes"
+        with self.healthy_owned_service():
+            argv = [
+                str(self.cli),
+                "--config",
+                str(self.config),
+                "--json",
+                "host",
+                "route",
+                "setup",
+                "--unit-name",
+                "html-publish-test",
+                "--apply",
+            ]
+            before = self.state_manifest()
+            self.env["FAKE_BLOCK_ROUTES_AFTER_INTENT"] = "yes"
+            try:
+                result = subprocess.run(
+                    argv,
+                    cwd=self.base,
+                    env=self.env,
+                    capture_output=True,
+                    text=True,
+                    timeout=25,
+                )
+            finally:
+                self.env.pop("FAKE_BLOCK_ROUTES_AFTER_INTENT")
+                routes.chmod(0o700)
+            after = self.state_manifest()
+            with (self.artifacts / f"{self._testMethodName}.jsonl").open("a") as evidence:
+                evidence.write(
+                    json.dumps(
+                        {
+                            "classification": "controlled",
+                            "test": self._testMethodName,
+                            "argv": argv,
+                            "stdout": result.stdout,
+                            "stderr": result.stderr,
+                            "exit_code": result.returncode,
+                            "before": before,
+                            "after": after,
+                            "systemctl_commands": self.systemctl_commands(),
+                            "tailscale_commands": self.tailscale_commands(),
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                )
+            report = json.loads(result.stdout)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(report["outcome"], "blocked")
+        self.assertIn(
+            "route_preflight_inspection_failed",
+            {item["code"] for item in cast(list[dict[str, str]], report["blockers"])},
+        )
+        self.assertEqual(
+            cast(dict[str, str], report["effects"]),
+            {
+                "route_intent": "completed",
+                "tailscale_serve_route": "not_started",
+                "route_completion": "not_started",
+            },
+        )
+        self.assertEqual(
+            json.loads((routes / "html-publish-test.json").read_text())["status"], "pending"
+        )
+        self.assertFalse(
+            any(command[:2] == ["serve", "--bg"] for command in self.tailscale_commands())
+        )
+
+    def test_route_apply_rejects_changed_pending_baseline(self) -> None:
+        self.config.write_text(
+            json.dumps(
+                {
+                    "archive": str(self.archive),
+                    "runtime": str(self.runtime),
+                    "base_url": "https://preview.test.ts.net/pages/",
+                    "allow_http": False,
+                }
+            )
+        )
+        Path(self.env["FAKE_TAILSCALE_SERVE"]).write_text("{}")
+        with self.healthy_owned_service():
+            self.env["FAKE_SERVE_MODE"] = "fail_before"
+            _, failed = self.route_command("--apply", assert_unchanged=False)
+            self.env.pop("FAKE_SERVE_MODE")
+            Path(self.env["FAKE_TAILSCALE_SERVE"]).write_text(
+                json.dumps({"TCP": {"443": {"HTTPS": True}}})
+            )
+            Path(self.env["FAKE_TAILSCALE_LOG"]).write_text("")
+            result, report = self.route_command("--apply")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            "pending_baseline_drift",
+            {item["code"] for item in cast(list[dict[str, str]], report["blockers"])},
+        )
+        self.assertEqual(
+            json.loads(Path(str(failed["record_path"])).read_text())["status"], "pending"
+        )
+        self.assertFalse(
+            any(command[:2] == ["serve", "--bg"] for command in self.tailscale_commands())
+        )
 
     def test_route_command_is_parser_discoverable(self) -> None:
         help_result = subprocess.run(

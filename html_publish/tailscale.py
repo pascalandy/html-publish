@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from dataclasses import dataclass
@@ -261,12 +262,15 @@ def _serve(
         _raise_unknown("Tailscale Serve has nonempty Foreground or Services state")
 
     selected_listener: dict[str, object] | None = None
+    other_listeners: list[dict[str, object]] = []
     for raw_port, raw_listener in tcp.items():
         if not _valid_port_text(raw_port) or int(raw_port) > 65535:
             _raise_unknown(f"Tailscale Serve TCP port is malformed: {raw_port}")
         listener = _tcp_listener(raw_listener)
         if int(raw_port) == selected.https_port:
             selected_listener = listener
+        else:
+            other_listeners.append({"port": int(raw_port), "listener": listener})
 
     blockers: list[RouteBlocker] = []
     selected_handler: dict[str, str] | None = None
@@ -334,8 +338,18 @@ def _serve(
         "https_listener": selected_listener == {"HTTPS": True},
         "selected_handler": selected_handler,
         "other_routes": other_routes,
+        "other_listeners": sorted(other_listeners, key=lambda entry: cast(int, entry["port"])),
         "funnel": funnel_entries,
     }
+    selected_port = {
+        "listener": selected_listener,
+        "routes": [route for route in other_routes if route["https_port"] == selected.https_port],
+        "selected_handler": selected_handler,
+        "funnel": [entry for entry in funnel_entries if entry["https_port"] == selected.https_port],
+    }
+    observation["selected_port_digest"] = hashlib.sha256(
+        json.dumps(selected_port, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
     if selected_authority_seen and selected_listener is None:
         _raise_unknown("The selected Web authority has no matching HTTPS TCP listener")
     if selected_listener is not None and selected_listener != {"HTTPS": True}:
@@ -444,3 +458,30 @@ def inspect_route(base_url: str, listen_port: int) -> RouteInspection:
         state,
         blockers,
     )
+
+
+def serve_route(route: RouteIdentity) -> str | None:
+    args = [
+        "tailscale",
+        "serve",
+        "--bg",
+        f"--https={route.https_port}",
+        f"--set-path={route.mount}",
+        route.target,
+    ]
+    try:
+        result = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=8,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return "Tailscale Serve exceeded its eight second command limit"
+    except OSError as error:
+        return f"Cannot run Tailscale Serve: {error}"
+    if result.returncode:
+        return f"Tailscale Serve exited {result.returncode}: {result.stderr.strip()}"
+    return None
