@@ -121,7 +121,7 @@ class SkillsCliTest(unittest.TestCase):
         environment["PATH"] = str(Path(sys.executable).parent) + os.pathsep + environment["PATH"]
 
         with tempfile.TemporaryDirectory() as temporary:
-            workdir = Path(temporary)
+            workdir = Path(temporary).resolve()
             configured = subprocess.run(
                 ["bash", "-eu", "-c", setup],
                 cwd=workdir,
