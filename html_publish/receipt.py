@@ -35,6 +35,8 @@ from html_publish.configuration import (
 from html_publish.model import PublishError
 
 DEFAULT_CONFIG = Path("~/.config/html-publish/client.json").expanduser()
+MIN_MUTATION_OUTPUT_BYTES = 1024 * 1024
+MAX_REPORT_IDENTITY_BYTES = 64 * 1024
 NAME_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 
 PendingState = Literal["uncertain", "retryable", "conflict"]
@@ -962,6 +964,7 @@ def _executor_command(
             command.extend(["--connect-timeout", str(executor.connect_timeout)])
     command.extend([operation, "--name", name])
     if operation in {"publish", "restore"}:
+        command.extend(["--report", "summary"])
         assert request_id is not None
         if operation == "publish":
             assert source is not None
@@ -975,6 +978,34 @@ def _executor_command(
             command.extend(["--expected-revision", expected_revision])
         command.extend(["--request-id", request_id])
     return command
+
+
+def _mutation_output_preflight(config: ClientConfig, name: str | None = None) -> None:
+    if config.limits.output_bytes < MIN_MUTATION_OUTPUT_BYTES:
+        raise ReceiptFailure(
+            "output_limit_too_small",
+            "Mutation reports require limits.output_bytes of at least 1048576",
+            "increase_output_limit",
+        )
+    executor = config.executor
+    identity = [
+        config.target.base_url,
+        config.target.host,
+        name,
+        *executor.command,
+        executor.host,
+        executor.publisher_config,
+        executor.remote_executable,
+        executor.remote_config,
+        executor.incoming_root,
+    ]
+    encoded = json.dumps(identity, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if len(encoded) > MAX_REPORT_IDENTITY_BYTES:
+        raise ReceiptFailure(
+            "report_identity_too_large",
+            "Serialized mutation target and executor identity exceeds 65536 bytes",
+            "shorten_config_identity",
+        )
 
 
 def _live_group_members(pgid: int) -> bool | None:
@@ -1925,6 +1956,7 @@ def _publish(arguments: argparse.Namespace, config_path: Path, started_at: float
         return 0
 
     config = load_config(config_path, getattr(arguments, "command_seconds", None))
+    _mutation_output_preflight(config, arguments.new or arguments.adopt)
     budget = CommandBudget(started_at + config.limits.command_seconds)
     with receipt_lock(receipt_dir, config.limits.lock_seconds, budget):
         receipt_path = receipt_dir / "receipt.json"
@@ -1998,6 +2030,8 @@ def _publish(arguments: argparse.Namespace, config_path: Path, started_at: float
                 receipt = dataclasses.replace(receipt, last_observation=observation)
                 expectation = Expectation("reviewed", arguments.reviewed_revision, None)
 
+        _mutation_output_preflight(config, receipt.binding.name)
+
         prepared = _new_pending(source, receipt_dir, receipt, expectation, config.limits, budget)
         return _finish_dispatch(
             "publish",
@@ -2010,11 +2044,13 @@ def _publish(arguments: argparse.Namespace, config_path: Path, started_at: float
 
 def _restore(arguments: argparse.Namespace, config_path: Path, started_at: float) -> int:
     config = load_config(config_path, getattr(arguments, "command_seconds", None))
+    _mutation_output_preflight(config)
     budget = CommandBudget(started_at + config.limits.command_seconds)
     receipt_dir = Path(arguments.receipt).expanduser().absolute()
     with receipt_lock(receipt_dir, config.limits.lock_seconds, budget):
         receipt = load_receipt(receipt_dir)
         _validate_binding(receipt, config)
+        _mutation_output_preflight(config, receipt.binding.name)
         receipt = _recover_saved_result(receipt_dir, receipt).receipt
         if receipt.pending is not None:
             reviewed = _reviewed_replacement(
@@ -2074,6 +2110,7 @@ def _retry(arguments: argparse.Namespace, config_path: Path, started_at: float) 
                     )
                 )
                 return 0
+        _mutation_output_preflight(config, receipt.binding.name)
         pending = receipt.pending
         if pending is None:
             raise ReceiptFailure("nothing_to_retry", "Receipt has no pending attempt", "publish")

@@ -160,6 +160,15 @@ Report obvious missing relative assets, root-relative references, external depen
 service-worker use as warnings. Do not crawl external URLs, rewrite HTML, or claim complete
 JavaScript dependency analysis. Application-managed offline caching is outside freshness
 guarantees.
+The static asset check reads at most the first 2 MiB of the captured `index.html` and compares
+literal resource URLs with the captured file manifest. It does not follow links or scan CSS,
+JavaScript, nested HTML, `srcset`, or computed URLs. A `<base href>` or a partial scan reports
+an analysis limitation without missing-file claims. URL attribute edge whitespace is ignored
+for lookup, while the warning retains the literal reference. A captured directory `index.html`
+satisfies its relative directory URL. Only resource-bearing `link` relations are checked for
+missing files; navigation relations are not assets. Existing `warnings` string codes remain
+stable; `warning_details` supplies source path, literal reference, and expected relative path
+where known.
 
 ## S4. Agent-facing CLI and results
 
@@ -188,6 +197,17 @@ All commands support versioned JSON: one object on stdout, diagnostics on stderr
 always uses JSON. Plain successful publish/restore prints only the stable URL, after verification
 passes; errors must not print an unqualified success URL. Caught usage errors also honor JSON
 mode.
+The six publisher commands accept `--report detail|summary`. Detail is the default and keeps
+complete report collections. Summary keeps safety facts and warning categories, but reduces
+warning details and plan/history changed-path arrays to empty arrays with exact per-collection
+`total`, `included`, and `omitted` counts in `report.collections`. A repeated detail read observes
+current state rather than a saved report snapshot. Existing status/history page cursors and
+totals keep their meanings. Summary caps diagnostic prose and records omitted UTF-8 bytes in
+`report.text`; code, phase, recovery action, effects, verification result, guard, target, and
+identity remain present.
+An explicit `--report summary` also selects summary metadata on JSON usage errors. Parser-derived
+schema discovery exposes the report modes and help text. Remote cleanup diagnostics update
+`report.text` in either mode.
 
 The common envelope includes `schema_version`, `operation`, optional echoed `request_id`,
 `outcome`, `target`, `name`, `url`, `expected_revision`, `requested_revision`,
@@ -206,8 +226,9 @@ and `error`.
   and history to 20. Both return totals, truncation, and an opaque continuation for the next
   `--after` on the same operation and name. `status.total` counts all names. `history.total`
   counts entries remaining after its cursor. Empty pages explicitly return `entries: []`.
-  Nested path arrays remain complete. Capture defaults to 2,000 files, so a two-site delta
-  normally contains at most 4,000 paths and 20 history entries at most 80,000 path mentions.
+  Nested path arrays remain complete in detail mode. Capture defaults to 2,000 files, so a
+  two-site delta normally contains at most 4,000 paths and 20 history entries at most 80,000
+  path mentions.
   Configured limits and historical captures can be larger. This is an artifact-derived bound,
   not a fixed response-byte cap. Text differences default off and cap the final UTF-8 encoded
   text at 64 KiB when requested.
@@ -215,6 +236,15 @@ and `error`.
   history are `observed|error`, and verify is `verified|error`. Exit 0 means success, 1
   operational failure, 2 invalid usage. Degraded status exits 1; saved-versus-active divergence
   alone does not.
+
+The artifact workflow requests summary for mutation dispatch and retains the 1 MiB default
+capture limit. Before any publisher call or new pending intent, it rejects a cap below 1 MiB
+or serialized target and executor identity above 64 KiB. Summary drops all warning details
+and changed-path members and limits each diagnostic text field to 4 KiB before JSON escaping.
+Under that identity limit, a supported mutation summary fits within 512 KiB of JSON stdout;
+the remote client rejects a larger host summary as a protocol failure with unknown mutation
+effects. Remote diagnostics on stderr are capped at 4 KiB per transport step. A process that
+floods output or loses its response remains an uncertain attempt requiring inspection.
 
 Freeze representative JSON fixtures and error behavior in #3. Additive optional fields are
 allowed; incompatible meanings require a schema version change. No separate API server or schema

@@ -249,6 +249,93 @@ class RemoteCliTest(unittest.TestCase):
             self.assertIn("/usr/local/bin/html-publish", invocation["argv"][-1])
             self.assertIn("/etc/html-publish/publisher.json", invocation["argv"][-1])
 
+    def test_summary_protocol_validates_mode_counts_and_warning_context(self) -> None:
+        payload = report("status")
+        payload["warning_details"] = []
+        payload["report"] = {
+            "mode": "summary",
+            "collections": {"/warning_details": {"total": 2, "included": 0, "omitted": 2}},
+            "text": {},
+        }
+        environment = self.environment | {"FIXTURE_STDOUT": json.dumps(payload)}
+        result = self.run_remote(
+            "status", "--name", "release-notes", "--report", "summary", environment=environment
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(result.stdout)["report"], payload["report"])
+        invocation = next(item for item in self.records() if item["stage"] == "invoke")
+        self.assertIn("--report summary", invocation["argv"][-1])
+
+        for broken in (
+            payload | {"report": {**payload["report"], "mode": "detail"}},
+            payload
+            | {
+                "report": {
+                    **payload["report"],
+                    "collections": {
+                        "/warning_details": {"total": 2, "included": 0, "omitted": True}
+                    },
+                }
+            },
+            payload
+            | {
+                "warning_details": [
+                    {"code": "missing_relative_asset", "source_path": "index.html", "reference": 2}
+                ]
+            },
+        ):
+            invalid = self.run_remote(
+                "status",
+                "--name",
+                "release-notes",
+                "--report",
+                "summary",
+                environment=self.environment | {"FIXTURE_STDOUT": json.dumps(broken)},
+            )
+            self.assertEqual(invalid.returncode, 1)
+            self.assertEqual(json.loads(invalid.stdout)["error"]["code"], "remote_protocol_failure")
+
+    def test_report_mode_survives_usage_errors_and_schema_lists_choices(self) -> None:
+        invalid = self.run_remote(
+            "status", "--name", "release-notes", "--report", "summary", "--limit", "0"
+        )
+        self.assertEqual(invalid.returncode, 2)
+        self.assertEqual(json.loads(invalid.stdout)["report"]["mode"], "summary")
+        schema = self.run_remote("schema")
+        self.assertEqual(schema.returncode, 0)
+        commands = json.loads(schema.stdout)["commands"]
+        status = next(item for item in commands if item["name"] == "status")
+        option = next(item for item in status["options"] if "--report" in item["flags"])
+        self.assertEqual(option["choices"], ["detail", "summary"])
+        self.assertIn("summary", option["help"])
+
+    def test_cleanup_warning_keeps_text_metadata_in_both_modes(self) -> None:
+        for mode in ("detail", "summary"):
+            with self.subTest(mode=mode):
+                payload = report(
+                    "publish", request_id="attempt-1", expected="rev-a", outcome="published"
+                )
+                payload["warning_details"] = []
+                payload["report"] = {
+                    "mode": mode,
+                    "collections": {"/warning_details": {"total": 0, "included": 0, "omitted": 0}},
+                    "text": {},
+                }
+                args = self.artifact_args() + (["--report", mode] if mode == "summary" else [])
+                result = self.run_remote(
+                    *args,
+                    environment=self.environment
+                    | {"FIXTURE_STDOUT": json.dumps(payload), "FIXTURE_CLEANUP_EXIT": "17"},
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                actual = json.loads(result.stdout)
+                self.assertEqual(actual["outcome"], "published")
+                self.assertEqual(actual["transport"]["detail"], "Cleanup exited 17")
+                self.assertEqual(
+                    actual["report"]["text"]["/transport/detail"],
+                    {"total_bytes": 17, "included_bytes": 17, "omitted_bytes": 0},
+                )
+
     def test_explicit_host_overrides_client_file_without_rewriting_it(self) -> None:
         client = self.root / "client.json"
         client.write_text(
@@ -404,7 +491,10 @@ class RemoteCliTest(unittest.TestCase):
                         "--config",
                         HOST_CONFIG,
                         "--json",
-                        *forwarded,
+                        forwarded[0],
+                        "--report",
+                        "detail",
+                        *forwarded[1:],
                     ],
                 )
         self.assertEqual([r["stage"] for r in self.records()], ["invoke"] * 4)
@@ -442,7 +532,10 @@ class RemoteCliTest(unittest.TestCase):
         )
         expected["transport"] = {"detail": "scp exited 23"}
         self.assertEqual(result.returncode, 1)
-        self.assertEqual(json.loads(result.stdout), expected)
+        payload = json.loads(result.stdout)
+        for key, value in expected.items():
+            self.assertEqual(payload[key], value)
+        self.assertEqual(payload["report"]["mode"], "detail")
         self.assertEqual([r["stage"] for r in self.records()], ["setup", "transfer", "cleanup"])
         self.assertEqual(self.source.read_text(), "<!doctype html><h1>A</h1>\n")
 
@@ -483,7 +576,9 @@ class RemoteCliTest(unittest.TestCase):
                     self.assertRegex(staging, r"/incoming/[0-9a-f]{32}$")
                     expected["transport"]["staging"] = staging
                 self.assertEqual(result.returncode, 1)
-                self.assertEqual(payload, expected)
+                for key, value in expected.items():
+                    self.assertEqual(payload[key], value)
+                self.assertEqual(payload["report"]["mode"], "detail")
         self.assertNotIn("cleanup", [r["stage"] for r in self.records()])
 
     def test_generated_identity_is_reported_after_lost_response(self) -> None:
@@ -511,7 +606,10 @@ class RemoteCliTest(unittest.TestCase):
             [],
         )
         self.assertEqual(result.returncode, 2)
-        self.assertEqual(json.loads(result.stdout), expected)
+        payload = json.loads(result.stdout)
+        for key, value in expected.items():
+            self.assertEqual(payload[key], value)
+        self.assertEqual(payload["report"]["mode"], "detail")
         self.assertEqual(self.records(), [])
 
     def test_malformed_and_mismatched_results_are_protocol_failures(self) -> None:

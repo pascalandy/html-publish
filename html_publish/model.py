@@ -64,12 +64,21 @@ class FileEntry:
 
 
 @dataclass(frozen=True)
+class WarningDetail:
+    code: str
+    source_path: str
+    reference: str
+    expected_path: str | None
+
+
+@dataclass(frozen=True)
 class CapturedSite:
     root: Path
     entries: tuple[FileEntry, ...]
     revision: Revision
     total_bytes: int
     warnings: tuple[str, ...]
+    warning_details: tuple[WarningDetail, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -159,6 +168,7 @@ class Report:
     error: Failure | None = None
     details: Mapping[str, object] = field(default_factory=_empty_details)
     status_entries: tuple[StatusEntry, ...] = ()
+    warning_details: tuple[WarningDetail, ...] = ()
 
 
 class PublishError(Exception):

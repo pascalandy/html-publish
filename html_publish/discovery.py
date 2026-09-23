@@ -34,7 +34,7 @@ def _option(action: argparse.Action) -> dict[str, object]:
     help_text = action.help
     if isinstance(help_text, str):
         help_text = help_text.replace("%(default)s", str(default))
-    return {
+    option: dict[str, object] = {
         "flags": action.option_strings,
         "required": action.required,
         "takes_value": action.nargs != 0,
@@ -42,6 +42,9 @@ def _option(action: argparse.Action) -> dict[str, object]:
         "default": None if default is argparse.SUPPRESS else default,
         "help": help_text,
     }
+    if action.choices is not None:
+        option["choices"] = list(action.choices)
+    return option
 
 
 def _positional(action: argparse.Action) -> dict[str, object]:

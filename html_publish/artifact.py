@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import os
+import posixpath
 import re
 import stat
 import unicodedata
 from collections.abc import Iterator
+from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
+from urllib.parse import unquote, urlsplit
 
 from html_publish import _git
 from html_publish.model import (
@@ -16,6 +19,7 @@ from html_publish.model import (
     PublishError,
     RelativePath,
     Revision,
+    WarningDetail,
 )
 
 
@@ -147,19 +151,95 @@ def _copy_stable(source: Path, destination: Path, deadline: Deadline, byte_budge
         os.close(descriptor)
 
 
-def _warnings(index: Path) -> tuple[str, ...]:
-    text = index.read_bytes()[: 2 * 1024 * 1024].decode("utf-8", "replace")
-    warnings: list[str] = []
-    if re.search(r"(?:src|href)\s*=\s*['\"]/(?!/)", text, re.IGNORECASE):
-        warnings.append("root_relative_reference")
-    if re.search(r"(?:src|href)\s*=\s*['\"](?:https?:)?//", text, re.IGNORECASE):
-        warnings.append("external_dependency")
+RESOURCE_ATTRIBUTES = {
+    "img": ("src",),
+    "script": ("src",),
+    "iframe": ("src",),
+    "audio": ("src",),
+    "video": ("src", "poster"),
+    "source": ("src",),
+    "track": ("src",),
+    "embed": ("src",),
+    "input": ("src",),
+    "link": ("href",),
+}
+RESOURCE_LINK_RELS = frozenset(
+    {"stylesheet", "icon", "apple-touch-icon", "mask-icon", "preload", "modulepreload", "manifest"}
+)
+
+
+class _References(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.references: list[tuple[str, bool]] = []
+        self.base_href = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        if tag == "base" and attributes.get("href") is not None:
+            self.base_href = True
+        resource_attributes = RESOURCE_ATTRIBUTES.get(tag, ())
+        if tag == "input" and (attributes.get("type") or "").lower() != "image":
+            resource_attributes = ()
+        if tag == "link" and not RESOURCE_LINK_RELS.intersection(
+            (attributes.get("rel") or "").lower().split()
+        ):
+            resource_attributes = ()
+        for attribute in ("src", "href", "poster"):
+            value = attributes.get(attribute)
+            if value:
+                self.references.append((value, attribute in resource_attributes))
+
+
+def warnings_for(
+    index: Path, entries: tuple[FileEntry, ...] = ()
+) -> tuple[tuple[str, ...], tuple[WarningDetail, ...]]:
+    with index.open("rb") as source:
+        scanned = source.read(2 * 1024 * 1024 + 1)
+    truncated = len(scanned) > 2 * 1024 * 1024
+    text = scanned[: 2 * 1024 * 1024].decode("utf-8", "replace")
+    parser = _References()
+    parser.feed(text)
+    codes: list[str] = []
+    details: list[WarningDetail] = []
+    seen_details: set[WarningDetail] = set()
+    known_paths = {str(entry.path) for entry in entries}
+
+    def add(code: str, reference: str = "", expected: str | None = None) -> None:
+        if code not in codes:
+            codes.append(code)
+        item = WarningDetail(code, "index.html", reference, expected)
+        if item not in seen_details:
+            seen_details.add(item)
+            details.append(item)
+
+    for reference, is_resource in parser.references:
+        try:
+            parsed = urlsplit(reference.strip(" \t\n\r\f"))
+        except ValueError:
+            continue
+        if parsed.scheme or parsed.netloc:
+            if parsed.scheme in {"http", "https"} or reference.startswith("//"):
+                add("external_dependency", reference)
+            continue
+        if parsed.path.startswith("/"):
+            add("root_relative_reference", reference)
+            continue
+        if not is_resource or not parsed.path or parser.base_href or truncated:
+            continue
+        path = posixpath.normpath(unquote(parsed.path))
+        if path == ".." or path.startswith("../") or path.startswith("/"):
+            continue
+        index_path = "index.html" if path == "." else f"{path}/index.html"
+        if path not in known_paths and index_path not in known_paths:
+            add("missing_relative_asset", reference, path)
     if re.search(r"serviceWorker|service-worker", text, re.IGNORECASE):
-        warnings.append("service_worker")
-    return tuple(warnings)
-
-
-warnings_for = _warnings
+        add("service_worker")
+    if parser.base_href:
+        add("base_href_analysis_limited")
+    if truncated:
+        add("html_scan_truncated")
+    return tuple(codes), tuple(details)
 
 
 def capture(
@@ -215,10 +295,12 @@ def capture(
         [(PurePosixPath(str(entry.path)), entry.blob) for entry in entries],
         deadline,
     )
+    warnings, warning_details = warnings_for(site_root / "index.html", tuple(entries))
     return CapturedSite(
         site_root,
         tuple(entries),
         Revision(revision),
         total_bytes,
-        _warnings(site_root / "index.html"),
+        warnings,
+        warning_details,
     )
