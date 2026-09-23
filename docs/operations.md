@@ -10,9 +10,9 @@ The working machine needs this checkout, `uv`, Git, `ssh`, and `scp`. SSH must r
 
 ## Candidate checks and stable promotion
 
-`main` is the candidate line. There is no stable branch and no scheduled build. GitHub Actions starts only from a manual dispatch. A pull request update, a branch push, a schedule, or a stable tag starts nothing. Routine iteration relies on the local `just check` gate. The Checks workflow runs Ubuntu with Python 3.11 on demand from `main`. Enable macOS after the portable process helper from #41 lands. Enable artifact upload after `just check` creates the evidence files it would upload
+`main` is the candidate line. There is no stable branch and no scheduled build. Both project workflows start only from manual dispatch. A pull request update, a branch push, a schedule, or a stable tag starts nothing. Routine iteration relies on the local `just check` gate
 
-Add the Installed Linux host workflow to `main` only when its workflow file and the `scripts/verify-host-systemd.sh` implementation from #44 are both present on `main`. Until then the workflow stays on its pull request branch, keeps only its manual trigger, and cannot be dispatched
+The Checks workflow runs Ubuntu with Python 3.11 and macOS with Python 3.13. Each job uploads its `/tmp/html-publish-verify/*/artifacts/` evidence, even when a prior step fails. The Installed Linux host workflow is also available on `main`. Run it on demand when the candidate changes host or installer behavior
 
 ### Check a candidate
 
@@ -25,14 +25,14 @@ Run the manual Checks workflow when a commit needs independent platform evidence
 gh workflow run check.yml --ref main
 ```
 
-3. Wait for the run to finish, then record its conclusion and head SHA:
+3. Wait for the run to finish, then record its conclusion, head SHA, and both job outcomes:
 
 ```sh
 gh run list --workflow check.yml --limit 1
 gh run view '<run id>' --json headSha,conclusion,jobs
 ```
 
-4. Compare the run's recorded head SHA, the `headSha` field, with the candidate SHA. If they differ because `main` advanced, stop. Do not install or promote the candidate with that run. Select and review a new candidate explicitly, then repeat this procedure
+4. Require the Ubuntu and macOS jobs to succeed. Compare the run's recorded head SHA, the `headSha` field, with the candidate SHA. If they differ because `main` advanced, stop. Do not install or promote the candidate with that run. Select and review a new candidate explicitly, then repeat this procedure
 5. The workflow checks out the event commit itself. Do not add a source-ref override
 
 A check result covers only the commit named in its head SHA.
