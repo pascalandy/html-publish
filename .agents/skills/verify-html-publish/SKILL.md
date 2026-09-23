@@ -123,3 +123,4 @@ retains `launch.txt`, `installed-workflow.jsonl`, logs, and the wheel. Use
 - [Host diagnostics](features/host-diagnostics.md)
 - [Installed Linux hosting](features/installed-linux-hosting.md)
 - [Recovery](features/recovery.md)
+- [Skills discovery](features/skills-discovery.md)

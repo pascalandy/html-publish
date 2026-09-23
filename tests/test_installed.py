@@ -97,7 +97,11 @@ class InstalledWorkflowTest(unittest.TestCase):
                     ["plan", "publish", "status", "verify", "history", "restore"]
                     + (["artifact"] if executable == values["CLI"] else [])
                     + ["schema"]
-                    + (["config", "doctor", "host"] if executable == values["CLI"] else []),
+                    + (
+                        ["config", "doctor", "host", "skills"]
+                        if executable == values["CLI"]
+                        else []
+                    ),
                 )
                 plan = next(command for command in commands if command["name"] == "plan")
                 plan_expected = next(
@@ -206,6 +210,79 @@ class InstalledWorkflowTest(unittest.TestCase):
                 dict[str, object], json.loads(discovery(values["CLI"], "schema").stdout)
             )
             local_commands = cast(list[dict[str, object]], local_schema["commands"])
+
+            skills_list = discovery(values["CLI"], "skills", "list")
+            skills_inventory = cast(dict[str, object], json.loads(skills_list.stdout))
+            self.assertEqual(skills_list.stderr, "")
+            self.assertEqual(skills_inventory["schema_version"], 1)
+            self.assertEqual(skills_inventory["executable"], "html-publish")
+            self.assertEqual(skills_inventory["version"], local_schema["version"])
+            installed_guides = cast(list[dict[str, object]], skills_inventory["guides"])
+            self.assertEqual(
+                [set(guide) for guide in installed_guides],
+                [{"name", "title", "summary", "bytes"}] * 2,
+            )
+            self.assertEqual(
+                [
+                    {key: guide[key] for key in ("name", "title", "summary")}
+                    for guide in installed_guides
+                ],
+                [
+                    {
+                        "name": "core",
+                        "title": "Core guide",
+                        "summary": (
+                            "Publish and update artifacts through the durable artifact workflow."
+                        ),
+                    },
+                    {
+                        "name": "recovery",
+                        "title": "Recovery guide",
+                        "summary": (
+                            "Interpret failure codes, interruption states, and guarded retries."
+                        ),
+                    },
+                ],
+            )
+            venv_root = Path(values["CLI"]).resolve().parents[1]
+            site_packages = next((venv_root / "lib").glob("python*/site-packages"))
+            installed_guide_root = site_packages / "html_publish/guides"
+            for guide in installed_guides:
+                name = str(guide["name"])
+                byte_count = guide["bytes"]
+                self.assertIsInstance(byte_count, int)
+                self.assertGreater(cast(int, byte_count), 0)
+                self.assertEqual(byte_count, (installed_guide_root / f"{name}.md").stat().st_size)
+
+            core_guide = discovery(values["CLI"], "skills", "get", "core")
+            self.assertIn(f"html-publish {local_schema['version']}", core_guide.stdout)
+            self.assertIn("# Core guide", core_guide.stdout)
+            recovery_guide = cast(
+                dict[str, object],
+                json.loads(discovery(values["CLI"], "skills", "get", "recovery", "--json").stdout),
+            )
+            self.assertEqual(recovery_guide["name"], "recovery")
+            self.assertIn(f"html-publish {local_schema['version']}", str(recovery_guide["content"]))
+            missing_json = cast(
+                dict[str, object],
+                json.loads(
+                    discovery(
+                        values["CLI"],
+                        "skills",
+                        "get",
+                        "missing-guide",
+                        "--json",
+                        exit_code=2,
+                    ).stdout
+                ),
+            )
+            self.assertEqual(missing_json["outcome"], "error")
+            self.assertEqual(
+                cast(dict[str, object], missing_json["error"])["code"], "invalid_usage"
+            )
+            missing_plain = discovery(values["CLI"], "skills", "get", "missing-guide", exit_code=2)
+            self.assertEqual(missing_plain.stdout, "")
+            self.assertTrue(missing_plain.stderr)
 
             def run_example(name: str, replacements: dict[str, str]) -> dict[str, object]:
                 command = next(item for item in local_commands if item["name"] == name)

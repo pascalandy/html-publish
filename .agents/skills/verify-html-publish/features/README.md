@@ -7,7 +7,7 @@ This directory is the maintained source for verifying the user-facing behavior o
 - Start an isolated instance with `scripts/instance.sh start <run_id>` from the skill directory. See SKILL.md Launch.
 - Export `REPO_ROOT`, `RUN_ID`, `INSTANCE`, `CONFIG`, `URL`, `PORT`, `ARTIFACTS`, and `CLI` from the start output. Export `PAGE_A` and `PAGE_B` from the sources output.
 - Create the shell helper `HP() { "$CLI" --config "$CONFIG" --json "$@"; }` used by every recipe. It drives the installed wheel, outside the source checkout.
-- The [README publish helper](../../../../README.md#publish-one-page) is the single source for accepted-revision updates. Recipes may inspect reports directly, but any carried baseline must pass the command-exit and successful-outcome gates from that helper. Never assign a baseline from `status`, an error report, or a mutation-to-`jq` pipeline.
+- The [bundled core guide](../../../../html_publish/guides/core.md) is the single source for accepted-revision updates. Recipes may inspect reports directly, but any carried baseline must pass the command-exit and successful-outcome gates from that helper. Never assign a baseline from `status`, an error report, or a mutation-to-`jq` pipeline.
 - Run `scripts/instance.sh doctor <run_id>` and require exit 0 before driving.
 - Never drive an instance that this verification run did not start. `allow_http` in the generated config is valid only for the loopback target `127.0.0.1`.
 - One instance may host several page names. Use a fresh page name when a recipe needs untouched state instead of a new instance.
@@ -54,3 +54,4 @@ Keep implementation details out of the map. Name only user paths, stable handles
 - [Host diagnostics](host-diagnostics.md) covers named and unnamed host checks, local corruption, and route drift.
 - [Installed Linux hosting](installed-linux-hosting.md) covers foreground serving, read-only setup preview, and isolated user-service proof.
 - [Recovery](recovery.md) covers persistence errors and retry state after real process termination.
+- [Skills discovery](skills-discovery.md) covers the bundled version-matched guides, offline list and get, and the remote boundary.

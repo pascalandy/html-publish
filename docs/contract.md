@@ -30,6 +30,15 @@ and `restore`; root help recommends it for durable publication.
 Artifact results, including usage errors, emit one JSON handoff by default. Discovery includes
 required positional arguments from the same parser as executable help.
 
+The `html-publish skills` group exposes the bundled version-matched core and recovery guides
+offline. `skills list` writes one versioned JSON discovery object that names each guide,
+summarizes it, and reports its byte size. `skills get NAME` writes one guide's text to stdout,
+or one versioned JSON object containing that text when `--json` is set. Both commands read only
+packaged guide bytes, without a configuration file, network access, or publication mutation, and
+an unknown guide name is a usage error. Guide bytes ship inside the same wheel as the executable,
+so a guide always matches the version that reads it. The remote executable does not forward the
+skills group.
+
 `--config`, `--json`, `--version`, and the publisher's `--command-seconds` may precede
 or follow a publisher operation. Remote connection and time-budget options may
 precede or follow a remote operation. Long option names require exact spelling;
