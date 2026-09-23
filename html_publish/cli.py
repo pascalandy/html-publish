@@ -7,6 +7,7 @@ import math
 import re
 import signal
 import sys
+import time
 from collections.abc import Generator, Mapping
 from dataclasses import asdict
 from pathlib import Path
@@ -133,7 +134,7 @@ def _globals(command: argparse.ArgumentParser, version: str) -> None:
         type=_positive_seconds,
         default=argparse.SUPPRESS,
         help="override total command budget in seconds "
-        "(default: configuration limit, normally 120)",
+        "(default: configuration limit; publisher 120, client 150)",
     )
 
 
@@ -146,7 +147,9 @@ def _parser(json_version: bool = False) -> Parser:
     parser = Parser(
         prog="html-publish",
         description="Publish private static HTML with a stable URL and local Git history. "
-        "Preview with plan, publish under a revision guard, then inspect with status or verify.",
+        "Use artifact publish for durable receipts and safe fresh-session updates. "
+        "The root plan, publish, status, verify, history, and restore commands "
+        "address the publisher directly.",
         allow_abbrev=False,
     )
     parser.add_argument(
@@ -162,7 +165,7 @@ def _parser(json_version: bool = False) -> Parser:
         "--command-seconds",
         type=_positive_seconds,
         help="override total command budget in seconds "
-        "(default: configuration limit, normally 120)",
+        "(default: configuration limit; publisher 120, client 150)",
     )
     commands = parser.add_subparsers(dest="operation", required=True)
 
@@ -314,6 +317,91 @@ def _parser(json_version: bool = False) -> Parser:
         "--request-id", help="caller attempt ID echoed in the result for reconciliation"
     )
     _globals(restore, version)
+
+    artifact = register_command(
+        commands,
+        "artifact",
+        "manage a durable receipt for one stable publication URL",
+        examples=("html-publish artifact publish ./page.html --new release-notes",),
+        effects=("writes a private receipt", "calls the configured publisher"),
+    )
+    _globals(artifact, version)
+    artifact_commands = artifact.add_subparsers(dest="artifact_action", required=True)
+    artifact_publish = register_command(
+        artifact_commands,
+        "publish",
+        "freeze source bytes and publish under the receipt's accepted revision",
+        examples=(
+            "html-publish --config client.json artifact publish ./page.html "
+            "--new release-notes --receipt ./page.publish",
+        ),
+        effects=("saves immutable pending input", "may publish and verify"),
+    )
+    artifact_publish.add_argument("source", help="HTML file or directory")
+    artifact_publish.add_argument(
+        "--receipt", help="private receipt directory; defaults to SOURCE.publish"
+    )
+    identity = artifact_publish.add_mutually_exclusive_group()
+    identity.add_argument("--new", type=_name, help="bind a new publication name")
+    identity.add_argument("--adopt", type=_name, help="bind an existing name after review")
+    artifact_publish.add_argument(
+        "--reviewed-revision", help="reviewed active revision for adoption or conflict replacement"
+    )
+    artifact_publish.add_argument(
+        "--replaces-attempt", help="stored conflicting attempt ID; requires --reviewed-revision"
+    )
+    artifact_publish.add_argument(
+        "--local-only",
+        action="store_true",
+        help="inspect source without loading config or publishing",
+    )
+    _globals(artifact_publish, version)
+    artifact_retry = register_command(
+        artifact_commands,
+        "retry",
+        "resume the same pending bytes or restore commit",
+        examples=("html-publish --config client.json artifact retry --receipt ./page.publish",),
+        effects=("inspects uncertain state", "may retry the original mutation"),
+    )
+    artifact_retry.add_argument("--receipt", required=True, help="private receipt directory")
+    _globals(artifact_retry, version)
+    artifact_status = register_command(
+        artifact_commands,
+        "status",
+        "observe host state without accepting its revision",
+        examples=("html-publish artifact status --receipt ./page.publish --local-only",),
+        effects=(
+            "reads receipt",
+            "may record a host observation",
+            "never accepts an observed revision",
+        ),
+    )
+    artifact_status.add_argument("--receipt", required=True, help="private receipt directory")
+    artifact_status.add_argument(
+        "--local-only", action="store_true", help="read receipt without config or host access"
+    )
+    _globals(artifact_status, version)
+    artifact_restore = register_command(
+        artifact_commands,
+        "restore",
+        "restore a reachable commit under the receipt guard",
+        examples=(
+            "html-publish --config client.json artifact restore --receipt ./page.publish "
+            "--archive-commit COMMIT",
+        ),
+        effects=("saves a source-free restore intent", "may append history and activate"),
+    )
+    artifact_restore.add_argument("--receipt", required=True, help="private receipt directory")
+    artifact_restore.add_argument(
+        "--archive-commit", required=True, help="reachable publisher history commit"
+    )
+    artifact_restore.add_argument(
+        "--reviewed-revision", help="reviewed active revision for conflict replacement"
+    )
+    artifact_restore.add_argument(
+        "--replaces-attempt", help="stored conflicting attempt ID; requires --reviewed-revision"
+    )
+    _globals(artifact_restore, version)
 
     schema = register_command(
         commands,
@@ -1001,6 +1089,7 @@ def _run_config(parsed: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    started_at = time.monotonic()
     arguments = list(sys.argv[1:] if argv is None else argv)
     json_output = "--json" in arguments
     parsed = argparse.Namespace()
@@ -1012,6 +1101,11 @@ def main(argv: list[str] | None = None) -> int:
             return emit_json(command_schema(parser, "html-publish"), 0)
         if parsed.operation in {"config", "doctor"}:
             return _run_config(parsed)
+        if parsed.operation == "artifact":
+            from html_publish import receipt
+
+            path, _ = selected_path("client", parsed.config)
+            return receipt.run(parsed, path, started_at)
         config_path, _ = selected_path("publisher", parsed.config)
         config = load_config(config_path)
         command_seconds = parsed.command_seconds or config.limits.command_seconds
@@ -1059,6 +1153,19 @@ def main(argv: list[str] | None = None) -> int:
     except UsageFailure as error:
         failure = Failure("invalid_usage", "usage", str(error), "fix_arguments")
         operation = getattr(parsed, "operation", None)
+        if operation == "artifact":
+            from html_publish import receipt
+
+            index = arguments.index("artifact")
+            action = next(
+                (
+                    item
+                    for item in arguments[index + 1 :]
+                    if item in {"publish", "retry", "status", "restore"}
+                ),
+                "usage",
+            )
+            return receipt.usage_error(action, str(error))
         if operation in {"config", "doctor"} and not hasattr(parsed, "role"):
             return _emit_config(
                 _config_result(operation, None, None, None, "error", failure=failure),

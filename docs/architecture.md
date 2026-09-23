@@ -2,7 +2,7 @@
 
 ## Caller usage
 
-The executable is the public interface. A caller supplies a finished artifact, a stable name, and the configured target. The [README publish example](../README.md#publish-one-page) owns the canonical shell pattern for updating an accepted revision. The reference calls below do not assign mutation output
+The executable is the public interface. A caller supplies a finished artifact, a stable name, and the configured target. The [README publish example](../README.md#publish-one-page) shows the root publisher shell pattern. The reference calls below do not assign mutation output
 
 ```sh
 html-publish --config publisher.json --json plan \
@@ -30,7 +30,7 @@ html-publish --config publisher.json --json restore \
   --expected-revision "<accepted revision>"
 ```
 
-The publisher supports creation, guarded replacement, identical retries, read-only observation, explicit verification, bounded history, and guarded restore. A caller updates its accepted revision only after the mutation command exits successfully and its JSON reports an appropriate successful outcome. It then supplies that revision as `--expected-revision` when planning, publishing, or restoring changed content. A `status` result is an observation and does not replace that accepted revision. The accepted revision acts as a compare-and-swap guard, while the publication URL stays stable. Durable receipts and production installation remain later work.
+The root publisher supports creation, guarded replacement, identical retries, read-only observation, explicit verification, bounded history, and guarded restore. `html-publish artifact` owns the durable caller receipt and supplies its accepted revision to the root publisher. A `status` result is an observation and does not replace that accepted revision. The accepted revision acts as a compare-and-swap guard, while the publication URL stays stable. Production installation remains separate work.
 
 ## Data shape
 
@@ -102,6 +102,7 @@ class Verification:
 | `store.py` | Git history, runtime layout, the process lock, mutation order, state observation, history, restore, and partial effects |
 | `delivery.py` | URL construction, redirect boundaries, HTTP body comparison, delivery evidence, and host diagnostics |
 | `remote.py` | Private source upload, bounded SSH execution, host-result correlation, and attempt staging cleanup |
+| `receipt.py` | Caller binding, frozen publish or restore intent, accepted revision, observation, local lock, and saved-result recovery |
 | `server.py` | Read-only HTTP delivery of selected files, without publication mutations |
 
 `_git.py` is a private mechanism shared by capture and storage. It owns the one sanitized Git invocation policy and exposes no publication decisions
@@ -113,6 +114,14 @@ carry command intent separately from invocation effects. A validated host result
 staging cleanup. Lost mutation responses retain that staging and report unknown effects. One client
 deadline bounds capture, upload, execution, and cleanup. It does not bound an already-running host
 transaction. The read-only server never enters the store's mutation path.
+
+The artifact commands use the shared client configuration loader. A receipt holds one binding and
+at most one pending attempt. Version 1 keeps the established publish-intent shape. First restore
+records a tagged, source-free version 2 intent; later publish attempts remain tagged in version 2.
+The artifact executor calls the root publisher or remote executable and correlates its result before
+reducing receipt state. A saved result is durable before the receipt advances, so a failed receipt
+replace can be recovered locally without a second publication call. The store alone mutates archive
+and active selection.
 
 `plan` and `publish` share one decision over the requested revision, expected revision, saved page, and active selection. The result is `create`, `update`, `unchanged`, or `conflict`. `plan` observes the full local state and computes the exact requested revision and file differences under the process lock, but it writes only to temporary storage.
 

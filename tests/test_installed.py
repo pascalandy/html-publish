@@ -94,7 +94,9 @@ class InstalledWorkflowTest(unittest.TestCase):
                 commands = cast(list[dict[str, object]], schema["commands"])
                 self.assertEqual(
                     [command["name"] for command in commands],
-                    ["plan", "publish", "status", "verify", "history", "restore", "schema"]
+                    ["plan", "publish", "status", "verify", "history", "restore"]
+                    + (["artifact"] if executable == values["CLI"] else [])
+                    + ["schema"]
                     + (["config", "doctor"] if executable == values["CLI"] else []),
                 )
                 plan = next(command for command in commands if command["name"] == "plan")
@@ -138,6 +140,15 @@ class InstalledWorkflowTest(unittest.TestCase):
                     json.loads(discovery(executable, "publish", "--version", "--json").stdout),
                     version,
                 )
+                if executable == values["CLI"]:
+                    self.assertEqual(
+                        json.loads(
+                            discovery(
+                                executable, "artifact", "status", "--version", "--json"
+                            ).stdout
+                        ),
+                        version,
+                    )
                 self.assertEqual(
                     json.loads(
                         discovery(
