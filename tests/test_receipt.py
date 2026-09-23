@@ -106,6 +106,7 @@ digest = source_digest(source)
 requested = f"rev-{digest[:20]}"
 expected = value("--expected-revision")
 expected_record = value("--expected-record-revision")
+expected_render_profile_id = value("--expected-render-profile-id")
 input_format = value("--format") or "html"
 entry = value("--entry")
 requested_record = f"record-{digest[:20]}" if input_format == "markdown" else None
@@ -118,8 +119,10 @@ call = {
     "request_id": request_id,
     "expected_revision": expected,
     "expected_record_revision": expected_record,
+    "expected_render_profile_id": expected_render_profile_id,
     "input_format": input_format,
     "entry": entry,
+    "source": str(source),
     "requested_revision": requested,
     "requested_record_revision": requested_record,
     "source_digest": digest,
@@ -843,6 +846,24 @@ class HelperCliTest(ReceiptFixture):
         self.assertEqual(publish_calls[1]["expected_revision"], revision_a)
         self.assertNotEqual(self.receipt(receipt_dir)["accepted_revision"], revision_a)
 
+    def test_markdown_receipt_freezes_single_file_name_and_renderer_profile(self) -> None:
+        source = self.root / "article.md"
+        source.write_text("# Article\n")
+
+        result = self.run_helper("publish", str(source), "--new", "article", "--format", "markdown")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        handoff = self.payload(result)
+        calls = [call for call in self.calls() if call["operation"] == "publish"]
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(cast(str, calls[0]["source"]).endswith("/article.md"))
+        self.assertEqual(
+            calls[0]["expected_render_profile_id"],
+            "markdown-it-py/4.2.0:commonmark:html-off:table-on:linkify-off:template-reading-column-v1",
+        )
+        self.assertEqual(handoff["input_format"], "markdown")
+        self.assertEqual(self.receipt(Path(str(source) + ".publish"))["version"], 3)
+
     def test_markdown_receipt_v3_guards_both_identities_and_requires_legacy_record_review(
         self,
     ) -> None:
@@ -968,6 +989,213 @@ class HelperCliTest(ReceiptFixture):
         self.assertIsNone(classification.receipt.pending)
         self.assertEqual(classification.receipt.accepted_revision, "output-a")
         self.assertEqual(classification.receipt.accepted_record_revision, "record-b")
+
+    def test_markdown_activation_without_verified_delivery_keeps_record_baseline(self) -> None:
+        profile = (
+            "markdown-it-py/4.2.0:commonmark:html-off:table-on:linkify-off:"
+            "template-reading-column-v1"
+        )
+        intent = receipt.PublishIntent(
+            "attempt-unverified",
+            receipt.Expectation("accepted", "output-a", None, "record-a"),
+            receipt.FrozenInput("attempt-unverified/source", "directory", "digest", 1, 10),
+            "markdown",
+            "index.md",
+            profile,
+        )
+        state = receipt.Receipt(
+            3,
+            receipt.Binding(
+                "association-a",
+                "guide",
+                receipt.TargetIdentity("local", "local", self.target),
+                "fingerprint-a",
+            ),
+            "output-a",
+            receipt.Pending(intent, 1, "uncertain"),
+            None,
+            None,
+            "record-a",
+        )
+        payload: dict[str, object] = {
+            "schema_version": 1,
+            "operation": "publish",
+            "request_id": intent.id,
+            "outcome": "error",
+            "target": self.target,
+            "name": "guide",
+            "url": f"{self.target}guide/",
+            "expected_revision": "output-a",
+            "requested_revision": "output-b",
+            "active_revision": "output-b",
+            "expected_record_revision": "record-a",
+            "requested_record_revision": "record-b",
+            "archived_record_revision": "record-b",
+            "render_profile_id": profile,
+            "effects": {"archive_advanced": True, "activated": True},
+            "verification": {"result": "failed", "revision": "wrong-output"},
+            "error": {
+                "code": "delivery_failure",
+                "phase": "verify",
+                "message": "delivery failed",
+                "next_action": {"kind": "retry", "required_inputs": []},
+            },
+        }
+        result = receipt.SavedResult(
+            intent.id,
+            1,
+            "digest",
+            1,
+            False,
+            False,
+            json.dumps(payload),
+            "",
+            payload,
+            False,
+            False,
+        )
+
+        classification = receipt.reduce_result(state, result)
+
+        self.assertEqual(classification.kind, "delivery_failed")
+        self.assertEqual(classification.receipt.accepted_revision, "output-b")
+        self.assertEqual(classification.receipt.accepted_record_revision, "record-a")
+
+    def test_record_aware_legacy_restore_upgrades_receipt_and_keeps_record_identity(self) -> None:
+        intent = receipt.RestoreIntent(
+            "attempt-restore",
+            receipt.Expectation("accepted", "output-current", None),
+            "archive-commit",
+        )
+        state = receipt.Receipt(
+            2,
+            receipt.Binding(
+                "association-legacy",
+                "guide",
+                receipt.TargetIdentity("local", "local", self.target),
+                "fingerprint-a",
+            ),
+            "output-current",
+            receipt.Pending(intent, 1, "uncertain"),
+            None,
+            None,
+        )
+        payload = {
+            "schema_version": 1,
+            "operation": "restore",
+            "request_id": intent.id,
+            "outcome": "published",
+            "target": self.target,
+            "name": "guide",
+            "url": f"{self.target}guide/",
+            "expected_revision": "output-current",
+            "requested_revision": "output-restored",
+            "active_revision": "output-restored",
+            "expected_record_revision": None,
+            "requested_record_revision": "record-restored",
+            "archived_record_revision": "record-restored",
+            "render_profile_id": None,
+            "effects": {"archive_advanced": False, "activated": True},
+            "verification": {"result": "passed", "revision": "output-restored"},
+            "error": None,
+        }
+        result = receipt.SavedResult(
+            intent.id,
+            1,
+            "digest",
+            0,
+            False,
+            False,
+            json.dumps(payload),
+            "",
+            payload,
+            False,
+            False,
+        )
+
+        classification = receipt.reduce_result(state, result)
+        serialized = receipt.receipt_dict(classification.receipt)
+
+        self.assertEqual(classification.kind, "completed")
+        self.assertEqual(classification.receipt.version, 3)
+        self.assertEqual(classification.receipt.accepted_record_revision, "record-restored")
+        self.assertEqual(serialized["accepted_record_revision"], "record-restored")
+        observation = cast(dict[str, object], serialized["last_observation"])
+        self.assertEqual(observation["requested_record_revision"], "record-restored")
+
+    def test_renderer_profile_mismatch_rejection_is_correlated_without_acceptance(self) -> None:
+        profile = (
+            "markdown-it-py/4.2.0:commonmark:html-off:table-on:linkify-off:"
+            "template-reading-column-v1"
+        )
+        intent = receipt.PublishIntent(
+            "attempt-profile",
+            receipt.Expectation("accepted", "output-a", None, "record-a"),
+            receipt.FrozenInput("attempt-profile/source/site.md", "file", "digest", 1, 10),
+            "markdown",
+            None,
+            profile,
+        )
+        state = receipt.Receipt(
+            3,
+            receipt.Binding(
+                "association-a",
+                "guide",
+                receipt.TargetIdentity("local", "local", self.target),
+                "fingerprint-a",
+            ),
+            "output-a",
+            receipt.Pending(intent, 1, "uncertain"),
+            None,
+            None,
+            "record-a",
+        )
+        payload: dict[str, object] = {
+            "schema_version": 1,
+            "operation": "publish",
+            "request_id": intent.id,
+            "outcome": "error",
+            "target": self.target,
+            "name": "guide",
+            "url": f"{self.target}guide/",
+            "expected_revision": "output-a",
+            "requested_revision": None,
+            "active_revision": "output-a",
+            "expected_record_revision": "record-a",
+            "requested_record_revision": None,
+            "archived_record_revision": "record-a",
+            "render_profile_id": "other-profile",
+            "effects": {"archive_advanced": False, "activated": False},
+            "verification": {"result": "not_checked", "revision": None},
+            "error": {
+                "code": "unsupported_render_profile",
+                "phase": "render",
+                "message": "unsupported renderer",
+                "next_action": {"kind": "use_compatible_renderer", "required_inputs": []},
+            },
+        }
+        result = receipt.SavedResult(
+            intent.id,
+            1,
+            "digest",
+            1,
+            False,
+            False,
+            json.dumps(payload),
+            "",
+            payload,
+            False,
+            False,
+        )
+
+        classification = receipt.reduce_result(state, result)
+
+        self.assertEqual(classification.kind, "retryable")
+        self.assertEqual(classification.receipt.accepted_revision, "output-a")
+        self.assertEqual(classification.receipt.accepted_record_revision, "record-a")
+        observation = classification.receipt.last_observation
+        assert observation is not None
+        self.assertEqual(observation.error_code, "unsupported_render_profile")
 
     def test_lost_response_retry_uses_saved_bytes_identity_and_expectation(
         self,

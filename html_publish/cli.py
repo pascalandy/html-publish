@@ -31,6 +31,7 @@ from html_publish.discovery import (
     register_command,
     version_payload,
 )
+from html_publish.markdown import RENDER_PROFILE_ID
 from html_publish.model import (
     Config,
     Deadline,
@@ -297,6 +298,10 @@ def _parser(json_version: bool = False) -> Parser:
         "--expected-record-revision",
         type=RecordRevision,
         help="expected latest private source-record revision for Markdown publication",
+    )
+    publish.add_argument(
+        "--expected-render-profile-id",
+        help="fail before publication if the installed Markdown renderer differs",
     )
     publish.add_argument(
         "--request-id", help="caller attempt ID echoed in the result for reconciliation"
@@ -1405,6 +1410,17 @@ def main(argv: list[str] | None = None) -> int:
             return _run_skills(parsed)
         if parsed.operation in {"config", "doctor"}:
             return _run_config(parsed)
+        expected_render_profile_id = getattr(parsed, "expected_render_profile_id", None)
+        if expected_render_profile_id is not None:
+            if parsed.operation != "publish" or parsed.input_format != "markdown":
+                raise UsageFailure("--expected-render-profile-id requires Markdown publish")
+            if expected_render_profile_id != RENDER_PROFILE_ID:
+                raise PublishError(
+                    "unsupported_render_profile",
+                    "render",
+                    "The installed Markdown renderer does not match the frozen render profile",
+                    "use_compatible_renderer",
+                )
         if parsed.operation == "artifact":
             from html_publish import receipt
 
@@ -1583,6 +1599,9 @@ def main(argv: list[str] | None = None) -> int:
             request_id=getattr(parsed, "request_id", None),
             expected_revision=getattr(parsed, "expected_revision", None),
             expected_record_revision=getattr(parsed, "expected_record_revision", None),
+            render_profile_id=(
+                RENDER_PROFILE_ID if getattr(parsed, "input_format", None) == "markdown" else None
+            ),
             error=error.failure,
         )
         return _print_report(report, json_output, getattr(parsed, "report", "detail"))

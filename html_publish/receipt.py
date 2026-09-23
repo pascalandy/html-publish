@@ -488,7 +488,7 @@ def parse_receipt(value: object) -> Receipt:
         if set(pending_object) != {"intent", "dispatch_generation", "state"}:
             raise ReceiptFailure("invalid_state", "pending has unexpected fields", "inspect")
         intent_raw = _object(pending_object.get("intent"), "pending.intent")
-        operation = intent_raw.get("operation", "publish") if version == 2 else "publish"
+        operation = intent_raw.get("operation", "publish") if version >= 2 else "publish"
         expected_fields = (
             {"id", "expectation", "input"}
             if version == 1
@@ -879,6 +879,8 @@ def freeze_input(
     attempt_id: str,
     limits: Limits,
     command_budget: CommandBudget | None = None,
+    *,
+    keep_file_name: bool = False,
 ) -> FrozenInput:
     if command_budget is not None:
         command_budget.remaining()
@@ -915,6 +917,8 @@ def freeze_input(
     )
     try:
         if stat.S_ISREG(source_info.st_mode):
+            if keep_file_name:
+                input_path = temporary / source.name
             _copy_regular(source, input_path, "", digest, budget)
             kind: InputKind = "file"
         else:
@@ -929,7 +933,7 @@ def freeze_input(
         shutil.rmtree(temporary, ignore_errors=True)
         raise
     return FrozenInput(
-        str(final_attempt.relative_to(receipt_dir) / "input"),
+        str(final_attempt.relative_to(receipt_dir) / input_path.name),
         kind,
         digest.hexdigest(),
         budget.files,
@@ -1030,6 +1034,7 @@ def _executor_command(
     input_format: Literal["html", "markdown"] = "html",
     entry: str | None = None,
     expected_record_revision: str | None = None,
+    expected_render_profile_id: str | None = None,
 ) -> list[str]:
     executor = config.executor
     command = list(executor.command)
@@ -1057,6 +1062,8 @@ def _executor_command(
                 command.extend(["--format", "markdown"])
                 if entry is not None:
                     command.extend(["--entry", entry])
+                if expected_render_profile_id is not None:
+                    command.extend(["--expected-render-profile-id", expected_render_profile_id])
         else:
             assert archive_commit is not None
             command.extend(["--archive-commit", archive_commit])
@@ -1480,8 +1487,8 @@ def reduce_result(receipt: Receipt, result: SavedResult) -> Classification:
         )
 
     expected = pending.intent.expectation.revision
-    record_aware = receipt.version >= 3 and (
-        isinstance(pending.intent, RestoreIntent) or pending.intent.input_format == "markdown"
+    record_aware = isinstance(pending.intent, RestoreIntent) or (
+        receipt.version >= 3 and pending.intent.input_format == "markdown"
     )
     expected_record = pending.intent.expectation.record_revision
     schema = payload.get("schema_version")
@@ -1490,6 +1497,17 @@ def reduce_result(receipt: Receipt, result: SavedResult) -> Classification:
     target = _payload_string(payload, "target")
     name = _payload_string(payload, "name")
     reported_expected = payload.get("expected_revision")
+    profile_mismatch = (
+        isinstance(pending.intent, PublishIntent)
+        and pending.intent.input_format == "markdown"
+        and payload.get("render_profile_id") != pending.intent.render_profile_id
+        and payload.get("outcome") == "error"
+        and isinstance(payload.get("error"), dict)
+        and cast(dict[str, object], payload["error"]).get("code") == "unsupported_render_profile"
+        and isinstance(payload.get("effects"), dict)
+        and cast(dict[str, object], payload["effects"]).get("archive_advanced") is False
+        and cast(dict[str, object], payload["effects"]).get("activated") is False
+    )
     correlated = (
         schema == 1
         and operation == ("publish" if isinstance(pending.intent, PublishIntent) else "restore")
@@ -1499,7 +1517,8 @@ def reduce_result(receipt: Receipt, result: SavedResult) -> Classification:
         and reported_expected == expected
         and (not record_aware or payload.get("expected_record_revision") == expected_record)
         and (
-            not isinstance(pending.intent, PublishIntent)
+            profile_mismatch
+            or not isinstance(pending.intent, PublishIntent)
             or pending.intent.input_format != "markdown"
             or payload.get("render_profile_id") == pending.intent.render_profile_id
         )
@@ -1531,6 +1550,13 @@ def reduce_result(receipt: Receipt, result: SavedResult) -> Classification:
     requested = observation.requested_revision
     requested_record = observation.requested_record_revision
     archived_record = observation.archived_record_revision
+    classification_receipt = (
+        dataclasses.replace(receipt, version=3)
+        if isinstance(pending.intent, RestoreIntent)
+        and receipt.version < 3
+        and (requested_record is not None or archived_record is not None)
+        else receipt
+    )
     active = observation.active_revision
     verification = observation.verification
     effects = payload.get("effects")
@@ -1570,12 +1596,16 @@ def reduce_result(receipt: Receipt, result: SavedResult) -> Classification:
         requested is not None and activated and active == requested and record_identity_matches
     )
 
-    def accepted_record(effects_activated: bool = False) -> str | None:
+    def accepted_record() -> str | None:
         if record_aware:
-            return requested_record
-        if effects_activated or effects_raw.get("archive_advanced") is True:
+            return (
+                requested_record
+                if same_revision_success
+                else classification_receipt.accepted_record_revision
+            )
+        if activated or effects_raw.get("archive_advanced") is True:
             return archived_record
-        return receipt.accepted_record_revision
+        return classification_receipt.accepted_record_revision
 
     qualifies_record_only = (
         same_revision_success
@@ -1588,7 +1618,7 @@ def reduce_result(receipt: Receipt, result: SavedResult) -> Classification:
 
     if qualifies_record_only:
         accepted = dataclasses.replace(
-            receipt,
+            classification_receipt,
             accepted_revision=requested,
             accepted_record_revision=accepted_record(),
             last_observation=observation,
@@ -1602,9 +1632,9 @@ def reduce_result(receipt: Receipt, result: SavedResult) -> Classification:
 
     if qualifies_activation:
         accepted = dataclasses.replace(
-            receipt,
+            classification_receipt,
             accepted_revision=requested,
-            accepted_record_revision=accepted_record(True),
+            accepted_record_revision=accepted_record(),
             last_observation=observation,
             completion=completion,
         )
@@ -1630,7 +1660,7 @@ def reduce_result(receipt: Receipt, result: SavedResult) -> Classification:
         retryable = dataclasses.replace(pending, state="retryable")
         return Classification(
             dataclasses.replace(
-                receipt,
+                classification_receipt,
                 pending=retryable,
                 last_observation=observation,
                 completion=completion,
@@ -1642,7 +1672,7 @@ def reduce_result(receipt: Receipt, result: SavedResult) -> Classification:
     if outcome == "unchanged" and same_revision_success:
         return Classification(
             dataclasses.replace(
-                receipt,
+                classification_receipt,
                 accepted_revision=requested,
                 accepted_record_revision=accepted_record(),
                 pending=None,
@@ -1656,7 +1686,7 @@ def reduce_result(receipt: Receipt, result: SavedResult) -> Classification:
         conflict = dataclasses.replace(pending, state="conflict")
         return Classification(
             dataclasses.replace(
-                receipt,
+                classification_receipt,
                 pending=conflict,
                 last_observation=observation,
                 completion=completion,
@@ -1665,7 +1695,9 @@ def reduce_result(receipt: Receipt, result: SavedResult) -> Classification:
             "The host rejected the original expectation",
         )
     return Classification(
-        dataclasses.replace(receipt, last_observation=observation, completion=completion),
+        dataclasses.replace(
+            classification_receipt, last_observation=observation, completion=completion
+        ),
         "uncertain",
         "The correlated result does not prove activation or verified identity",
     )
@@ -1921,6 +1953,7 @@ def _dispatch(
         pending.intent.input_format if isinstance(pending.intent, PublishIntent) else "html",
         pending.intent.entry if isinstance(pending.intent, PublishIntent) else None,
         pending.intent.expectation.record_revision,
+        pending.intent.render_profile_id if isinstance(pending.intent, PublishIntent) else None,
     )
     process = _run_process(
         command,
@@ -2034,7 +2067,14 @@ def _new_pending(
     entry: str | None = None,
 ) -> Receipt:
     attempt_id = uuid.uuid4().hex
-    frozen = freeze_input(source, receipt_dir, attempt_id, limits, budget)
+    frozen = freeze_input(
+        source,
+        receipt_dir,
+        attempt_id,
+        limits,
+        budget,
+        keep_file_name=input_format == "markdown",
+    )
     profile_id = RENDER_PROFILE_ID if input_format == "markdown" else None
     intent = PublishIntent(attempt_id, expectation, frozen, input_format, entry, profile_id)
     pending = Pending(intent, 1, "uncertain")

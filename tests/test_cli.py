@@ -285,6 +285,49 @@ class PublisherCliTest(unittest.TestCase):
         archived_source = self.git("cat-file", "blob", source_blob)
         self.assertIn("private-two", archived_source)
 
+    def test_markdown_profile_guard_rejects_before_publication_mutation(self) -> None:
+        source = self.root / "profile-guard"
+        source.mkdir()
+        entry = source / "index.md"
+        entry.write_text("# Current profile\n")
+        args = (
+            "--name",
+            "profile-guard",
+            "--source",
+            str(source),
+            "--format",
+            "markdown",
+            "--target",
+            self.base_url,
+        )
+        initial = self.run_cli("publish", *args)
+        self.assertEqual(initial.returncode, 0, initial.stderr)
+        before = self.payload(initial)
+        current_head = self.git("rev-parse", "refs/heads/published")
+        current_link = os.readlink(self.runtime / "public" / "profile-guard")
+
+        entry.write_text("# Changed content\n")
+        mismatch = self.run_cli(
+            "publish",
+            *args,
+            "--expected-revision",
+            before["requested_revision"],
+            "--expected-record-revision",
+            before["requested_record_revision"],
+            "--expected-render-profile-id",
+            "obsolete-profile",
+        )
+
+        self.assertEqual(mismatch.returncode, 1)
+        mismatch_payload = self.payload(mismatch)
+        self.assertEqual(mismatch_payload["error"]["code"], "unsupported_render_profile")
+        self.assertEqual(mismatch_payload["render_profile_id"], before["render_profile_id"])
+        self.assertEqual(
+            mismatch_payload["effects"], {"archive_advanced": False, "activated": False}
+        )
+        self.assertEqual(self.git("rev-parse", "refs/heads/published"), current_head)
+        self.assertEqual(os.readlink(self.runtime / "public" / "profile-guard"), current_link)
+
     def test_markdown_guards_competing_source_edits_and_updates_rendered_output(self) -> None:
         source = self.root / "docs"
         source.mkdir()
@@ -573,6 +616,234 @@ class PublisherCliTest(unittest.TestCase):
             if path.is_file()
         }
         self.assertEqual(public_files, {"index.html", "next.html"})
+
+    def test_legacy_receipt_restore_to_markdown_upgrades_and_guards_single_file_retry(self) -> None:
+        source = self.root / "article.md"
+        source.write_text("---\nprivate: first\n---\n# Guide\n")
+        first = self.run_cli(
+            "publish",
+            "--name",
+            "guide",
+            "--source",
+            str(source),
+            "--format",
+            "markdown",
+            "--target",
+            self.base_url,
+        )
+        self.assertEqual(first.returncode, 0, first.stderr)
+        first_payload = self.payload(first)
+
+        html_source = self.root / "alternate.html"
+        html_source.write_text("<h1>Alternate</h1>\n")
+        second = self.run_cli(
+            "publish",
+            "--name",
+            "guide",
+            "--source",
+            str(html_source),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            first_payload["requested_revision"],
+        )
+        self.assertEqual(second.returncode, 0, second.stderr)
+        second_payload = self.payload(second)
+
+        client_config = self.root / "client.json"
+        client_config.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "target": {"id": "local-test", "base_url": self.base_url},
+                    "execution": {
+                        "kind": "local",
+                        "command": [sys.executable, "-m", "html_publish"],
+                        "publisher_config": str(self.config),
+                    },
+                }
+            )
+        )
+        receipt_dir = self.root / "legacy-restore.receipt"
+
+        def artifact(*arguments: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "html_publish",
+                    "--config",
+                    str(client_config),
+                    "--json",
+                    "artifact",
+                    *arguments,
+                ],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        adopted = artifact(
+            "publish",
+            str(html_source),
+            "--adopt",
+            "guide",
+            "--reviewed-revision",
+            second_payload["requested_revision"],
+            "--receipt",
+            str(receipt_dir),
+        )
+        self.assertEqual(adopted.returncode, 0, adopted.stdout + adopted.stderr)
+        self.assertEqual(json.loads((receipt_dir / "receipt.json").read_text())["version"], 1)
+
+        restored = artifact(
+            "restore",
+            "--receipt",
+            str(receipt_dir),
+            "--archive-commit",
+            first_payload["archive_commit"],
+        )
+        self.assertEqual(restored.returncode, 0, restored.stdout + restored.stderr)
+        restore_payload = self.payload(restored)
+        self.assertEqual(restore_payload["accepted_revision"], first_payload["requested_revision"])
+        self.assertEqual(
+            restore_payload["accepted_record_revision"], first_payload["requested_record_revision"]
+        )
+        restored_receipt = json.loads((receipt_dir / "receipt.json").read_text())
+        self.assertEqual(restored_receipt["version"], 3)
+        self.assertEqual(
+            restored_receipt["accepted_record_revision"], first_payload["requested_record_revision"]
+        )
+
+        source.write_text("---\nprivate: second\n---\n# Guide\n")
+        revised = artifact(
+            "publish", str(source), "--receipt", str(receipt_dir), "--format", "markdown"
+        )
+        self.assertEqual(revised.returncode, 0, revised.stdout + revised.stderr)
+        revised_payload = self.payload(revised)
+        self.assertEqual(
+            revised_payload["original_expectation"], first_payload["requested_revision"]
+        )
+        self.assertEqual(
+            revised_payload["original_record_expectation"],
+            first_payload["requested_record_revision"],
+        )
+        self.assertTrue(revised_payload["snapshot"].endswith("/article.md"))
+        self.assertEqual(revised_payload["effects"], {"archive_advanced": True, "activated": False})
+        self.assertEqual(urllib.request.urlopen(f"{self.base_url}guide/").status, 200)
+
+    def test_legacy_restore_conflict_preserves_current_markdown_record_for_review(self) -> None:
+        html_source = self.root / "original.html"
+        html_source.write_text("<h1>Earlier HTML</h1>\n")
+        client_config = self.root / "client.json"
+        client_config.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "target": {"id": "local-test", "base_url": self.base_url},
+                    "execution": {
+                        "kind": "local",
+                        "command": [sys.executable, "-m", "html_publish"],
+                        "publisher_config": str(self.config),
+                    },
+                }
+            )
+        )
+        receipt_dir = self.root / "restore-conflict.receipt"
+
+        def artifact(*arguments: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "html_publish",
+                    "--config",
+                    str(client_config),
+                    "--json",
+                    "artifact",
+                    *arguments,
+                ],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        first = artifact(
+            "publish",
+            str(html_source),
+            "--new",
+            "guide",
+            "--receipt",
+            str(receipt_dir),
+        )
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        first_output = self.payload(first)["accepted_revision"]
+        self.assertEqual(json.loads((receipt_dir / "receipt.json").read_text())["version"], 1)
+        first_status = self.run_cli("status", "--name", "guide")
+        self.assertEqual(first_status.returncode, 0, first_status.stderr)
+        first_commit = self.payload(first_status)["archive_commit"]
+
+        markdown_source = self.root / "new.md"
+        markdown_source.write_text("# Later Markdown\n")
+        competing = self.run_cli(
+            "publish",
+            "--name",
+            "guide",
+            "--source",
+            str(markdown_source),
+            "--format",
+            "markdown",
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            first_output,
+        )
+        self.assertEqual(competing.returncode, 0, competing.stderr)
+        competing_payload = self.payload(competing)
+
+        conflict = artifact(
+            "restore",
+            "--receipt",
+            str(receipt_dir),
+            "--archive-commit",
+            first_commit,
+        )
+        self.assertEqual(conflict.returncode, 1, conflict.stdout + conflict.stderr)
+        conflict_payload = self.payload(conflict)
+        self.assertEqual(conflict_payload["outcome"], "conflict")
+        self.assertEqual(
+            conflict_payload["archived_record_revision"],
+            competing_payload["requested_record_revision"],
+        )
+        conflicted_receipt = json.loads((receipt_dir / "receipt.json").read_text())
+        self.assertEqual(conflicted_receipt["version"], 3)
+        self.assertEqual(
+            conflicted_receipt["last_observation"]["archived_record_revision"],
+            competing_payload["requested_record_revision"],
+        )
+
+        reviewed = artifact(
+            "restore",
+            "--receipt",
+            str(receipt_dir),
+            "--archive-commit",
+            first_commit,
+            "--reviewed-revision",
+            competing_payload["requested_revision"],
+            "--reviewed-record-revision",
+            competing_payload["requested_record_revision"],
+            "--replaces-attempt",
+            conflict_payload["attempt_id"],
+        )
+        self.assertEqual(reviewed.returncode, 0, reviewed.stdout + reviewed.stderr)
+        reviewed_payload = self.payload(reviewed)
+        self.assertEqual(reviewed_payload["accepted_revision"], first_output)
+        self.assertIsNone(reviewed_payload["accepted_record_revision"])
+        self.assertEqual(
+            urllib.request.urlopen(f"{self.base_url}guide/").read(), html_source.read_bytes()
+        )
 
     def test_markdown_static_render_rewrites_document_links_and_copies_assets(self) -> None:
         source = self.root / "docs"

@@ -109,6 +109,7 @@ class ArtifactRequest:
     input_format: InputFormat = "html"
     entry: str | None = None
     expected_record_revision: str | None = None
+    expected_render_profile_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -336,6 +337,10 @@ def _parser(json_version: bool = False) -> Parser:
         )
         if operation == "publish":
             command.add_argument("--request-id", help="caller attempt ID echoed in the result")
+            command.add_argument(
+                "--expected-render-profile-id",
+                help="fail before publication if the installed Markdown renderer differs",
+            )
         command.add_argument(
             "--report", choices=("detail", "summary"), default="detail", help=REPORT_HELP
         )
@@ -559,8 +564,15 @@ def _parse(arguments: list[str]) -> tuple[RemoteSettings, Request]:
     input_format = cast(InputFormat, parsed.input_format)
     entry = cast(str | None, parsed.entry)
     expected_record_revision = cast(str | None, parsed.expected_record_revision)
-    if input_format == "html" and (entry is not None or expected_record_revision is not None):
-        raise UsageFailure("--entry and --expected-record-revision require --format markdown")
+    expected_render_profile_id = cast(
+        str | None, getattr(parsed, "expected_render_profile_id", None)
+    )
+    if input_format == "html" and (
+        entry is not None
+        or expected_record_revision is not None
+        or expected_render_profile_id is not None
+    ):
+        raise UsageFailure("Markdown options require --format markdown")
     return settings, ArtifactRequest(
         operation,
         name,
@@ -571,6 +583,7 @@ def _parse(arguments: list[str]) -> tuple[RemoteSettings, Request]:
         input_format,
         entry,
         expected_record_revision,
+        expected_render_profile_id,
     )
 
 
@@ -678,7 +691,7 @@ def _failure_payload(
             if expected_record_revision is not None
             else None,
             render_profile_id=(
-                RENDER_PROFILE_ID
+                request.expected_render_profile_id or RENDER_PROFILE_ID
                 if isinstance(request, ArtifactRequest) and request.input_format == "markdown"
                 else None
             ),
@@ -775,6 +788,10 @@ def _remote_arguments(
             arguments.extend(["--format", "markdown"])
             if request.entry is not None:
                 arguments.extend(["--entry", request.entry])
+            if request.expected_render_profile_id is not None:
+                arguments.extend(
+                    ["--expected-render-profile-id", request.expected_render_profile_id]
+                )
         if request.expected_record_revision is not None:
             arguments.extend(["--expected-record-revision", request.expected_record_revision])
         if request.request_id is not None:

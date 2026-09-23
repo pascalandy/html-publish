@@ -30,6 +30,7 @@ def report(
     expected: str | None = None,
     expected_record: str | None = None,
     record_revision: str | None = None,
+    render_profile_id: str | None = None,
     outcome: str = "observed",
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
@@ -46,7 +47,7 @@ def report(
         "requested_record_revision": None,
         "archived_revision": None,
         "archived_record_revision": None,
-        "render_profile_id": None,
+        "render_profile_id": render_profile_id,
         "archive_commit": None,
         "active_revision": None,
         "effects": {"archive_advanced": False, "activated": False},
@@ -548,6 +549,10 @@ class RemoteCliTest(unittest.TestCase):
             expected="output-a",
             expected_record="record-a",
             record_revision="record-b",
+            render_profile_id=(
+                "markdown-it-py/4.2.0:commonmark:html-off:table-on:linkify-off:"
+                "template-reading-column-v1"
+            ),
             outcome="published",
         )
         arguments = [
@@ -566,6 +571,8 @@ class RemoteCliTest(unittest.TestCase):
             "output-a",
             "--expected-record-revision",
             "record-a",
+            "--expected-render-profile-id",
+            "markdown-it-py/4.2.0:commonmark:html-off:table-on:linkify-off:template-reading-column-v1",
             "--request-id",
             "attempt-markdown",
         ]
@@ -587,6 +594,10 @@ class RemoteCliTest(unittest.TestCase):
         self.assertIn("index.md", command)
         self.assertEqual(command[command.index("--expected-revision") + 1], "output-a")
         self.assertEqual(command[command.index("--expected-record-revision") + 1], "record-a")
+        self.assertEqual(
+            command[command.index("--expected-render-profile-id") + 1],
+            "markdown-it-py/4.2.0:commonmark:html-off:table-on:linkify-off:template-reading-column-v1",
+        )
 
     def test_markdown_file_transfer_keeps_file_input_shape(self) -> None:
         source = self.root / "article.md"
