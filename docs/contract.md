@@ -587,9 +587,24 @@ as `not_started`, `completed`, `unchanged`, or `unknown` after it reobserves the
 Preview invokes only bounded status and health checks. It does not change records, services, routes,
 publications, or receipts.
 
-`host route setup --apply` is reserved for issue #59. It fails with usage exit 2 before configuration
-or external reads. Ordinary `host setup` and `host setup --apply` remain service-only and never
-inspect or change Tailscale. Loopback health does not verify the configured public URL.
+`host route setup --apply` holds the shared host setup lock, reloads the selected configuration,
+and rechecks the owned service, node, route, collisions, and Funnel state immediately before its
+single scoped Serve path command. Any Funnel entry on the selected HTTPS port blocks apply, including
+an explicit false entry that the Serve CLI would remove. Apply never resets or replaces the complete
+Serve configuration. It writes a mode-0600 pending route record with the selected binding, attempt
+ID, observed absence, and selected-port state before invoking Serve. It reobserves the route and
+unrelated Serve state after the command, including on command failure or timeout. Only an exact
+selected mapping with the expected surrounding state can become owned. A verified owned repeat
+returns `unchanged` without invoking Serve.
+
+An interrupted attempt keeps its pending record. A matching absent state can retry the same attempt
+after fresh checks. An equal route after an unacknowledged command remains pending because equality
+alone cannot prove which actor wrote it. Apply reports completed, unchanged, not-started, or unknown
+effects without claiming private HTTPS delivery. The local lock serializes this application's host
+operations; another Tailscale client can still race the gap between final status and the Serve CLI's
+own read. A detected change blocks or leaves the attempt pending. Ordinary `host setup` and
+`host setup --apply` remain service-only and never inspect or change Tailscale. Loopback health does
+not verify the configured public URL.
 
 Foreground HTTP and simulated systemctl checks do not prove a real service restart. A service claim
 requires a disposable Linux account with a real user manager. The Tailscale preview does not prove
