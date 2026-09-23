@@ -156,7 +156,9 @@ at most one pending attempt. Version 1 keeps the established HTML publish-intent
 restore records a tagged, source-free version 2 intent; HTML-only work may stay on version 2.
 Markdown-aware work adds the accepted record revision and frozen render profile in version 3.
 The artifact executor calls the root publisher or remote executable and correlates both identities
-before reducing receipt state. A saved result is durable before the receipt advances, so a failed
+before reducing receipt state. It passes the frozen profile to the actual publisher, which checks
+it before entering the store. A legacy restore upgrades to version 3 when the selected or current
+archive state contains a record. A saved result is durable before the receipt advances, so a failed
 receipt replace can be recovered locally without a second publication call. The store alone mutates
 archive and active selection.
 

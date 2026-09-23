@@ -140,10 +140,12 @@ html-publish --config publisher.json --json publish \
 ```
 
 The `artifact` workflow stores both accepted revisions in its receipt and freezes the source,
-entry, and render profile for retry. A legacy receipt that has no record baseline requires an
-explicit `--reviewed-record-revision` before it can update a publication that already has a private
-record. Source and provenance stay in the archive; only generated pages and copied assets are
-served.
+entry, and render profile for retry. A single-file Markdown snapshot retains its `.md` basename.
+The selected publisher checks the frozen profile before publication and reports
+`unsupported_render_profile` if it cannot honor it. A legacy receipt that has no record baseline
+requires an explicit `--reviewed-record-revision` before it can update a publication that already
+has a private record. Source and provenance stay in the archive; only generated pages and copied
+assets are served.
 
 ## Update a page
 

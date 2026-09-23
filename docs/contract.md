@@ -456,6 +456,8 @@ dispatched source and keep it outside the served input until the attempt is reso
 instead stores one immutable archive commit and needs no source snapshot. Echo the attempt ID as
 `request_id`. Only one unresolved mutation may own a receipt; late or mismatched results must not
 overwrite it.
+For a single Markdown file, the frozen copy retains its basename and `.md` extension so local and
+remote dispatch preserve file input and the archived source name.
 
 Existing version 1 receipts and their publish intents retain their exact format and binding
 fingerprint. A first restore atomically upgrades that receipt to version 2, whose pending intent
@@ -584,7 +586,8 @@ through a static mock review before implementation. The chosen template and rend
 a stable `render_profile_id`; no browser-time renderer, scripts, or external template resources
 are added.
 Freeze the profile in pending receipt intent and require an identical supported profile on retry;
-a missing profile implementation fails before entering the store.
+pass that expectation through the configured executable to the actual publisher, including an SSH
+host. A profile mismatch fails before entering the store with no archive or selection effect.
 
 Map the selected entry to `index.html`. Map each other lowercase `.md` source path to the same
 relative path with `.html`; normalize output paths to Unicode NFC and copy non-Markdown assets
@@ -604,7 +607,8 @@ entry moves to `index.html`. Resolve a wikilink by an exact case-sensitive path 
 current document first, then by a unique case-insensitive basename. A missing, ambiguous, or
 out-of-root link remains visible as text and adds a structured unresolved-link warning; never
 invent a target. External links and images may remain in the page, but are never fetched. Raw HTML
-remains escaped by the parser.
+remains escaped by the parser. A missing relative image leaves its alternate text visible and
+adds an unresolved-image warning.
 
 For a Markdown publication, archive exact input bytes and `provenance.json` under the private
 `<name>/record/` tree, paired in the same archive commit with the generated `<name>/site/` tree.
