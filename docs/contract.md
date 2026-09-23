@@ -19,6 +19,29 @@ references such as "S5" or "S7" stay valid.
 The publisher emits `schema_version: 1` JSON. Additive optional fields are allowed. An
 incompatible change to a field's meaning requires a schema version change.
 
+## Command discovery
+
+`html-publish` keeps `plan`, `publish`, `status`, `verify`, `history`, and `restore` as
+the low-level publisher operations. `html-publish-remote` forwards the same six
+operations and emits JSON by default. Both executables show help, version, and
+machine-readable command discovery without a configuration file or network access.
+
+`--config`, `--json`, `--version`, and the publisher's `--command-seconds` may precede
+or follow a publisher operation. Remote connection and time-budget options may
+precede or follow a remote operation. Long option names require exact spelling;
+abbreviations are invalid usage. `--help` writes human-readable help, even with
+`--json`. `--version` stops argument parsing when encountered, so it does not
+require an operation's other arguments. It writes plain text unless `--json` is
+present, in which case it writes one version object to stdout. `schema` writes one
+JSON discovery object generated from the active argument parsers. Discovery has its own
+`schema_version` and identifies the executable version, command options, examples,
+and effects. It does not load configuration or contact a host.
+
+Publisher result objects for the six operations retain JSON v1 meanings. A handled
+usage error writes one JSON v1 error object to stdout when `--json` is set, with
+exit 2; plain usage errors write diagnostics to stderr. Remote operation results
+remain JSON by default. No discovery command performs a publication mutation.
+
 ## S1. System and ownership
 
 An agent should operate on a publication, not coordinate infrastructure:

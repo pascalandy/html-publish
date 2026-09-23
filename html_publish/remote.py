@@ -19,9 +19,15 @@ from types import FrameType
 from typing import Literal, NoReturn, cast
 from urllib.parse import urlparse
 
+from html_publish import __version__
 from html_publish.artifact import capture
 from html_publish.cli import emit_json, report_dict, usage_report
 from html_publish.delivery import publication_url
+from html_publish.discovery import (
+    command_schema,
+    register_command,
+    version_payload,
+)
 from html_publish.model import (
     Deadline,
     Effects,
@@ -186,99 +192,219 @@ def _positive_limit(value: str) -> int:
     return parsed
 
 
-def _parser() -> Parser:
-    parser = Parser(
-        prog="html-publish-remote",
-        description="Run the html-publish JSON contract through the controlled SSH transport",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""examples:
-  html-publish-remote publish --name release-notes --source ./release-notes.html
-  html-publish-remote status --limit 20
-  html-publish-remote verify --name release-notes""",
+def _globals(parser: argparse.ArgumentParser, version: str, *, child: bool = False) -> None:
+    def default(value: object) -> object:
+        return argparse.SUPPRESS if child else value
+
+    parser.add_argument(
+        "--host",
+        type=_host,
+        default=default(DEFAULT_HOST),
+        help=f"SSH destination as user@host (default: {DEFAULT_HOST})",
     )
     parser.add_argument(
-        "--host", type=_host, default=DEFAULT_HOST, help="SSH destination as user@host"
+        "--remote-executable",
+        default=default(DEFAULT_EXECUTABLE),
+        help=f"host html-publish executable path (default: {DEFAULT_EXECUTABLE})",
     )
     parser.add_argument(
-        "--remote-executable", default=DEFAULT_EXECUTABLE, help="host html-publish executable path"
-    )
-    parser.add_argument(
-        "--remote-config", default=DEFAULT_CONFIG, help="host publisher JSON configuration path"
+        "--remote-config",
+        default=default(DEFAULT_CONFIG),
+        help=f"host publisher JSON configuration path (default: {DEFAULT_CONFIG})",
     )
     parser.add_argument(
         "--target",
-        default=DEFAULT_TARGET,
-        help="publication base URL matching the host configuration",
+        default=default(DEFAULT_TARGET),
+        help=f"publication base URL matching the host configuration (default: {DEFAULT_TARGET})",
     )
     parser.add_argument(
         "--incoming-root",
         type=_remote_path,
-        default=PurePosixPath(DEFAULT_INCOMING_ROOT),
-        help="private host directory for unique plan and publish upload stages",
+        default=default(PurePosixPath(DEFAULT_INCOMING_ROOT)),
+        help="private host directory for plan and publish uploads "
+        f"(default: {DEFAULT_INCOMING_ROOT})",
     )
     parser.add_argument(
         "--connect-timeout",
         type=_connect_timeout,
-        default=DEFAULT_CONNECT_TIMEOUT,
-        help="SSH connection budget in seconds, capped by remaining command time "
-        "(default: %(default)s)",
+        default=default(DEFAULT_CONNECT_TIMEOUT),
+        help="SSH connection budget, 1 to 300 seconds, capped by remaining time "
+        f"(default: {DEFAULT_CONNECT_TIMEOUT})",
     )
     parser.add_argument(
         "--command-seconds",
         type=_positive_seconds,
-        default=DEFAULT_COMMAND_SECONDS,
-        help="total client budget for capture, transport, and cleanup in seconds "
-        "(default: %(default)s)",
+        default=default(DEFAULT_COMMAND_SECONDS),
+        help="total client budget for capture, transport, and cleanup in seconds, positive "
+        f"(default: {DEFAULT_COMMAND_SECONDS:g})",
     )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        default=default(True),
+        help="write one JSON object to stdout (default for remote operations)",
+    )
+    parser.add_argument(
+        "--version", action="version", version=version, help="show installed version"
+    )
+
+
+def _parser(json_version: bool = False) -> Parser:
+    version = (
+        json.dumps(version_payload("html-publish-remote"), separators=(",", ":"))
+        if json_version
+        else f"html-publish-remote {__version__}"
+    )
+    parser = Parser(
+        prog="html-publish-remote",
+        description="Run the six publisher operations through SSH. "
+        "Publication results are JSON by default.",
+        allow_abbrev=False,
+    )
+    _globals(parser, version)
     commands = parser.add_subparsers(dest="operation", required=True)
 
     for operation, help_text in (
         ("plan", "capture and inspect without publication changes"),
         ("publish", "archive, activate, and verify a finished artifact"),
     ):
-        command = commands.add_parser(operation, help=help_text)
-        command.add_argument("--name", required=True, type=_name)
-        command.add_argument("--source", required=True, type=Path)
-        command.add_argument("--expected-revision")
+        command = register_command(
+            commands,
+            operation,
+            help_text,
+            examples=(
+                f"html-publish-remote {operation} --name release-notes --source ./page.html",
+            ),
+            effects=("uploads a private source copy", "reads host state")
+            if operation == "plan"
+            else (
+                "uploads a private source copy",
+                "may advance archive and activate page",
+                "probes host delivery",
+            ),
+        )
+        command.add_argument(
+            "--name",
+            required=True,
+            type=_name,
+            help="publication name (lowercase letters, digits, single hyphens; max 80)",
+        )
+        command.add_argument(
+            "--source", required=True, type=Path, help="HTML file or directory to upload"
+        )
+        command.add_argument(
+            "--expected-revision",
+            help=(
+                "expected active revision used for the prediction; "
+                "omit for a first publication or identical retry"
+                if operation == "plan"
+                else "expected active revision to replace different content; "
+                "omit for a first publication or identical retry"
+            ),
+        )
         if operation == "publish":
-            command.add_argument("--request-id")
+            command.add_argument("--request-id", help="caller attempt ID echoed in the result")
+        _globals(command, version, child=True)
 
-    status = commands.add_parser(
+    status = register_command(
+        commands,
         "status",
-        help="observe one publication or a paged list",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""continuation example:
-  html-publish-remote status --after '<continuation>' --limit 20""",
+        "observe one publication or a paged list",
+        examples=(
+            "html-publish-remote status --name release-notes",
+            "html-publish-remote status --after '<continuation>' --limit 20",
+        ),
+        effects=(
+            "reads host state",
+            "--host-check validates saved bytes and delivery",
+            "does not repair or activate",
+        ),
     )
-    status.add_argument("--name", type=_name)
+    status.add_argument("--name", type=_name, help="publication name; omit for a paged listing")
     status.add_argument(
         "--after", type=_name, help="opaque continuation from the prior status page"
     )
-    status.add_argument("--limit", type=_positive_limit, default=100)
-    status.add_argument("--host-check", action="store_true")
+    status.add_argument(
+        "--limit",
+        type=_positive_limit,
+        default=100,
+        help="page size, 1 to 100 (default: %(default)s)",
+    )
+    status.add_argument(
+        "--host-check",
+        action="store_true",
+        help="also validate selected bytes and probe delivery for a named page",
+    )
+    _globals(status, version, child=True)
 
-    verify = commands.add_parser("verify", help="check selected files and host HTTP delivery")
-    verify.add_argument("--name", required=True, type=_name)
+    verify = register_command(
+        commands,
+        "verify",
+        "check selected files and host HTTP delivery",
+        examples=("html-publish-remote verify --name release-notes",),
+        effects=("reads saved bytes and host delivery", "does not activate"),
+    )
+    verify.add_argument("--name", required=True, type=_name, help="publication name")
+    _globals(verify, version, child=True)
 
-    history = commands.add_parser(
+    history = register_command(
+        commands,
         "history",
-        help="list per-name history and optional text differences",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""continuation example:
-  html-publish-remote history --name release-notes --after '<continuation>' --limit 5""",
+        "list per-name history and optional text differences",
+        examples=(
+            "html-publish-remote history --name release-notes",
+            "html-publish-remote history --name release-notes --after '<continuation>' --limit 5",
+        ),
+        effects=("reads host Git history", "does not change archive or selection"),
     )
-    history.add_argument("--name", required=True, type=_name)
+    history.add_argument("--name", required=True, type=_name, help="publication name")
     history.add_argument("--after", help="opaque continuation from history for the same name")
-    history.add_argument("--limit", type=_positive_limit, default=20)
-    history.add_argument("--diff", dest="diff_revision")
-
-    restore = commands.add_parser(
-        "restore", help="select an archived revision under a revision guard"
+    history.add_argument(
+        "--limit",
+        type=_positive_limit,
+        default=20,
+        help="page size, 1 to 100 (default: %(default)s)",
     )
-    restore.add_argument("--name", required=True, type=_name)
-    restore.add_argument("--archive-commit", required=True)
-    restore.add_argument("--expected-revision")
-    restore.add_argument("--request-id")
+    history.add_argument(
+        "--diff",
+        dest="diff_revision",
+        help="reachable archived revision to compare with the latest page tree at HEAD "
+        "(UTF-8 diff text capped at 64 KiB)",
+    )
+    _globals(history, version, child=True)
+
+    restore = register_command(
+        commands,
+        "restore",
+        "select an archived revision under a revision guard",
+        examples=(
+            "html-publish-remote restore --name release-notes "
+            "--archive-commit COMMIT --expected-revision REVISION",
+        ),
+        effects=(
+            "may append archive history",
+            "may activate saved revision",
+            "probes host delivery",
+        ),
+    )
+    restore.add_argument("--name", required=True, type=_name, help="publication name")
+    restore.add_argument(
+        "--archive-commit",
+        required=True,
+        help="reachable commit containing the revision to restore",
+    )
+    restore.add_argument("--expected-revision", help="expected active revision for guarded restore")
+    restore.add_argument("--request-id", help="caller attempt ID echoed in the result")
+    _globals(restore, version, child=True)
+
+    schema = register_command(
+        commands,
+        "schema",
+        "print parser-derived command discovery as JSON",
+        examples=("html-publish-remote schema",),
+        effects=("reads command definitions only",),
+    )
+    _globals(schema, version, child=True)
     return parser
 
 
@@ -1053,6 +1179,10 @@ def _run_artifact(
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     try:
+        parser = _parser("--json" in arguments)
+        parsed = parser.parse_args(arguments)
+        if parsed.operation == "schema":
+            return emit_json(command_schema(parser, "html-publish-remote"), 0)
         settings, request = _parse(arguments)
     except UsageFailure as error:
         failure = Failure("invalid_usage", "usage", str(error), "fix_arguments")

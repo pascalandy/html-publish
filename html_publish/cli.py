@@ -15,6 +15,11 @@ from urllib.parse import urlparse
 
 from html_publish import __version__, _git
 from html_publish.delivery import publication_url
+from html_publish.discovery import (
+    command_schema,
+    register_command,
+    version_payload,
+)
 from html_publish.model import (
     Config,
     Deadline,
@@ -89,68 +94,227 @@ def _positive_int(value: str) -> int:
     return parsed
 
 
-def _parser() -> Parser:
+def _positive_seconds(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("command seconds must be positive") from error
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError("command seconds must be positive")
+    return parsed
+
+
+def _globals(command: argparse.ArgumentParser, version: str) -> None:
+    command.add_argument(
+        "--config",
+        type=Path,
+        default=argparse.SUPPRESS,
+        help="publisher JSON configuration file (required for publication operations)",
+    )
+    command.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="write one JSON object to stdout",
+    )
+    command.add_argument(
+        "--version", action="version", version=version, help="show installed version"
+    )
+    command.add_argument(
+        "--command-seconds",
+        type=_positive_seconds,
+        default=argparse.SUPPRESS,
+        help="override total command budget in seconds "
+        "(default: configuration limit, normally 120)",
+    )
+
+
+def _parser(json_version: bool = False) -> Parser:
+    version = (
+        json.dumps(version_payload("html-publish"), separators=(",", ":"))
+        if json_version
+        else f"html-publish {__version__}"
+    )
     parser = Parser(
         prog="html-publish",
-        description="Publish private static HTML with a stable URL and local Git history",
+        description="Publish private static HTML with a stable URL and local Git history. "
+        "Preview with plan, publish under a revision guard, then inspect with status or verify.",
+        allow_abbrev=False,
     )
-    parser.add_argument("--config", type=Path, help="JSON configuration file")
-    parser.add_argument("--json", action="store_true", help="emit one versioned JSON object")
-    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        help="publisher JSON configuration file (required for publication operations)",
+    )
+    parser.add_argument("--json", action="store_true", help="write one JSON object to stdout")
+    parser.add_argument(
+        "--version", action="version", version=version, help="show installed version"
+    )
+    parser.add_argument(
+        "--command-seconds",
+        type=_positive_seconds,
+        help="override total command budget in seconds "
+        "(default: configuration limit, normally 120)",
+    )
     commands = parser.add_subparsers(dest="operation", required=True)
 
-    plan = commands.add_parser("plan", help="capture and inspect without persistent writes")
-    plan.add_argument("--name", required=True, type=_name)
-    plan.add_argument("--source", required=True, type=Path)
-    plan.add_argument("--target", required=True)
-    plan.add_argument("--expected-revision", type=Revision)
-    plan.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
-
-    publish = commands.add_parser("publish", help="archive, activate, and verify an artifact")
-    publish.add_argument("--name", required=True, type=_name)
-    publish.add_argument("--source", required=True, type=Path)
-    publish.add_argument("--target", required=True)
-    publish.add_argument("--expected-revision", type=Revision)
-    publish.add_argument("--request-id")
-    publish.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
-
-    status = commands.add_parser(
-        "status",
-        help="observe bounded local state",
-        epilog="Next page: html-publish --config publisher.json --json status "
-        "--after '<continuation>' --limit 20",
+    plan = register_command(
+        commands,
+        "plan",
+        "capture and inspect without persistent writes",
+        examples=(
+            "html-publish --config publisher.json plan --name release-notes "
+            "--source ./page.html --target https://host.example/pages/",
+        ),
+        effects=("reads source and saved state", "does not change archive or selection"),
     )
-    status.add_argument("--name", type=_name)
+    plan.add_argument(
+        "--name",
+        required=True,
+        type=_name,
+        help="publication name (lowercase letters, digits, single hyphens; max 80)",
+    )
+    plan.add_argument(
+        "--source", required=True, type=Path, help="HTML file or directory to capture"
+    )
+    plan.add_argument(
+        "--target", required=True, help="publication base URL (must match configuration)"
+    )
+    plan.add_argument(
+        "--expected-revision",
+        type=Revision,
+        help="expected active revision used for the prediction; "
+        "omit for a first publication or identical retry",
+    )
+    _globals(plan, version)
+
+    publish = register_command(
+        commands,
+        "publish",
+        "archive, activate, and verify an artifact",
+        examples=(
+            "html-publish --config publisher.json --json publish --name release-notes "
+            "--source ./page.html --target https://host.example/pages/",
+        ),
+        effects=("may advance archive", "may activate page", "probes delivery"),
+    )
+    publish.add_argument(
+        "--name",
+        required=True,
+        type=_name,
+        help="publication name (lowercase letters, digits, single hyphens; max 80)",
+    )
+    publish.add_argument(
+        "--source", required=True, type=Path, help="HTML file or directory to capture"
+    )
+    publish.add_argument(
+        "--target", required=True, help="publication base URL (must match configuration)"
+    )
+    publish.add_argument(
+        "--expected-revision",
+        type=Revision,
+        help="expected active revision to replace different content; "
+        "omit for a first publication or identical retry",
+    )
+    publish.add_argument(
+        "--request-id", help="caller attempt ID echoed in the result for reconciliation"
+    )
+    _globals(publish, version)
+
+    status = register_command(
+        commands,
+        "status",
+        "observe bounded local state",
+        examples=("html-publish --config publisher.json --json status --name release-notes",),
+        effects=(
+            "reads state",
+            "--host-check validates saved bytes and delivery",
+            "does not repair or activate",
+        ),
+    )
+    status.add_argument("--name", type=_name, help="publication name; omit for a paged listing")
     status.add_argument(
         "--after", type=_name, help="opaque continuation from the prior status page"
     )
-    status.add_argument("--limit", type=_positive_int, default=100)
-    status.add_argument("--host-check", action="store_true", default=argparse.SUPPRESS)
-    status.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
-
-    verify = commands.add_parser("verify", help="validate the selected export and probe delivery")
-    verify.add_argument("--name", required=True, type=_name)
-    verify.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
-
-    history = commands.add_parser(
-        "history",
-        help="list bounded publication history for a name",
-        epilog="Next page: html-publish --config publisher.json --json history "
-        "--name release-notes --after '<continuation>' --limit 5",
+    status.add_argument(
+        "--limit",
+        type=_positive_int,
+        default=100,
+        help="page size, 1 to 100 (default: %(default)s)",
     )
-    history.add_argument("--name", required=True, type=_name)
-    history.add_argument("--limit", type=_positive_int, default=20)
-    history.add_argument("--after", help="opaque continuation from history for the same name")
-    history.add_argument("--diff", dest="diff_revision")
-    history.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    status.add_argument(
+        "--host-check",
+        action="store_true",
+        help="also validate selected bytes and probe delivery for a named page",
+    )
+    _globals(status, version)
 
-    restore = commands.add_parser("restore", help="select a saved revision at a reachable commit")
-    restore.add_argument("--name", required=True, type=_name)
-    restore.add_argument("--archive-commit", required=True)
-    restore.add_argument("--target", required=True)
-    restore.add_argument("--expected-revision", type=Revision)
-    restore.add_argument("--request-id")
-    restore.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    verify = register_command(
+        commands,
+        "verify",
+        "validate the selected export and probe delivery",
+        examples=("html-publish --config publisher.json --json verify --name release-notes",),
+        effects=("reads saved bytes and HTTP delivery", "does not activate"),
+    )
+    verify.add_argument("--name", required=True, type=_name, help="publication name")
+    _globals(verify, version)
+
+    history = register_command(
+        commands,
+        "history",
+        "list bounded publication history for a name",
+        examples=("html-publish --config publisher.json --json history --name release-notes",),
+        effects=("reads Git history", "does not change archive or selection"),
+    )
+    history.add_argument("--name", required=True, type=_name, help="publication name")
+    history.add_argument(
+        "--limit", type=_positive_int, default=20, help="page size, 1 to 100 (default: %(default)s)"
+    )
+    history.add_argument("--after", help="opaque continuation from history for the same name")
+    history.add_argument(
+        "--diff",
+        dest="diff_revision",
+        help="reachable archived revision to compare with the latest page tree at HEAD "
+        "(UTF-8 diff text capped at 64 KiB)",
+    )
+    _globals(history, version)
+
+    restore = register_command(
+        commands,
+        "restore",
+        "select a saved revision at a reachable commit",
+        examples=(
+            "html-publish --config publisher.json --json restore --name release-notes "
+            "--archive-commit COMMIT --target https://host.example/pages/ "
+            "--expected-revision REVISION",
+        ),
+        effects=("may append archive history", "may activate saved revision", "probes delivery"),
+    )
+    restore.add_argument("--name", required=True, type=_name, help="publication name")
+    restore.add_argument(
+        "--archive-commit",
+        required=True,
+        help="reachable commit containing the revision to restore",
+    )
+    restore.add_argument(
+        "--target", required=True, help="publication base URL (must match configuration)"
+    )
+    restore.add_argument(
+        "--expected-revision", type=Revision, help="expected active revision for guarded restore"
+    )
+    restore.add_argument(
+        "--request-id", help="caller attempt ID echoed in the result for reconciliation"
+    )
+    _globals(restore, version)
+
+    schema = register_command(
+        commands,
+        "schema",
+        "print parser-derived command discovery as JSON",
+        examples=("html-publish schema",),
+        effects=("reads command definitions only",),
+    )
+    _globals(schema, version)
     return parser
 
 
@@ -549,12 +713,16 @@ def main(argv: list[str] | None = None) -> int:
     parsed: argparse.Namespace | None = None
     config: Config | None = None
     try:
-        parsed = _parser().parse_args(arguments)
+        parser = _parser(json_output)
+        parsed = parser.parse_args(arguments)
+        if parsed.operation == "schema":
+            return emit_json(command_schema(parser, "html-publish"), 0)
         if parsed.config is None:
             raise UsageFailure("--config is required")
         config = load_config(parsed.config)
-        deadline = Deadline.start(config.limits.command_seconds)
-        with _command_alarm(config.limits.command_seconds):
+        command_seconds = parsed.command_seconds or config.limits.command_seconds
+        deadline = Deadline.start(command_seconds)
+        with _command_alarm(command_seconds):
             _git.check_supported_version(deadline)
             store = PublicationStore(config, deadline)
             if parsed.operation == "plan":
