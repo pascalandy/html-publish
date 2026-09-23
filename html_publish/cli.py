@@ -17,6 +17,7 @@ from typing import Literal, NoReturn, cast
 from urllib.parse import urlparse
 
 from html_publish import __version__, _git
+from html_publish import guides as guides_registry
 from html_publish.configuration import (
     ClientConfig,
     data_root,
@@ -571,6 +572,35 @@ def _parser(json_version: bool = False) -> Parser:
         "--port", type=int, default=4177, help="IPv4 loopback port (default: 4177)"
     )
     _globals(setup_command, version)
+
+    skills = register_command(
+        commands,
+        "skills",
+        "read the bundled version-matched guides offline",
+        examples=("html-publish skills list",),
+        effects=("reads packaged guide bytes only", "needs no configuration or network"),
+    )
+    _globals(skills, version)
+    skills_actions = skills.add_subparsers(dest="skills_action", required=True)
+    skills_list = register_command(
+        skills_actions,
+        "list",
+        "list the bundled guides as JSON",
+        examples=("html-publish skills list",),
+        effects=("reads packaged guide bytes only", "needs no configuration or network"),
+    )
+    _globals(skills_list, version)
+    skills_get = register_command(
+        skills_actions,
+        "get",
+        "print one bundled guide",
+        examples=("html-publish skills get core",),
+        effects=("reads packaged guide bytes only", "needs no configuration or network"),
+    )
+    skills_get.add_argument(
+        "guide", metavar="NAME", choices=guides_registry.names(), help="bundled guide name"
+    )
+    _globals(skills_get, version)
     return parser
 
 
@@ -1034,6 +1064,25 @@ def _print_report(report: Report, json_output: bool, mode: ReportMode = "detail"
     return 1 if report.error else 0
 
 
+def _run_skills(parsed: argparse.Namespace) -> int:
+    if parsed.skills_action == "get":
+        text = guides_registry.read(parsed.guide)
+        if parsed.json:
+            return emit_json(
+                {
+                    "schema_version": 1,
+                    "executable": "html-publish",
+                    "version": __version__,
+                    "name": parsed.guide,
+                    "content": text,
+                },
+                0,
+            )
+        print(text, end="")
+        return 0
+    return emit_json(guides_registry.inventory(), 0)
+
+
 def _config_result(
     operation: str,
     role: str | None,
@@ -1263,6 +1312,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.parse_args(arguments, namespace=parsed)
         if parsed.operation == "schema":
             return emit_json(command_schema(parser, "html-publish"), 0)
+        if parsed.operation == "skills":
+            return _run_skills(parsed)
         if parsed.operation in {"config", "doctor"}:
             return _run_config(parsed)
         if parsed.operation == "artifact":
