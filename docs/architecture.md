@@ -186,15 +186,18 @@ it writes only to temporary storage. HTML continues through the existing single-
 6. Decide `create`, `update`, `unchanged`, or `conflict` from both requested identities and that observation
 7. Preserve HTML's current identical-active no-op before checking its stale expectation
 8. For changed Markdown content, require the expected output revision to match active output and the expected record revision to match the archived record
-9. Save the site and record trees in one archive commit, or reuse an identical pair
+9. Save the site and optional record trees in one archive commit, or reuse an identical identity set
 10. Export committed `site/` bytes into private staging and validate the complete release
 11. If output changes, rename the immutable release into place and atomically select it; if only the record changes while the desired output is already active, leave the symlink in place
 12. Verify the requested active output before releasing the lock
 
-The lock covers observation, the compare-and-swap decision, archive advancement, activation when
-needed, and HTTP verification because every name shares one archive branch. Markdown source-only
-edits can advance the paired archive state without replacing the active release; they still check
-both expectations and verify the selected output. A replacement materializes only the complete
+When a changed HTML publication replaces a Markdown page, its new archive state drops the record
+tree while the previous paired commit remains reachable. An HTML no-op leaves current archive
+state untouched. The lock covers observation, the compare-and-swap decision, archive advancement,
+activation when needed, and HTTP verification because every name shares one archive branch.
+Markdown source-only edits can advance the paired archive state without replacing the active
+release; they still check both expectations and verify the selected output. A replacement
+materializes only the complete
 requested `site/` tree, so private record bytes never enter a release and files omitted from the
 new artifact disappear from the active URL. Exact output-and-record retries take precedence over
 revision guards because a response can be lost after success. Verification of a replacement also

@@ -301,9 +301,11 @@ Under the lock, validate actual selected state before evaluating these ordered r
   `expected_revision` to match the active site revision and `expected_record_revision` to match the
   latest archived record revision. For first creation with no active or saved page, both
   expectations may be absent. An exact retry of the current pair is checked before either guard.
-- For HTML, do not create or update a Markdown record. For Markdown, the archive commit pairs the
-  exact generated site with the source and provenance that produced it; the two tree revisions
-  remain separately reported identities.
+- An HTML no-op keeps its existing output-only behavior, including when its bytes match the active
+  output of a Markdown page. When changed HTML bytes replace a Markdown page, the new archive
+  state has no record tree; the prior Markdown source/provenance remains reachable in history.
+  For Markdown, each archive commit pairs the exact generated site with the source and provenance
+  that produced it; the two tree revisions remain separately reported identities.
 - For Markdown with no active output, permit an expectation-free retry only when there is no saved
   page or the complete requested pair equals the saved pair. A differing saved pair conflicts.
   With active output, changed Markdown content must pass both expectations above.
