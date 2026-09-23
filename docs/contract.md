@@ -552,13 +552,30 @@ The host record and user unit live outside the publication archive, runtime, and
 later step reports earlier effects and keeps its record for inspection. Setup attempts for different
 unit names share one user lock.
 
-Generic `host setup` never changes Tailscale. External HTTPS delivery must be configured separately;
-the `--tailscale` setup option is deferred. Loopback health does not verify the configured public URL.
+`host setup --tailscale` is an opt-in, read-only preview. It adds the desired Tailscale Serve route
+to the existing service preview. It derives the route from the configured public URL and selected
+listen port. The route identity contains the authenticated node DNS name, the HTTPS port, the
+canonical mount path, and the `http://127.0.0.1:<port>` target. The public URL must use HTTPS and
+name the authenticated node. An omitted HTTPS port is 443. The mount path is absolute and ends in
+`/`. Serve strips that prefix before proxying to the target.
+
+The Tailscale preview reports the selected route, node and Serve observations, prerequisites, route
+state, blockers with next actions, proposed effects, and `private_https_verified: false`. Route state
+is `absent`, `foreign`, `collision`, or `unknown`. An equal unrecorded handler is foreign. Failed
+inspection, malformed or unfamiliar Tailscale state, a node-name mismatch, an overlapping route, a
+conflicting handler or port, or Funnel on the selected port blocks the preview. Any blocker clears
+both the service and route proposed effects. A clear preview proposes a `tailscale_serve_route`
+effect. The preview invokes only bounded status commands and never changes host, publisher, or
+Tailscale state.
+
+Generic `host setup` and `host setup --apply` keep their current behavior and never inspect or change
+Tailscale. `host setup --tailscale --apply` is unsupported until issue #59 and fails before host or
+Tailscale inspection. Loopback health does not verify the configured public URL.
 
 Foreground HTTP and simulated systemctl checks do not prove a real service restart. A service claim
-requires a disposable Linux account with a real user manager. Private HTTPS for generic host setup
-remains unverified and requires an authenticated disposable node and a second tailnet client.
-Generic hosting remains an MVP; it is not a production deployment procedure.
+requires a disposable Linux account with a real user manager. The Tailscale preview does not prove
+private HTTPS. That proof requires issue #60, an authenticated disposable node, and a second tailnet
+client. Generic hosting remains an MVP; it is not a production deployment procedure.
 
 ## S12. Static Markdown pages
 
