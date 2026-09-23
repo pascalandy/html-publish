@@ -93,12 +93,13 @@ commands retain exit 0 for success, 1 for operational failure, and 2 for usage.
 An agent should operate on a publication, not coordinate infrastructure:
 
 ```text
-artifact + caller binding -> captured revision -> archived commit -> active export -> observation
+artifact + caller binding -> prepared site/record revisions -> archived commit -> active export -> observation
 ```
 
-- **Artifact:** finished HTML and assets. `html-mode` owns authoring and browser review.
+- **Artifact:** finished HTML and assets, or captured Markdown rendered to static HTML. `html-mode`
+  owns authoring and browser review.
 - **Binding:** caller receipt associates an artifact with one name and configured target.
-- **Publisher:** one Python/stdlib executable plus Git owns validation, planning, archive,
+- **Publisher:** one Python executable plus Git owns validation, planning, archive,
   activation, status, verification, and restore. Use small internal modules, not services or
   plugins.
 - **Host:** native Tailscale Serve, the read-only loopback delivery helper, or one verified loopback
@@ -121,12 +122,16 @@ second implementation guide.
   gets a new name and leaves the previous page intact.
 - The bare archive has one publisher-owned branch. A page occupies `<name>/site/`; its
   **revision** is that site's Git tree object ID, covering relative filenames and exact
-  regular-file bytes. Treat object IDs as opaque values of the archive's declared object format,
-  not fixed-length IDs.
+  regular-file bytes. A Markdown page also occupies `<name>/record/`; its **record revision** is
+  that record tree's Git object ID, covering the exact captured source and renderer provenance.
+  These identities are independent: a source edit may change the record revision while leaving
+  the served revision unchanged. Treat object IDs as opaque values of the archive's declared
+  object format, not fixed-length IDs.
 - All file modes normalize to `100644`; empty directories and source mtimes are not identity.
-  A commit records history. `archived_revision` is the site tree at branch tip; `archive_commit`
-  is the most recent reachable ancestor changing that page's record. It is not automatically the
-  commit associated with a different active revision.
+  A commit records history. `archived_revision` is the site tree at branch tip;
+  `archived_record_revision` is the record tree there, or null for an HTML-only page.
+  `archive_commit` is the most recent reachable ancestor changing either tree for that page. It
+  is not automatically the commit associated with a different active revision.
 - Configuration explicitly owns archive path, runtime path, and canonical HTTPS base URL
   including its mount prefix. The publisher derives URLs. A caller's expected target must match
   configuration before mutation; never silently change a receipt's host or URL.
@@ -141,14 +146,17 @@ second implementation guide.
 - Create replacement symlinks in **private staging**, then rename into `public/`; do not expose
   temporary activation names beneath the serving mount. Both sides of each rename must share a
   filesystem. Never hardlink to mutable source files or change an activated release in place.
-- Reserve private siblings of `site/` for #9's source provenance, but do not build a renderer or
-  provenance subsystem in the HTML release.
+- `<name>/record/` is private archive data. It contains `source/` and `provenance.json` and is
+  never materialized into a release, served, or included in a public export.
 
 ## S3. Input and bounded work
 
 Accept one self-contained HTML file, copied byte-for-byte to `index.html`, or a directory
 containing `index.html` and relative assets. File input does not implicitly include siblings.
-Every accepted file is published; nothing is silently ignored or rewritten.
+Every accepted HTML file is published; nothing is silently ignored or rewritten. Markdown is an
+explicit `--format markdown` input: one `.md` file or a document directory. Its entry-selection,
+source mapping, rendering, and private-record rules are defined in S12. Markdown source and
+relative assets are captured before rendering; only generated output enters `site/`.
 
 Reject symlinks, special files, traversal, control characters, ambiguous/invalid path encodings,
 backslash path separators, and dot-prefixed path components in v1. This includes `.git` files as
@@ -159,9 +167,10 @@ Enumerate without following symlinks and recheck regular-file type when opening.
 source changes during capture and fail; callers still own finishing their writes. The complete
 private capture, not a changing source directory, is the publication input.
 
-Stream copying, hashing, and HTTP comparison. Initial configurable limits are 100 MiB of input,
-2,000 files, and a 120-second total command budget; lock wait defaults to 30 seconds and HTTP
-verification to 60 seconds, both bounded by the remaining command budget. Report the limit hit.
+Stream copying, hashing, rendering, and HTTP comparison. Initial configurable limits are 100 MiB
+of input, 2,000 files, and a 120-second total command budget; lock wait defaults to 30 seconds and
+HTTP verification to 60 seconds, both bounded by the remaining command budget. Apply the byte and
+file limits to generated output too. Report the limit hit.
 Subprocesses and redirects consume the same budget; terminate and reap timed-out children.
 These are operational defaults, not inherited Postplan limits.
 
@@ -221,7 +230,15 @@ schema discovery exposes the report modes and help text. Remote cleanup diagnost
 The common envelope includes `schema_version`, `operation`, optional echoed `request_id`,
 `outcome`, `target`, `name`, `url`, `expected_revision`, `requested_revision`,
 `archived_revision`, `archive_commit`, `active_revision`, `effects`, `verification`, `warnings`,
-and `error`.
+and `error`. Markdown results also report nullable `expected_record_revision`,
+`requested_record_revision`, `archived_record_revision`, and `render_profile_id`. Existing revision
+fields always mean the served `site/` tree; no record identity is inferred from them. HTML results
+retain their current fields and semantics.
+
+For Markdown, `published` means the requested output and source record were archived. If the
+requested output is already the healthy active output, a record-only publication leaves the public
+symlink in place, reports `effects.activated: false`, and verifies that output. `unchanged` means
+both requested identities already match the healthy active output and current source record.
 
 - `effects` distinguishes archive advancement and activation by this invocation: true, false, or
   unknown. Selected state alone does not prove this invocation selected it.
@@ -263,27 +280,47 @@ framework.
 
 Use one process-scoped OS lock across archive mutation, activation, and bounded verification.
 Retain this simple serialization for the personal workload; do not add per-name locks
-prematurely. Capture and validation happen before acquiring it.
+prematurely. Capture, Markdown rendering, and validation happen before acquiring it.
 
 Under the lock, validate actual selected state before evaluating these ordered rules:
 
 - A malformed, dangling, escaping, or corrupt selected export is degraded, **not absent**. Its
   revision must exist in reachable site history for that name, not merely another name.
-- If desired bytes already equal a healthy active revision, reverify and return unchanged, even
-  with an old expectation. Do not move the archive branch or discard a different pending archive.
-- Without an expectation, permit absent active content only when no saved page exists or the
-  requested revision equals its saved revision. A differing saved revision conflicts. An explicit
-  expectation against absent active content also conflicts.
-- Otherwise require the expected active revision to match before replacing it. Content identity
-  is intentional: A -> B -> A permits a later expectation of A. There is no activation-event
-  token.
-- Reuse the identical latest saved revision or construct a commit preserving all other pages,
-  using index-free raw tree construction, raw blobs, normalized modes, and conditional ref advancement. The first
-  commit is parentless and creates the branch only if absent. External ref movement conflicts.
+- For ordinary HTML, if desired bytes already equal a healthy active revision, reverify and return
+  unchanged, even with an old expectation. Do not move the archive branch or discard a different
+  pending archive. HTML keeps this behavior unchanged.
+- For Markdown, `unchanged` requires the desired site revision to equal the healthy active revision
+  and both desired revisions to equal the latest archived site and record revisions. This exact
+  pair retry may complete without fresh expectations.
+- A Markdown source change that renders to the healthy active site revision is a record-only
+  update. Require `expected_revision` to equal that active revision and
+  `expected_record_revision` to equal the currently archived record revision. Archive the captured
+  source, provenance, and matching generated site tree together, leave the public symlink in place,
+  then verify the active output. A prior saved-but-inactive pair stays reachable in history.
+- A Markdown update whose site revision differs from the healthy active revision requires both
+  `expected_revision` to match the active site revision and `expected_record_revision` to match the
+  latest archived record revision. For first creation with no active or saved page, both
+  expectations may be absent. An exact retry of the current pair is checked before either guard.
+- For HTML, do not create or update a Markdown record. For Markdown, the archive commit pairs the
+  exact generated site with the source and provenance that produced it; the two tree revisions
+  remain separately reported identities.
+- For Markdown with no active output, permit an expectation-free retry only when there is no saved
+  page or the complete requested pair equals the saved pair. A differing saved pair conflicts.
+  With active output, changed Markdown content must pass both expectations above.
+- For ordinary HTML, without an expectation, permit absent active content only when no saved page
+  exists or the requested revision equals its saved revision. A differing saved revision conflicts.
+  An explicit expectation against absent active content also conflicts. Otherwise require the
+  expected active revision to match before replacing it. Content identity is intentional: A -> B -> A
+  permits a later expectation of A. There is no activation-event token.
+- Reuse the identical latest saved HTML revision or Markdown pair, or construct a commit preserving
+  all other pages, using index-free raw tree construction, raw blobs, normalized modes, and
+  conditional ref advancement. The first commit is parentless and creates the branch only if
+  absent. External ref movement conflicts.
 - Export raw committed bytes into private staging. Validate the complete path set and every byte,
   including a reused release, before an atomic rename completes the immutable export.
-- Archive persistence must succeed before selection. Atomically replace the controlled public
-  symlink, then perform delivery verification while still holding the lock.
+- Archive persistence must succeed before selection. When the output changes, atomically replace
+  the controlled public symlink; a record-only update never touches that symlink. Verify the
+  requested output while still holding the lock.
 
 Sanitize inherited Git environment/configuration effects; disable hooks, interactive signing,
 content filters, and unwanted background maintenance. Use argument vectors, not interpolated
@@ -353,8 +390,10 @@ journal:
 - Corrupt export, malformed link, or route drift: stop with diagnostics; do not interpret
   corruption as permission to create. Repair requires a separately reviewed operator action.
 
-Restore appends history when the latest saved page changes; it never rewinds the branch.
-Preserve all reachable revisions and completed exports until explicit maintenance. Keep failed
+Restore selects the exact `site/` and associated `record/` trees from the requested reachable
+archive commit, then uses the guarded workflow without rendering historical source. It appends
+history when the latest saved page changes; it never rewinds the branch. Preserve all reachable
+revisions and completed exports until explicit maintenance. Keep failed
 staging private and report its location and storage usage; successful commands remove only their
 own throwaway staging. Document manual cleanup checks, with no automatic pruning or boot
 activation.
@@ -370,7 +409,9 @@ The canonical `html-publish` skill selects local execution or the established SS
 upload/invocation route, then calls the same host executable. Remote upload stages are
 caller-owned; the host still captures and validates them. Keep SSH host-key checks and quoting
 intact. A thin SSH execution helper forwards all six commands to the same executable and JSON
-contract. Only plan and publish upload source. It does not own publication decisions or receipts.
+contract. Only plan and publish upload input. Markdown uploads the frozen raw source and assets;
+the host renders them before entering its store transaction. It does not own publication decisions
+or receipts.
 Its positive `--command-seconds` defaults to 120 and bounds local capture, SSH, SCP, and cleanup
 with one deadline. Up to five seconds inside that budget are reserved for cleanup.
 Timeout and cancellation terminate the owned local transport process group. They do not prove
@@ -394,7 +435,9 @@ later calls use its receipt. `artifact retry` resumes one frozen attempt, `artif
 an observation or reads the receipt locally, and `artifact restore` starts a guarded restore from
 a reachable archive commit. The six root publisher commands and their JSON v1 result meanings
 remain unchanged. Artifact commands emit a separate JSON v1 handoff that reports receipt
-persistence, publisher effects, and delivery verification independently. The personal skill
+persistence, publisher effects, and delivery verification independently. Markdown handoffs expose
+the expected, requested, and archived output and record revisions separately; the receipt's
+accepted fields are `accepted_revision` and `accepted_record_revision`. The personal skill
 delegates to this installed workflow after its separate migration.
 The client configuration's command budget, or an explicit `--command-seconds` override, runs
 from artifact command entry through capture, receipt locking, inspection, and dispatch. The
@@ -402,25 +445,33 @@ copy and lock limits remain ceilings inside that one budget. A retry never recei
 dispatch allowance after spending time on status inspection.
 
 The versioned receipt contains name, configured host/base URL, **accepted revision**, pending
-intent, and last observation. Before **every** dispatch, atomically save pending intent including
-a unique attempt ID and expected revision. Publish intent includes a reference to a private
-immutable attempt copy. Use that copy as the dispatched source and keep it outside the served
-input until the attempt is resolved. Restore intent instead stores one immutable archive commit
-and needs no source snapshot. Echo the attempt ID as `request_id`. Only one unresolved mutation
-may own a receipt; late or mismatched results must not overwrite it.
+intent, and last observation. A Markdown-aware receipt also contains the accepted record revision.
+Use `accepted_revision` and `accepted_record_revision` for the durable baselines. Before **every**
+dispatch, atomically save pending intent including a unique attempt ID, `expected_revision`, and
+`expected_record_revision`. Publish intent includes a reference to a private immutable attempt
+copy and, for Markdown, the format, optional entry, and frozen render profile. Use that copy as the
+dispatched source and keep it outside the served input until the attempt is resolved. Restore intent
+instead stores one immutable archive commit and needs no source snapshot. Echo the attempt ID as
+`request_id`. Only one unresolved mutation may own a receipt; late or mismatched results must not
+overwrite it.
 
 Existing version 1 receipts and their publish intents retain their exact format and binding
 fingerprint. A first restore atomically upgrades that receipt to version 2, whose pending intent
-is tagged `publish` or `restore`; it stays version 2 afterward. Inspection and ordinary publish
-do not upgrade version 1. An older personal helper rejects version 2, so callers must use the
-installed artifact commands after the first restore.
+is tagged `publish` or `restore`; it stays version 2 for HTML-only work. Markdown intent or a
+record-aware restore upgrades the receipt to version 3, which adds the accepted record revision
+and renderer profile while preserving the existing binding. Inspection and ordinary HTML publish
+do not upgrade version 1. A version 1 or 2 receipt may start Markdown publication when no archived
+record exists. If one exists, the caller must explicitly supply its reviewed record revision;
+status observations never silently adopt it. An older personal helper rejects newer receipt
+versions, so callers must use the installed artifact commands after the first upgrade.
 
 **An observation is not approval to overwrite.** A conflict or read-only status may update the
-last observation but never advances the accepted revision. Advance that baseline only for the
-matching attempt that demonstrably activated its requested revision, or verified an identical
-active no-op. An active-but-unverified result may advance it only when activation by that attempt
-is established; record failed verification independently. Ambiguous results require inspection,
-not auto-adoption.
+last observation but never advances either accepted identity. Advance the accepted output
+revision only for the matching attempt that demonstrably activated it, or verified an identical
+active no-op. Advance the accepted record revision only when that matching attempt archived the
+record paired with the accepted output and verification passed; an active-but-unverified output
+may advance its baseline only when activation by that attempt is established. Record failed
+verification independently. Ambiguous results require inspection, not auto-adoption.
 
 After a lost response, retain the pending identity and original expectation. Inspect the known
 name; retry only the same intended bytes. A path alone does not prove the input stayed unchanged.
@@ -447,6 +498,12 @@ prove publisher behavior, not native Serve, browser freshness, or tailnet author
 Every issue records actual command, implementation revision, expected/observed state, evidence
 location, and remaining checks. Convert discovered edge cases into focused regression fixtures;
 keep examples and the short agent entrypoint consistent with executable help.
+
+Issue #9 exercises the real CLI and controlled HTTP path for source-only changes with identical
+output and no activation, competing record edits, rendered-output changes, duplicate inputs,
+missing or ambiguous entries, output collisions, unresolved links, render failure before mutation,
+exact exported bytes, stable URLs, private-record exclusion, and exact-pair restore without
+rerendering.
 
 ```text
 #2 hosting proof ------------------+
@@ -499,6 +556,62 @@ requires a disposable Linux account with a real user manager. Private HTTPS for 
 remains unverified and requires an authenticated disposable node and a second tailnet client.
 Generic hosting remains an MVP; it is not a production deployment procedure.
 
+## S12. Static Markdown pages
+
+Markdown is opt-in through `--format markdown` for root `plan` and `publish`, remote forwarding,
+and artifact publishing. HTML remains the default, with no extension-based auto-detection. These
+commands accept `--entry` only for a Markdown document directory and
+`--expected-record-revision` alongside the existing output guard. Artifact publishing accepts
+`--reviewed-record-revision` only when upgrading a legacy receipt that has no record baseline but
+the publication already has one. Restore accepts the expected record revision as well. This keeps
+ordinary `.html` input semantics unchanged. Accept one `.md`
+file or a document directory. For a directory, an explicit `--entry` must name a captured `.md`
+file within that directory and wins over implicit selection. Without it, only root `index.md` and
+root `README.md` are candidates: select the sole existing candidate, fail if neither exists, and
+fail as ambiguous if both exist. Do not guess from other names. A single Markdown file is always
+the entry and does not implicitly capture neighboring files.
+
+Capture the complete input and finish rendering before acquiring the shared publication lock.
+The render is deterministic and performs no network requests. Pin `markdown-it-py` to 4.2.0 and
+use its CommonMark preset with raw HTML disabled, the table rule enabled, and linkify disabled.
+Strip leading YAML-style frontmatter delimited by `---` lines without parsing or publishing it;
+unterminated frontmatter is a render error. Render headings, prose, lists, fenced code, tables,
+links, and images into a self-contained static page template with a true-black background, white
+primary text, and responsive readable content without card or pill chrome. Template choice is made
+through a static mock review before implementation. The chosen template and renderer options form
+a stable `render_profile_id`; no browser-time renderer, scripts, or external template resources
+are added.
+Freeze the profile in pending receipt intent and require an identical supported profile on retry;
+a missing profile implementation fails before entering the store.
+
+Map the selected entry to `index.html`. Map each other lowercase `.md` source path to the same
+relative path with `.html`; normalize output paths to Unicode NFC and copy non-Markdown assets
+byte-for-byte at their relative paths. The generated output contains only rendered pages and
+captured assets. Build the complete mapping before rendering links, and reject duplicate input
+paths, paths outside the input root, file/directory prefix conflicts, and any output collision
+after case folding.
+URLs derive only from this stable map and the configured publication URL; encode path segments
+once. The provenance records the selected entry, deterministic source-to-output map, format,
+parser version and options, selected template/profile, and generated site revision. Do not record
+machine-specific absolute paths or timestamps.
+
+Resolve relative Markdown links against their source file. Rewrite links to captured Markdown files
+to their mapped `.html` URLs, retaining query and fragment components. Keep assets at their mapped
+paths and calculate references from the referring page's output path, including when the selected
+entry moves to `index.html`. Resolve a wikilink by an exact case-sensitive path relative to the
+current document first, then by a unique case-insensitive basename. A missing, ambiguous, or
+out-of-root link remains visible as text and adds a structured unresolved-link warning; never
+invent a target. External links and images may remain in the page, but are never fetched. Raw HTML
+remains escaped by the parser.
+
+For a Markdown publication, archive exact input bytes and `provenance.json` under the private
+`<name>/record/` tree, paired in the same archive commit with the generated `<name>/site/` tree.
+Materialization, activation, verification, and public export read only `site/`. The record tree is
+never served or copied into a release. Output and record revisions are independent content
+identities, and results, history, restore, remote reports, and Markdown-aware receipts expose both.
+Rendering or mapping failure returns before any archive or runtime publication mutation, leaving
+the active page unchanged.
+
 ## Technical references
 
 These describe primitives, not evidence that om1 passes the gates:
@@ -510,3 +623,6 @@ These describe primitives, not evidence that om1 passes the gates:
 - [Caddy file serving](https://caddyserver.com/docs/caddyfile/directives/file_server),
   [response headers](https://caddyserver.com/docs/caddyfile/directives/header), and
   [request headers](https://caddyserver.com/docs/caddyfile/directives/request_header).
+- [`markdown-it-py` 4.2.0 package metadata and license](https://pypi.org/project/markdown-it-py/4.2.0/),
+  [official usage options](https://markdown-it-py.readthedocs.io/en/latest/using.html), and
+  [MIT license](https://github.com/executablebooks/markdown-it-py/blob/master/LICENSE).
