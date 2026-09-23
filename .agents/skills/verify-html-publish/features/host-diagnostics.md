@@ -30,5 +30,7 @@ Preconditions:
 ## Gotchas
 
 - Metadata-only status leaves `integrity_checked` false. A passing named host check carries the revision-bound verification fact separately.
+- For an unnamed check, `host_checks.route` `ok` means the base URL returned an HTTP status, even if that status is 404 or 500.
 - Local corruption is not route drift and must not produce route `ok`.
+- Named delivery drift can return exit 0 with `verification.result` `failed` and `host_checks.route` `drift`. Inspect those fields, not the exit code alone.
 - Host checks never activate, repair, or adopt content.

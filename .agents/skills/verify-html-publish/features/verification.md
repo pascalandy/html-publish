@@ -10,7 +10,7 @@ Verification validates the selected export against the archive and probes the st
 
 ## How to get to it (user POV)
 
-- Run `html-publish ... verify --name <name>` after a publish or interrupted result.
+- Run `html-publish ... verify --name <name>` when a usable revision is selected, including after an uncertain result that may have activated it.
 - Use `status` for local observation when delivery is intentionally unavailable.
 
 ## Driving it with shell and curl

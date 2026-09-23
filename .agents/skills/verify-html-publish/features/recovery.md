@@ -13,7 +13,8 @@ Recovery derives the next action from saved, selected, and verified facts after 
 ## How to get to it (user POV)
 
 - Run `status` after an interrupted or lost publish result.
-- Run `verify` for selected content, then retry only the same captured bytes with the original expectation.
+- Run `verify` for selected content, then retry direct `publish` with the original expectation only if its source still has the same bytes.
+- For a durable caller receipt, use `artifact retry --receipt <path>` to resume its frozen pending input; see [Artifact receipts](artifact-receipts.md).
 
 ## Driving it with shell and curl
 
@@ -30,4 +31,5 @@ Preconditions:
 
 - These tests prove ordinary process termination and scoped persistence errors, not whole-filesystem exhaustion or power-loss durability.
 - A retry must use the same captured bytes and original expectation. `status` never advances the accepted baseline.
+- Direct `publish` recaptures its source path on every call. `artifact retry` uses the receipt's frozen pending input.
 - Keep controlled loopback evidence separate from installed-host, Tailscale, browser, reboot, and power-loss claims.

@@ -1,12 +1,12 @@
 # Advisory planning
 
-Advisory planning lets a user inspect what a publish would do, including the predicted decision and the exact file differences, while writing nothing to the archive or the runtime.
+Advisory planning lets a user inspect what a publish would do, including the predicted decision and exact file differences against the active page or, when none is selected, the saved page. It writes nothing to the archive or runtime.
 
 ## Sub-features
 
 - `plan-no-writes` leaves no archive and no runtime behind on a fresh instance.
 - `plan-predicts` reports `create`, `update`, `unchanged`, or `conflict` for the request.
-- `plan-differences` lists added, changed, and deleted files between the active site and the request.
+- `plan-differences` lists added, changed, and deleted files against the active site, or the saved site when none is selected.
 
 ## How to get to it (user POV)
 
@@ -31,5 +31,5 @@ Preconditions:
 
 - Plan details flatten to top-level report keys. Read `.prediction` and `.differences`, never `.details`.
 - `prediction` `conflict` is a successful plan with exit 0. It is information, not an error.
-- Plan captures the source and observes full local state under the lock, but its writes go to temporary storage only. The archive and runtime prove the no-writes claim, not the absence of output.
+- Plan captures the source and observes full local state. It uses the existing lock when publisher state exists; on an empty store, no lock file is created. Only temporary capture storage is written.
 - Planning does not exercise HTTP verification. A plan can predict `update` for a target that would fail delivery, so a plan never replaces a publish proof.
