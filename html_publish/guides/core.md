@@ -3,10 +3,11 @@
 This guide ships inside html-publish 0.1.0 and matches the installed executable's version.
 Run `html-publish skills get core` to read it offline from any installed checkout.
 
-`html-publish` publishes private static HTML at a stable URL with local Git history. One
-publication name owns one page at one URL. Every accepted revision is archived as an
-immutable Git commit, and the selected release is a symlink swap guarded by the active
-revision. Readers see the same URL across updates.
+`html-publish` publishes private static pages at stable URLs with local Git history. Supply HTML
+directly, or opt into Markdown rendering with `--format markdown`. One publication name owns one
+page at one URL. Every accepted revision is archived as an immutable Git commit, and the selected
+release is a symlink swap guarded by the active output revision. Readers see the same URL across
+updates.
 
 ## Install
 
@@ -113,6 +114,37 @@ html-publish --config publisher.json --json status \
 
 The stable test URL is `http://127.0.0.1:8000/release-notes/`.
 
+## Publish Markdown
+
+Markdown is opt-in. A single `.md` file is the entry document. For a directory, pass `--entry`
+when needed; otherwise the publisher selects a sole root `index.md` or `README.md` and reports an
+error if neither or both are present.
+
+The selected entry becomes `index.html`. Other Markdown files become `.html` at their relative
+paths, and other files such as images are copied to the same paths. Headings, prose, lists, fenced
+code, tables, links, and images are rendered into static HTML. Leading `---` frontmatter is hidden;
+unterminated frontmatter fails before publication. Links to captured Markdown files and
+unambiguous wikilinks are rewritten. Unresolved links stay visible and appear in the warnings. The
+renderer makes no network requests.
+
+The generated page and private source record have separate revisions. A source edit that renders
+to the same output advances only the record, without selecting a new page. For a changed Markdown
+publication, pass both current identities to the direct publisher:
+
+```sh
+html-publish --config publisher.json --json publish \
+  --name user-guide --source ./docs --format markdown --entry index.md \
+  --target http://127.0.0.1:8000/ \
+  --expected-revision OUTPUT_REVISION \
+  --expected-record-revision RECORD_REVISION
+```
+
+The `artifact` workflow stores both accepted revisions in its receipt and freezes the source,
+entry, and render profile for retry. A legacy receipt that has no record baseline requires an
+explicit `--reviewed-record-revision` before it can update a publication that already has a private
+record. Source and provenance stay in the archive; only generated pages and copied assets are
+served.
+
 ## Update a page
 
 Use `revision_a` from the successful page A publish. A later `status` result is an
@@ -208,6 +240,14 @@ directory defaults to `SOURCE.publish`, here `./page.html.publish`:
 html-publish --config client.json artifact publish ./page.html --new release-notes
 ```
 
+For a Markdown directory, opt in explicitly and select its entry when implicit selection is not
+enough:
+
+```sh
+html-publish --config client.json artifact publish ./docs --new user-guide \
+  --format markdown --entry index.md
+```
+
 For later edits, use the same artifact and sibling receipt:
 
 ```sh
@@ -270,14 +310,16 @@ html-publish-remote publish \
 ```
 
 The remote helper supports all six publisher commands and emits the same versioned JSON as
-local execution. See the repository's [operations guide](https://github.com/pascalandy/html-publish/blob/main/docs/operations.md)
+local execution. Markdown uploads frozen raw source and assets; the host renders before its
+publication transaction. See the repository's [operations guide](https://github.com/pascalandy/html-publish/blob/main/docs/operations.md)
 for installation, guarded updates, rollback, health checks, storage ownership, and known
 limits.
 
 ## Boundaries
 
-- One HTML file copied byte-for-byte to `index.html`, or a directory with `index.html` and
-  relative assets. Every accepted file is published; nothing is rewritten.
+- One HTML file copied byte-for-byte to `index.html`, an HTML directory with `index.html` and
+  relative assets, or explicit Markdown rendered into static HTML. Markdown source and renderer
+  provenance stay private in the archive.
 - Default limits: 100 MiB of input, 2,000 files, a 120-second command budget.
 - HTTP is for explicit loopback tests only; production targets require HTTPS.
 - Readers are controlled by tailnet policy, not by page names. External assets may contact

@@ -1,6 +1,7 @@
 # html-publish
 
-`html-publish` publishes private static HTML with stable URLs and local Git history
+`html-publish` publishes private static pages with stable URLs and local Git history. It can also
+render an explicit Markdown input into static HTML before publication
 
 The MVP supports first publication, guarded replacement, identical retry, advisory planning, read-only status, verification, history, and guarded restore. The `artifact` group adds durable caller receipts, and the `skills` group reads the bundled version-matched guides offline
 
@@ -47,10 +48,12 @@ Use the receipt workflow for durable publication across sessions. Names use lowe
 ```sh
 html-publish --config client.json artifact publish ./page.html --new release-notes
 html-publish --config client.json artifact publish ./page.html
+html-publish --config client.json artifact publish ./docs --new user-guide \
+  --format markdown --entry index.md
 html-publish --config client.json artifact retry --receipt ./page.html.publish
 ```
 
-The [core guide](html_publish/guides/core.md) owns the full shell patterns for plan, publish, guarded updates with `--expected-revision`, verify, history, restore, host diagnostics, and the remote helper. The [recovery guide](html_publish/guides/recovery.md) owns error codes, interruption states, and guarded retries
+The [core guide](html_publish/guides/core.md) owns the full shell patterns for HTML and Markdown, guarded updates, verify, history, restore, host diagnostics, and the remote helper. The [recovery guide](html_publish/guides/recovery.md) owns error codes, interruption states, and guarded retries
 
 ## Help
 
@@ -59,7 +62,8 @@ The [core guide](html_publish/guides/core.md) owns the full shell patterns for p
 ## Platform boundaries
 
 - HTTP is for explicit loopback tests only; production targets require HTTPS
-- Input is one HTML file or a directory with `index.html` and relative assets
+- Input is one HTML file, an HTML directory with `index.html` and relative assets, or explicit
+  Markdown rendered into static HTML with its source kept in the private archive
 - Readers are controlled by tailnet policy; external assets may still contact external hosts
 - Installed Linux hosting previews before apply and never changes Tailscale
 - Linux and macOS are supported; this controlled MVP is not production-ready
