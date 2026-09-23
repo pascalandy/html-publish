@@ -12,8 +12,8 @@ Guarded replacement lets a user replace an active page only while the expected a
 
 ## How to get to it (user POV)
 
-- Pass the accepted revision from the last successful mutation as `--expected-revision` on `plan` and `publish` of changed content.
-- Omit `--expected-revision` while different content is already active and the CLI refuses with a conflict.
+- Pass the last successful mutation's `active_revision` as `--expected-revision` on `plan` and `publish` of changed content.
+- With different content already active, omitting `--expected-revision` makes `plan` predict a conflict and `publish` fail with one.
 
 ## Driving it with shell and curl
 

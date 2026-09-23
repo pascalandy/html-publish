@@ -1,13 +1,13 @@
 ---
 name: "verify-html-publish"
-description: "Use when proving html-publish CLI behavior end to end, including publish, guarded update, retry, plan, status, verify, history, restore, host diagnostics, and recovery through the real executable and its loopback HTTP server."
+description: "Use when proving html-publish CLI behavior end to end, including publication, receipts, configuration, discovery, reports, remote forwarding, hosting, and recovery through installed executables and controlled delivery evidence."
 ---
 
 # Verify html-publish
 
-This skill verifies the user-facing behavior of `html-publish`, a CLI that publishes private static HTML at stable URLs with local Git history. The primary surface is the `html-publish` executable. The secondary surface is `html-publish-server`, which serves published pages over loopback HTTP. Driving the CLI without serving the URL is incomplete, because publish verifies over HTTP before it reports success.
+This skill verifies the user-facing behavior of `html-publish`, a CLI that publishes private static HTML at stable URLs with local Git history. The primary surface is the `html-publish` executable. `html-publish-remote` forwards publisher operations through SSH, and `html-publish-server` serves published pages over loopback HTTP. Driving a publication without serving its URL is incomplete, because publish verifies over HTTP before it reports success.
 
-All commands run against an isolated installed wheel that `scripts/instance.sh` creates under `/tmp/html-publish-verify/<run_id>`. The Bash entry point delegates to the executable `scripts/instance.py` helper. Both Linux and macOS use a supervisor that owns the server as a child process. Never drive a server started by another run or process. Read `features/README.md` before a proof, then follow the matching feature file as the recipe.
+Direct CLI commands run against an isolated installed wheel that `scripts/instance.sh` creates under `/tmp/html-publish-verify/<run_id>`. The Bash entry point delegates to the executable `scripts/instance.py` helper. Both Linux and macOS use a supervisor that owns the server as a child process. Never drive a server started by another run or process. Read `features/README.md` before a proof, then follow the matching feature file as the recipe.
 
 ## Launch
 
@@ -22,9 +22,10 @@ Pick a fresh `<run_id>` per proof, for example `first-pub-20260921`. On success 
 ```sh
 .../instance.sh start <run_id>
 export REPO_ROOT=... RUN_ID=... INSTANCE=... CONFIG=... URL=... PORT=... ARTIFACTS=... CLI=...
+export PATH="${CLI%/*}:$PATH"
 ```
 
-The keys are `REPO_ROOT`, `RUN_ID`, `INSTANCE`, `CONFIG`, `URL`, `PORT`, `ARTIFACTS`, and `CLI`. Start builds a wheel into the evidence directory and installs it in this instance's virtual environment. `CLI` names that installed executable. Readiness requires the owning supervisor to confirm that its server answers `ok` at `$URL/_html-publish-health`. HTTP reads have a one-second timeout. Failure retains logs and metadata for diagnosis. Run cleanup after a failed proof; malformed ownership metadata is retained rather than bypassed. Completion criterion is a passing doctor.
+The keys are `REPO_ROOT`, `RUN_ID`, `INSTANCE`, `CONFIG`, `URL`, `PORT`, `ARTIFACTS`, and `CLI`. Start builds a wheel into the evidence directory and installs it in this instance's virtual environment. `CLI` names that installed executable. The PATH export also makes the client config's bare `html-publish` command use this wheel. Readiness requires the owning supervisor to confirm that its server answers `ok` at `$URL/_html-publish-health`. HTTP reads have a one-second timeout. Failure retains logs and metadata for diagnosis. Run cleanup after a failed proof; malformed ownership metadata is retained rather than bypassed. Completion criterion is a passing doctor.
 
 Write the standard source fixtures into the instance. It prints `PAGE_A=` and `PAGE_B=` paths and prints the same values on every call for one run. Export those two names as well.
 
@@ -80,8 +81,8 @@ The directory URL returns the page body, the slashless form returns `301`, and a
 Capture proofs under `$ARTIFACTS`. Cleanup never removes that directory.
 
 - Record the command, stdout, stderr, and exit code of every CLI call in one file per feature run.
-- Record the HTTP checks, including the served body, the `301`, and the `404` sentinel codes.
-- Pair every mutation with a read-only second view, such as `status --json` after `publish`.
+- For publication proofs, record the HTTP checks, including the served body, the `301`, and the `404` sentinel codes.
+- Pair every publication mutation with a read-only second view, such as `status --json` after `publish`.
 - A create proof shows the local side effects too, `archive_commit` set in the report and the page served at the stable URL, not only the final report.
 - Name the feature ID and run ID in each artifact file.
 
@@ -113,6 +114,13 @@ assets/history/restore and offline observation, and cleans up. The per-run `arti
 retains `launch.txt`, `installed-workflow.jsonl`, logs, and the wheel. Use
 `/maintain-verification-skill` when later command changes require updates to the map.
 
+Focused test fixtures named in feature files cover faults, receipt handoffs, remote protocol
+handling, and installed host behavior. Identify whether each fixture runs an installed wheel,
+the source checkout, or controlled transport before using its result as evidence. A controlled
+SSH fixture does not prove an authenticated external route.
+
+- [Command discovery](features/command-discovery.md)
+- [Configuration and diagnostics](features/configuration-diagnostics.md)
 - [First publication](features/first-publication.md)
 - [Guarded replacement](features/guarded-replacement.md)
 - [Identical retry](features/identical-retry.md)
@@ -121,6 +129,9 @@ retains `launch.txt`, `installed-workflow.jsonl`, logs, and the wheel. Use
 - [Verification](features/verification.md)
 - [History and restore](features/history-and-restore.md)
 - [Host diagnostics](features/host-diagnostics.md)
+- [Artifact receipts](features/artifact-receipts.md)
+- [Bounded reports and asset warnings](features/bounded-reports.md)
+- [Remote forwarding](features/remote-forwarding.md)
 - [Installed Linux hosting](features/installed-linux-hosting.md)
 - [Recovery](features/recovery.md)
 - [Skills discovery](features/skills-discovery.md)

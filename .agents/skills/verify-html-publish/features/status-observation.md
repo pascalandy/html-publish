@@ -1,6 +1,6 @@
 # Status observation
 
-Status observation lets a user inspect saved and selected local state for one page or walk the paged list of all publications, without any HTTP request or mutation.
+Plain status lets a user inspect saved and selected local state for one page or walk the paged list of all publications without an HTTP request or mutation. `--host-check` adds delivery checks; see [Host diagnostics](host-diagnostics.md).
 
 ## Sub-features
 

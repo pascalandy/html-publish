@@ -4,11 +4,11 @@ The installed executable carries two version-matched guides and reads them back 
 
 ## Sub-features
 
-- `skills-list` — one JSON inventory with schema version, executable version, guide names, summaries, and byte sizes.
-- `skills-get-plain` — one guide's full text on stdout, byte-identical to the packaged file.
-- `skills-get-json` — the same text wrapped in a versioned JSON object that carries the guide name.
-- `skills-unknown-name` — an unknown guide name is a usage error with exit 2 in plain and JSON modes.
-- `skills-offline` — the commands read packaged bytes only, with no configuration file.
+- `skills-list` returns one JSON inventory with schema version, executable version, guide names, summaries, and byte sizes.
+- `skills-get-plain` prints one guide's full text, with a UTF-8 byte count matching the inventory.
+- `skills-get-json` wraps the same text in a versioned JSON object that carries the guide name.
+- `skills-unknown-name` exits 2 for an unknown guide name in plain and JSON modes.
+- `skills-offline` reads bundled guides without a configuration file.
 
 ## How to get to it (user POV)
 
@@ -19,7 +19,7 @@ The installed executable carries two version-matched guides and reads them back 
 
 ## Driving it with shell and curl
 
-Preconditions: a started instance with `CLI` exported from `instance.sh start`, and `doctor` exit 0. `CONFIG` and the served URL are not needed.
+Preconditions: a started instance with `CLI` exported from `instance.sh start`, and `doctor` exit 0 to establish that the installed wheel is usable. Set `CLI_DIR=${CLI%/*}` for the remote boundary check. The skills commands themselves need no config or server.
 
 - Inventory. Run `"$CLI" skills list`. Expect exit 0 and one JSON object with `schema_version` `1`, `executable` `"html-publish"`, `version` equal to the version from `"$CLI" --json --version`, and `guides` naming exactly `core` then `recovery` with positive `bytes`.
 - Byte parity. Run `"$CLI" skills get core | wc -c` and compare with the matching `bytes` value. Expect equality for both guides.
@@ -35,4 +35,4 @@ Preconditions: a started instance with `CLI` exported from `instance.sh start`, 
 - `html-publish-remote` does not forward the skills group. A remote `skills` call is a usage error, not a transport failure.
 - The guides come from the installed wheel, not the source checkout. Prove them through the installed `$CLI`.
 - The version marker inside each guide must equal the executable's version. A mismatch means the wheel and guides came from different revisions.
-- `skills get` prints the packaged bytes verbatim. Do not trim or rewrap stdout when pairing it with the inventory's `bytes`.
+- `skills get` prints decoded guide text. Compare its UTF-8 stdout length with the inventory's `bytes` without trimming or rewrapping it.

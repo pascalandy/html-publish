@@ -5,7 +5,7 @@ user service and applies it only with `--apply`.
 
 ## Sub-features
 
-- `host-foreground` serves new and updated literal page bytes over loopback and exits on SIGTERM.
+- `host-foreground` serves new and updated literal page bytes over loopback by default and exits on SIGTERM.
 - `host-preview` reports selected paths and unit text without writing a host record or unit.
 - `host-ownership` rejects equal unowned units.
 - `host-service` proves idempotence and restart under a disposable user manager.

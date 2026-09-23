@@ -4,13 +4,13 @@ First publication lets a user take one finished HTML file and put it on a stable
 
 ## Sub-features
 
-- `first-create` publishes new content where nothing was saved before.
+- `first-create` publishes a name with no saved page, even if other names exist.
 - `stable-url` serves the page at `<target>/<name>/` and redirects the slashless form.
 - `http-verification` checks the directory URL, every file, and a missing-path sentinel before reporting success.
 
 ## How to get to it (user POV)
 
-- Run `html-publish ... publish --name <name> --source <file> --target <base>` with no expected revision on an empty store.
+- Run `html-publish ... publish --name <name> --source <file> --target <base>` with no expected revision for a new name.
 - Read the page at the stable URL in any HTTP client.
 
 ## Driving it with shell and curl
@@ -24,12 +24,12 @@ Preconditions:
 - **Publish page A.** Run `HP publish --name release-notes --source "$PAGE_A" --target "$URL/" --request-id attempt-001`. Exit 0, `outcome` is `published`, `effects.archive_advanced` and `effects.activated` are both true, `verification.result` is `passed`, and `verification.scope` is `["local_export","directory_url","index_html","all_files","missing_path"]`. Note `active_revision` and `archive_commit`.
 - **Read the page.** Run `curl -fsS "$URL/release-notes/"`. The body equals the bytes of `page-a.html`.
 - **Check the redirect and sentinel.** `curl -sS -o /dev/null -w '%{http_code}' "$URL/release-notes"` prints `301` and `curl -sS -o /dev/null -w '%{http_code}' "$URL/release-notes/missing.html"` prints `404`.
-- **Confirm state twice.** Run `HP status --name release-notes`. `observation.selection.state` is `selected`, `observation.selection.revision` equals the publish's `active_revision`, and `observation.saved.archive_commit` equals the publish's `archive_commit`.
+- **Confirm saved and selected state.** Run `HP status --name release-notes`. `observation.selection.state` is `selected`, `observation.selection.revision` equals the publish's `active_revision`, and `observation.saved.archive_commit` equals the publish's `archive_commit`.
 - **Proof.** Save the command transcript and HTTP results under `$ARTIFACTS/first-publication-<run_id>.txt`.
 
 ## Gotchas
 
-- The target must equal the config's `base_url` host and port and end in `/`, or the CLI rejects the configuration.
+- The target must equal the complete configured `base_url`, including its trailing `/`.
 - Plain publish output is the URL only. Use `--json` for assertions.
-- A passing report with the server stopped afterwards proves nothing about delivery. Read the URL while the instance is still up.
+- A passing report proves delivery at publish time. Read the URL again while the instance is up to prove it remains available.
 - The `301` only applies to an existing directory page. A missing path must return `404`, which is the sentinel the publish verification itself relies on.
