@@ -303,7 +303,7 @@ def preview(config_path: Path, config: Config, unit_name: str) -> dict[str, obje
             _blocker(
                 "route_foreign",
                 "The selected route exists without this installation's ownership record",
-                "choose_unclaimed_mount_or_wait_for_issue_59",
+                "choose_unclaimed_mount",
             )
         )
     elif inspected.state == "changed":
