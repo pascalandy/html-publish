@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from importlib import resources
 from pathlib import Path
@@ -103,6 +105,50 @@ class SkillsCliTest(unittest.TestCase):
         self.assertEqual(payload["outcome"], "error")
         self.assertEqual(payload["operation"], "usage")
         self.assertEqual(cast(dict[str, Any], payload["error"])["code"], "invalid_usage")
+
+    def test_documented_setup_and_artifact_restore_commands(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        setup = readme.split("## Set up a target", 1)[1].split("```sh\n", 1)[1].split("\n```", 1)[0]
+        core = run_cli("skills", "get", "core")
+        self.assertEqual(core.returncode, 0, core.stderr)
+        restore = (
+            core.stdout.split("Start a guarded restore through the receipt:", 1)[1]
+            .split("```sh\n", 1)[1]
+            .split("\n```", 1)[0]
+            .replace("COMMIT", "0" * 40)
+        )
+        environment = os.environ.copy()
+        environment["PATH"] = str(Path(sys.executable).parent) + os.pathsep + environment["PATH"]
+
+        with tempfile.TemporaryDirectory() as temporary:
+            workdir = Path(temporary)
+            configured = subprocess.run(
+                ["bash", "-eu", "-c", setup],
+                cwd=workdir,
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(configured.returncode, 0, configured.stdout + configured.stderr)
+            publisher = json.loads((workdir / "publisher.json").read_text(encoding="utf-8"))
+            client = json.loads((workdir / "client.json").read_text(encoding="utf-8"))
+            self.assertEqual(publisher["archive"], str(workdir / "archive.git"))
+            self.assertEqual(publisher["runtime"], str(workdir / "runtime"))
+            self.assertEqual(
+                client["execution"]["publisher_config"], str(workdir / "publisher.json")
+            )
+
+            restored = subprocess.run(
+                ["bash", "-eu", "-c", restore],
+                cwd=workdir,
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(restored.returncode, 1, restored.stdout + restored.stderr)
+            self.assertEqual(json.loads(restored.stdout)["error"]["code"], "receipt_missing")
 
 
 if __name__ == "__main__":
