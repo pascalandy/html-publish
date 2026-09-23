@@ -518,23 +518,24 @@ class PublisherCliTest(unittest.TestCase):
         duplicates.mkdir()
         (duplicates / "index.md").write_text("# Index")
         (duplicates / "INDEX.md").write_text("# Duplicate")
-        duplicate_result = self.run_cli(
-            "publish",
-            "--name",
-            "guide",
-            "--source",
-            str(duplicates),
-            "--format",
-            "markdown",
-            "--target",
-            self.base_url,
-            "--expected-revision",
-            initial_payload["requested_revision"],
-            "--expected-record-revision",
-            initial_payload["requested_record_revision"],
-        )
-        self.assertEqual(duplicate_result.returncode, 1)
-        self.assertEqual(self.payload(duplicate_result)["error"]["code"], "duplicate_input")
+        if not (duplicates / "index.md").samefile(duplicates / "INDEX.md"):
+            duplicate_result = self.run_cli(
+                "publish",
+                "--name",
+                "guide",
+                "--source",
+                str(duplicates),
+                "--format",
+                "markdown",
+                "--target",
+                self.base_url,
+                "--expected-revision",
+                initial_payload["requested_revision"],
+                "--expected-record-revision",
+                initial_payload["requested_record_revision"],
+            )
+            self.assertEqual(duplicate_result.returncode, 1)
+            self.assertEqual(self.payload(duplicate_result)["error"]["code"], "duplicate_input")
 
         entry.write_text("---\nno closing delimiter\n# Broken\n")
         render_failure = self.run_cli(
