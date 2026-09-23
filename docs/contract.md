@@ -66,6 +66,9 @@ second implementation guide.
   Source, archive, runtime, and receipt paths must not overlap in ways that publish private
   state. An explicit loopback-only test mode may use HTTP; production publication requires the
   configured HTTPS target.
+- The delivery helper accepts macOS's verified `/tmp` and `/var` aliases for `/private/tmp` and
+  `/private/var`. It normalizes only those platform aliases before checking the remaining path;
+  arbitrary symlink ancestors remain invalid.
 - Create replacement symlinks in **private staging**, then rename into `public/`; do not expose
   temporary activation names beneath the serving mount. Both sides of each rename must share a
   filesystem. Never hardlink to mutable source files or change an activated release in place.
@@ -196,6 +199,9 @@ if HTTP works. Return the observed state and effects; never automatically roll b
 newer expectation.
 
 ## S6. Delivery and freshness
+
+The read-only loopback helper must start serving the health endpoint without waiting for a reverse
+DNS lookup of its bound address.
 
 Verification compares the committed path set with the local export, then checks the directory
 entry URL, `index.html` with HTML content type, and every expected file over the stable HTTPS

@@ -100,6 +100,7 @@ class ProbeMutationSafetyTest(unittest.TestCase):
 
         self.assertEqual(route, "collision")
 
+    @unittest.skipUnless(sys.platform == "linux", "probe process identity requires Linux /proc")
     def test_process_identity_detects_command_and_owner_changes(self) -> None:
         environment = dict(os.environ)
         environment["HTML_PUBLISH_PROBE_OWNER"] = "owner-token"
@@ -218,6 +219,7 @@ class ProbeRepairTest(unittest.TestCase):
             self.assertEqual(len(evidence["rows"]), 2)
             self.assertTrue(json.loads(Path(state.state_path).read_text())["failed"])
 
+    @unittest.skipUnless(sys.platform == "linux", "probe process identity requires Linux /proc")
     def test_real_prepare_checkpoints_restore_and_recoverable_cleanup(self) -> None:
         import json
         import shutil
@@ -462,6 +464,7 @@ class ProbeRepairTest(unittest.TestCase):
                     )
                 self.assertEqual(owned_root.exists(), drift)
 
+    @unittest.skipUnless(sys.platform == "linux", "probe process identity requires Linux /proc")
     def test_startup_record_failure_stops_locally_owned_child(self) -> None:
         from scripts import probe_om1_issue2 as probe
 
@@ -573,6 +576,7 @@ class ProbeRepairTest(unittest.TestCase):
 
 
 class ProbeCancellationTest(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "linux", "probe process identity requires Linux /proc")
     def test_real_signals_at_owned_creation_boundaries(self) -> None:
         for mode in ("before-spawn", "before-identity", "after-identity", "checkpoint"):
             with self.subTest(mode=mode):

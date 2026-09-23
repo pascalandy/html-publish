@@ -52,7 +52,7 @@ FAULT_SCRIPT = ROOT / "tests" / "_fault.py"
 class RecoveryTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="html-publish-recovery-")
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.archive = self.root / "archive.git"
         self.runtime = self.root / "runtime"
         handler = functools.partial(
