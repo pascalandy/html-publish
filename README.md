@@ -27,10 +27,14 @@ just check
 
 ```sh
 html-publish config init --role publisher --config publisher.json \
+  --archive "$PWD/archive.git" --runtime "$PWD/runtime" \
   --base-url http://127.0.0.1:8000/ --allow-http
 html-publish config init --role client --config client.json \
   --base-url http://127.0.0.1:8000/ --target-id local-test \
-  --execution local --publisher-config publisher.json
+  --execution local --publisher-config "$PWD/publisher.json"
+```
+
+```sh
 html-publish --config publisher.json host serve --port 8000
 ```
 

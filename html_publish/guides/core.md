@@ -36,29 +36,19 @@ just check
 
 ## Configure a target
 
-Create `publisher.json` with absolute storage paths and a canonical base URL.
-
-```json
-{
-  "archive": "/tmp/html-publish/archive.git",
-  "runtime": "/tmp/html-publish/runtime",
-  "base_url": "http://127.0.0.1:8000/",
-  "allow_http": true,
-  "object_format": "sha1"
-}
-```
-
-HTTP is accepted only for explicit loopback tests. A production target must use HTTPS. The
-`config init` command writes both files. The publisher file configures storage and the
-canonical base URL; the client file names the target and selects the publisher executable:
+Create both configuration files with `config init`. The publisher file configures storage and
+the canonical base URL. The client file names the target and selects the publisher executable:
 
 ```sh
 html-publish config init --role publisher --config publisher.json \
+  --archive "$PWD/archive.git" --runtime "$PWD/runtime" \
   --base-url http://127.0.0.1:8000/ --allow-http
 html-publish config init --role client --config client.json \
   --base-url http://127.0.0.1:8000/ --target-id local-test \
-  --execution local --publisher-config publisher.json
+  --execution local --publisher-config "$PWD/publisher.json"
 ```
+
+HTTP is accepted only for explicit loopback tests. A production target must use HTTPS.
 
 Serve the configured runtime mount during a loopback test:
 
@@ -254,7 +244,7 @@ Start a guarded restore through the receipt:
 
 ```sh
 html-publish --config client.json artifact restore --receipt ./page.html.publish \
-  --archive-commit COMMIT --target http://127.0.0.1:8000/
+  --archive-commit COMMIT
 ```
 
 Return the tool's JSON and keep browser review, host delivery verification, a separate client
