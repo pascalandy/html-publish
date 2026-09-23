@@ -65,7 +65,8 @@ The [core guide](html_publish/guides/core.md) owns the full shell patterns for H
 - Input is one HTML file, an HTML directory with `index.html` and relative assets, or explicit
   Markdown rendered into static HTML with its source kept in the private archive
 - Readers are controlled by tailnet policy; external assets may still contact external hosts
-- Installed Linux hosting previews before apply and never changes Tailscale
+- Installed Linux hosting can inspect Tailscale Serve read-only with `--tailscale`, while apply
+  changes only the owned user service
 - Linux and macOS are supported; this controlled MVP is not production-ready
 
 ## Current boundary

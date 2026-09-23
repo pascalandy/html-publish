@@ -139,6 +139,7 @@ class Verification:
 | `receipt.py` | Caller binding, frozen publish or restore intent, accepted output and record revisions, observation, local lock, and saved-result recovery |
 | `server.py` | Read-only HTTP delivery of selected files, without publication mutations |
 | `host.py` | Desired Linux host setup, user-unit ownership record, systemd observations, and loopback health |
+| `tailscale.py` | Read-only Tailscale node and Serve route inspection for host setup previews |
 
 `_git.py` is a private mechanism shared by capture and storage. It owns the one sanitized Git invocation policy and exposes no publication decisions
 
@@ -166,11 +167,16 @@ archive and active selection.
 handler as `html-publish-server`. `host setup` compares a `HostSpec` with observed user-manager,
 unit, and record state. Preview writes nothing. Apply stores intent and completed
 effects under the user's XDG state directory. `host.py` mutates only its own unit and record.
-It does not enter `PublicationStore` or change publication bytes or Tailscale. The controlled
-`om1` installer in `deploy.py` remains a separate source-checkout deployment path.
+It does not enter `PublicationStore` or change publication bytes. With `--tailscale`, preview asks
+`tailscale.py` to inspect the authenticated node and the selected Serve route. The route comes from
+the configured public URL and loopback port. Inspection owns no Tailscale state and proposes no
+service or route effects when either observation has a blocker. Apply never inspects Tailscale, and
+`host setup --tailscale --apply` is unsupported. The controlled `om1` installer in `deploy.py`
+remains a separate source-checkout deployment path.
 Setup uses one lock in the host-record directory across unit names. It re-reads the selected config
 and installed package bytes before external writes. External HTTPS delivery is configured separately
-and remains outside generic host setup's verification scope.
+and remains outside generic host setup's verification scope. The Tailscale preview reports
+`private_https_verified: false`; it does not prove private HTTPS delivery.
 
 `plan` and `publish` share one decision over the requested output and record revisions, their
 expectations, the saved pair, and the active output selection. The result is `create`, `update`,
@@ -229,4 +235,4 @@ transaction framework, journal, daemon, and database.
 
 ## Verification boundary
 
-Tests drive the real CLI with temporary Git and runtime directories. A controlled loopback HTTP server proves publisher behavior. It does not prove Tailscale authorization, browser freshness, host durability, or production readiness.
+Tests drive the real CLI with temporary Git and runtime directories. A controlled loopback HTTP server proves publisher behavior. Installed-executable tests provide controlled Tailscale status and Serve responses, check the reported route state, and confirm that preview writes nothing. They do not prove Tailscale authorization, private HTTPS delivery, browser freshness, host durability, or production readiness.

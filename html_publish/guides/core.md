@@ -58,8 +58,18 @@ html-publish --config publisher.json host serve --port 8000
 ```
 
 For an installed Linux tool, preview the user service setup before applying it
-(`host setup --apply`). That path does not build from a source checkout or change Tailscale.
-Configure external HTTPS separately; generic host setup verifies only loopback health.
+(`host setup --apply`). To inspect the matching Tailscale Serve route in the same read-only
+preview, add `--tailscale`:
+
+```sh
+html-publish --config publisher.json --json host setup --tailscale
+```
+
+The preview derives the node, HTTPS port, mount path, and loopback target from the publisher
+configuration. It reports route observations, blockers, and proposed effects without changing the
+service or Tailscale. `--tailscale --apply` is unsupported. Configure private HTTPS separately;
+the Tailscale preview reports `private_https_verified: false`, and generic host setup verifies
+only loopback health. The controlled `om1` deployment below remains a separate workflow.
 
 ## Publish one page
 
