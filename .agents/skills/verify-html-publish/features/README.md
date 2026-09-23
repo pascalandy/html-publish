@@ -6,6 +6,7 @@ This directory is the maintained source for verifying the user-facing behavior o
 
 - Start an isolated instance with `scripts/instance.sh start <run_id>` from the skill directory. See SKILL.md Launch.
 - Export `REPO_ROOT`, `RUN_ID`, `INSTANCE`, `CONFIG`, `URL`, `PORT`, `ARTIFACTS`, and `CLI` from the start output. Export `PAGE_A` and `PAGE_B` from the sources output for publication recipes.
+- Keep the PATH export from SKILL.md Launch in the shell that runs client diagnostics and artifact commands. It selects this instance's installed wheel for the client's bare `html-publish` command.
 - Create the shell helper `HP() { "$CLI" --config "$CONFIG" --json "$@"; }` for direct publisher recipes. It drives the installed wheel, outside the source checkout.
 - The [bundled core guide](../../../../html_publish/guides/core.md) is the single source for accepted-revision updates. Recipes may inspect reports directly, but any carried baseline must pass the command-exit and successful-outcome gates from that helper. Never assign a baseline from `status`, an error report, or a mutation-to-`jq` pipeline.
 - `html-publish-remote` uses a separate client config or complete destination flags. Its controlled fixture never substitutes for an authenticated external route.

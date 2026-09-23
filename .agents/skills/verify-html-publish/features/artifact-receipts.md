@@ -22,6 +22,7 @@ The `artifact` commands bind one page to a target and a private receipt. They fr
 Preconditions:
 
 - Start and doctor-check an isolated instance, then create a local client config as in [Configuration and diagnostics](configuration-diagnostics.md)
+- Keep the PATH export from SKILL.md Launch in the same shell before artifact commands so the receipt's client command uses this instance's installed wheel
 - Keep the receipt outside the source capture root; use a fresh page name
 
 - **Create the receipt.** Run `cp "$PAGE_A" "$INSTANCE/receipt-source.html"`, then `"$CLI" --config "$INSTANCE/client.json" artifact publish "$INSTANCE/receipt-source.html" --new receipt-page --receipt "$INSTANCE/receipt-page.publish"`. Exit 0 with one JSON handoff, `outcome` `completed`, `receipt_persisted` true, and non-null `accepted_revision`. `curl -fsS "$URL/receipt-page/"` equals the copied source

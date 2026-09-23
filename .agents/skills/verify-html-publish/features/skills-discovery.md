@@ -19,7 +19,7 @@ The installed executable carries two version-matched guides and reads them back 
 
 ## Driving it with shell and curl
 
-Preconditions: a started instance with `CLI` exported from `instance.sh start`, and `doctor` exit 0 to establish that the installed wheel is usable. The skills commands themselves need no config or server.
+Preconditions: a started instance with `CLI` exported from `instance.sh start`, and `doctor` exit 0 to establish that the installed wheel is usable. Set `CLI_DIR=${CLI%/*}` for the remote boundary check. The skills commands themselves need no config or server.
 
 - Inventory. Run `"$CLI" skills list`. Expect exit 0 and one JSON object with `schema_version` `1`, `executable` `"html-publish"`, `version` equal to the version from `"$CLI" --json --version`, and `guides` naming exactly `core` then `recovery` with positive `bytes`.
 - Byte parity. Run `"$CLI" skills get core | wc -c` and compare with the matching `bytes` value. Expect equality for both guides.

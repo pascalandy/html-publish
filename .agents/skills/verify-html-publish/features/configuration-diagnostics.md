@@ -21,6 +21,7 @@ The installed CLI creates explicit publisher and client configuration, reads and
 Preconditions:
 
 - Use a doctor-checked isolated instance with `CLI`, `CONFIG`, `INSTANCE`, `URL`, and `ARTIFACTS` exported
+- Keep the PATH export from SKILL.md Launch in the same shell before client diagnostics so the client finds this instance's installed `html-publish`
 - Keep new config paths under `$INSTANCE`; never replace the generated `$CONFIG`
 
 - **Create an isolated publisher config.** Run `"$CLI" --json config init --role publisher --config "$INSTANCE/second-publisher.json" --archive "$INSTANCE/second-archive.git" --runtime "$INSTANCE/second-runtime" --base-url "$URL/" --allow-http`. Exit 0 with `outcome` `config_written`; repeat the same command and require `unchanged` with identical file bytes and metadata

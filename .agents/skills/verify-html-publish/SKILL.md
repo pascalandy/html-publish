@@ -22,9 +22,10 @@ Pick a fresh `<run_id>` per proof, for example `first-pub-20260921`. On success 
 ```sh
 .../instance.sh start <run_id>
 export REPO_ROOT=... RUN_ID=... INSTANCE=... CONFIG=... URL=... PORT=... ARTIFACTS=... CLI=...
+export PATH="${CLI%/*}:$PATH"
 ```
 
-The keys are `REPO_ROOT`, `RUN_ID`, `INSTANCE`, `CONFIG`, `URL`, `PORT`, `ARTIFACTS`, and `CLI`. Start builds a wheel into the evidence directory and installs it in this instance's virtual environment. `CLI` names that installed executable. Readiness requires the owning supervisor to confirm that its server answers `ok` at `$URL/_html-publish-health`. HTTP reads have a one-second timeout. Failure retains logs and metadata for diagnosis. Run cleanup after a failed proof; malformed ownership metadata is retained rather than bypassed. Completion criterion is a passing doctor.
+The keys are `REPO_ROOT`, `RUN_ID`, `INSTANCE`, `CONFIG`, `URL`, `PORT`, `ARTIFACTS`, and `CLI`. Start builds a wheel into the evidence directory and installs it in this instance's virtual environment. `CLI` names that installed executable. The PATH export also makes the client config's bare `html-publish` command use this wheel. Readiness requires the owning supervisor to confirm that its server answers `ok` at `$URL/_html-publish-health`. HTTP reads have a one-second timeout. Failure retains logs and metadata for diagnosis. Run cleanup after a failed proof; malformed ownership metadata is retained rather than bypassed. Completion criterion is a passing doctor.
 
 Write the standard source fixtures into the instance. It prints `PAGE_A=` and `PAGE_B=` paths and prints the same values on every call for one run. Export those two names as well.
 
