@@ -104,6 +104,7 @@ class Verification:
 | `remote.py` | Private source upload, bounded SSH execution, host-result correlation, and attempt staging cleanup |
 | `receipt.py` | Caller binding, frozen publish or restore intent, accepted revision, observation, local lock, and saved-result recovery |
 | `server.py` | Read-only HTTP delivery of selected files, without publication mutations |
+| `host.py` | Desired Linux host setup, user-unit ownership record, systemd observations, and loopback health |
 
 `_git.py` is a private mechanism shared by capture and storage. It owns the one sanitized Git invocation policy and exposes no publication decisions
 
@@ -122,6 +123,16 @@ The artifact executor calls the root publisher or remote executable and correlat
 reducing receipt state. A saved result is durable before the receipt advances, so a failed receipt
 replace can be recovered locally without a second publication call. The store alone mutates archive
 and active selection.
+
+`host serve` selects the publisher config through `cli.py` and passes `runtime/public` to the same
+handler as `html-publish-server`. `host setup` compares a `HostSpec` with observed user-manager,
+unit, and record state. Preview writes nothing. Apply stores intent and completed
+effects under the user's XDG state directory. `host.py` mutates only its own unit and record.
+It does not enter `PublicationStore` or change publication bytes or Tailscale. The controlled
+`om1` installer in `deploy.py` remains a separate source-checkout deployment path.
+Setup uses one lock in the host-record directory across unit names. It re-reads the selected config
+and installed package bytes before external writes. External HTTPS delivery is configured separately
+and remains outside generic host setup's verification scope.
 
 `plan` and `publish` share one decision over the requested revision, expected revision, saved page, and active selection. The result is `create`, `update`, `unchanged`, or `conflict`. `plan` observes the full local state and computes the exact requested revision and file differences under the process lock, but it writes only to temporary storage.
 

@@ -97,7 +97,7 @@ class InstalledWorkflowTest(unittest.TestCase):
                     ["plan", "publish", "status", "verify", "history", "restore"]
                     + (["artifact"] if executable == values["CLI"] else [])
                     + ["schema"]
-                    + (["config", "doctor"] if executable == values["CLI"] else []),
+                    + (["config", "doctor", "host"] if executable == values["CLI"] else []),
                 )
                 plan = next(command for command in commands if command["name"] == "plan")
                 plan_expected = next(

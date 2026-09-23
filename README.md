@@ -55,10 +55,12 @@ HTTP is accepted only for explicit loopback tests. A production target must use 
 Serve the configured runtime mount during a loopback test
 
 ```sh
-uv run python -m http.server 8000 \
-  --bind 127.0.0.1 \
-  --directory /tmp/html-publish/runtime/public
+uv run html-publish --config publisher.json host serve --port 8000
 ```
+
+For an installed Linux tool, [preview the user service setup](docs/operations.md#installed-linux-user-service)
+before applying it. That path does not build from a source checkout or change Tailscale.
+Configure external HTTPS separately; generic host setup verifies only loopback health
 
 ## Publish one page
 
@@ -209,5 +211,6 @@ The MVP implements the first vertical slice of the [publisher architecture](docs
 - Versioned JSON and plain successful publish/restore output
 - Full-body HTTP verification for the directory URL, every file, removed paths, and a missing-path sentinel
 - Host diagnostics for configuration, DNS, and route drift without repair
+- Installed CLI foreground hosting and preview-first Linux user-service setup
 
 The [installed deployment record](docs/evidence/deployment/2026-09-22-om1-installed.md) covers `om1` persistence. The [installed skills and authoring record](docs/evidence/skills/2026-09-22-installed-skills-and-authoring.md) covers durable receipts and the authoring cutover. Remote backup and broad browser and concurrency fault matrices remain later work. The controlled `om1` deployment is an MVP and is not production-ready

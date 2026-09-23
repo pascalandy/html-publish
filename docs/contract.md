@@ -461,6 +461,35 @@ publication protocol. The read-only delivery helper and thin SSH execution helpe
 requirement to preserve Postplan-owned URLs: replacement produces new private URLs. Markdown is
 #9, after HTML cutover.
 
+## S11. Installed Linux host
+
+`host serve` reads the selected, validated publisher configuration and serves its `runtime/public`
+directory. It defaults to IPv4 loopback and stops on SIGINT or SIGTERM. Serving does not create
+publisher state or hold a publication lock.
+
+`host setup` previews an owned systemd user service. Preview reports its selected paths,
+executable, rendered unit, current state, blockers, and proposed effects without writing files or
+changing services. `--apply` is the only setup mutation. It requires a durable uv tool installation,
+an absent unit or one matching this installation's ownership record, and an IPv4 loopback listener.
+The record binds the selected configuration and installed package bytes; a package update restarts
+the owned service before setup reports completion.
+An equal unit without that record is foreign. Existing drop-ins, masks, aliases, changed unit bytes,
+and changed publisher configuration block mutation. Repeat apply reports `unchanged` without a
+reload or restart. A record of completed and pending steps preserves partial effects across failure.
+After starting the user unit, setup waits up to ten seconds for the loopback health response.
+
+The host record and user unit live outside the publication archive, runtime, and receipts. A failed
+later step reports earlier effects and keeps its record for inspection. Setup attempts for different
+unit names share one user lock.
+
+Generic `host setup` never changes Tailscale. External HTTPS delivery must be configured separately;
+the `--tailscale` setup option is deferred. Loopback health does not verify the configured public URL.
+
+Foreground HTTP and simulated systemctl checks do not prove a real service restart. A service claim
+requires a disposable Linux account with a real user manager. Private HTTPS for generic host setup
+remains unverified and requires an authenticated disposable node and a second tailnet client.
+Generic hosting remains an MVP; it is not a production deployment procedure.
+
 ## Technical references
 
 These describe primitives, not evidence that om1 passes the gates:
