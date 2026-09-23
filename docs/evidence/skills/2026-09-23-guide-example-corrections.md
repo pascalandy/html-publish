@@ -28,6 +28,26 @@ The exact commands, outputs, exit codes, and HTTP body are in
 beside that record as `proof-guide-examples.py`. The owned server stopped cleanly, and a second
 stop reported a no-op. No installed host or production publication changed.
 
+## Installed macOS proof
+
+The same wheel was copied to a disposable directory on `m4mini` and installed in a Python 3.12
+virtual environment. Its SHA-256 matched the Linux wheel. The installed `skills get core` output
+matched the corrected guide hash and 9,627-byte inventory entry. Both setup blocks exited 0.
+Their resulting publisher and client files contained absolute paths. The documented receipt
+restore command reached the expected `receipt_missing` result for an absent receipt, confirming
+its syntax on macOS.
+
+The command and result record is
+`/tmp/html-publish-verify/guide-fix-20260923/artifacts/macos-guide-examples.json`. The temporary
+virtual environment, wheel, and test files were removed from `m4mini`. Its durable installed tool
+and service were not changed. This remote cleanup command exited 0:
+
+```sh
+test -f /tmp/html-publish-guide-fix-20260923.y8Oi7k/proof.json &&
+  rm -rf /tmp/html-publish-guide-fix-20260923.y8Oi7k &&
+  test ! -e /tmp/html-publish-guide-fix-20260923.y8Oi7k
+```
+
 ## Regression check and limit
 
 `tests/test_skills.py` now runs the README setup block and checks the written paths. It also runs
@@ -35,5 +55,5 @@ the core guide's artifact restore syntax and requires the expected `receipt_miss
 absent receipt. This catches an unsupported flag before any publisher call. The installed proof
 above covers a successful restore and delivered bytes.
 
-This correction was proved on Linux. The earlier `m4mini` disposable install verified the old
-guide bytes; the corrected wheel has not been installed or checked on macOS.
+The macOS proof checked guide setup and restore syntax without starting a server or publishing a
+page. The Linux proof covers completed restore and HTTP delivery.
