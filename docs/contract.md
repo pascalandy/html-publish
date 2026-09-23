@@ -478,20 +478,17 @@ and changed publisher configuration block mutation. Repeat apply reports `unchan
 reload or restart. A record of completed and pending steps preserves partial effects across failure.
 After starting the user unit, setup waits up to ten seconds for the loopback health response.
 
-`--tailscale` explicitly adds one HTTPS Serve handler derived from the configured base URL. Setup
-requires an already-authenticated matching node and an unused non-overlapping route. It does not
-authenticate, enable HTTPS, change Funnel, or replace another handler. An equal existing handler
-without ownership is foreign. A pending route whose handler appeared during an interrupted command
-requires manual inspection because Serve has no handler ownership marker. Other ports and disjoint
-paths remain untouched. The host record and user unit live outside the publication archive, runtime,
-and receipts. A failed later step reports earlier effects and keeps its record for inspection.
-The selected HTTPS port may carry Tailscale's `TCP` HTTPS marker and disjoint web handlers.
-Non-HTTPS TCP handlers block setup. Setup attempts for different unit names share one user lock.
+The host record and user unit live outside the publication archive, runtime, and receipts. A failed
+later step reports earlier effects and keeps its record for inspection. Setup attempts for different
+unit names share one user lock.
 
-Foreground HTTP and simulated systemctl or Tailscale checks do not prove a real service restart or
-private HTTPS. A service claim requires a disposable Linux account with a real user manager. A
-private HTTPS claim requires an authenticated disposable node and a second tailnet client. Generic
-hosting remains an MVP until those gates pass; it is not a production deployment procedure.
+Generic `host setup` never changes Tailscale. External HTTPS delivery must be configured separately;
+the `--tailscale` setup option is deferred. Loopback health does not verify the configured public URL.
+
+Foreground HTTP and simulated systemctl checks do not prove a real service restart. A service claim
+requires a disposable Linux account with a real user manager. Private HTTPS for generic host setup
+remains unverified and requires an authenticated disposable node and a second tailnet client.
+Generic hosting remains an MVP; it is not a production deployment procedure.
 
 ## Technical references
 

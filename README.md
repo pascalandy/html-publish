@@ -59,7 +59,8 @@ uv run html-publish --config publisher.json host serve --port 8000
 ```
 
 For an installed Linux tool, [preview the user service setup](docs/operations.md#installed-linux-user-service)
-before applying it. That path does not build from a source checkout
+before applying it. That path does not build from a source checkout or change Tailscale.
+Configure external HTTPS separately; generic host setup verifies only loopback health
 
 ## Publish one page
 

@@ -67,7 +67,6 @@ unit = pathlib.Path(sys.argv[2])
 assert record['unit_path'] == str(unit)
 assert record['unit'] == unit.read_text()
 assert unit.stat().st_mode & 0o777 == 0o644
-assert record['route'] is None
 PY
 			if fragment=$(as_user systemctl --user show "$unit" --property=FragmentPath --value) &&
 				test "$fragment" = "$unit_path" &&

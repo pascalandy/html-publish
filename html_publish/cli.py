@@ -559,16 +559,10 @@ def _parser(json_version: bool = False) -> Parser:
         effects=(
             "preview reads only",
             "--apply writes an ownership record and user unit",
-            "--tailscale adds one explicit Serve handler",
         ),
     )
     setup_command.add_argument(
         "--apply", action="store_true", help="apply the previewed host setup"
-    )
-    setup_command.add_argument(
-        "--tailscale",
-        action="store_true",
-        help="also configure the matching authenticated Tailscale Serve route",
     )
     setup_command.add_argument(
         "--unit-name", default="html-publish", help="owned unit basename (default: html-publish)"
@@ -1288,9 +1282,7 @@ def main(argv: list[str] | None = None) -> int:
                     if not 0 <= parsed.port <= 65535:
                         raise UsageFailure("serve port must be between 0 and 65535")
                     return serve(ServerConfig(config.runtime / "public", parsed.bind, parsed.port))
-                spec, prerequisites = make_spec(
-                    config_path, config, parsed.unit_name, parsed.port, parsed.tailscale
-                )
+                spec, prerequisites = make_spec(config_path, config, parsed.unit_name, parsed.port)
                 result = (
                     apply(spec, prerequisites) if parsed.apply else preview(spec, prerequisites)
                 )

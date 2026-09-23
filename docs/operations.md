@@ -351,20 +351,15 @@ The default unit name is `html-publish.service`. Use `--unit-name html-publish-<
 verification installation. Apply starts or restarts the user unit, checks loopback health, and
 returns each completed or uncertain effect. Repeat apply returns `unchanged` without a restart.
 
-Add `--tailscale` only when the publisher base URL is the authenticated node's HTTPS DNS name and
-an exact, non-overlapping Serve mount is free. Setup does not log in, enable tailnet HTTPS, alter
-Funnel, or change other handlers. Tailscale has no ownership marker for a handler. If a route
-command loses its result and the handler appears, inspect it manually before retry or removal.
-Other administrators must not edit Serve concurrently with setup because the CLI has no atomic
-handler comparison command.
-Controlled fake Tailscale checks do not prove private HTTPS. The isolated user-service job in
-`.github/workflows/host-systemd.yml` proves restart only after it passes on hosted Ubuntu. Private
-HTTPS still needs an already-authenticated disposable node and a second tailnet client.
+Generic `host setup` never changes Tailscale. Configure external HTTPS delivery separately; the
+`--tailscale` setup option is deferred. Successful loopback health does not verify the configured
+public URL. The isolated user-service job in `.github/workflows/host-systemd.yml` proves restart
+only after it passes on hosted Ubuntu. Private HTTPS for this generic setup remains unverified and
+needs an already-authenticated disposable node and a second tailnet client.
 
 To remove the isolated verification installation, read its record first and compare the current
-unit bytes, mode, effective `FragmentPath`, and any recorded Serve handler. If they still match,
+unit bytes, mode, and effective `FragmentPath`. If they still match,
 stop and disable only its named unit, remove only its unit file, run `systemctl --user daemon-reload`,
-and remove only its host record. For a positively recorded route that still matches, use
-`tailscale serve --https=<recorded-port> --set-path=<recorded-mount> off` before removing the record.
+and remove only its host record.
 Leave the archive, runtime, receipts, config, and uv tool installation intact. The hosted Ubuntu
-script performs these scoped checks and removes no Serve route because its job is service-only.
+script performs these scoped checks. External HTTPS configuration has a separate lifecycle.

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import fcntl
 import hashlib
 import json
@@ -19,7 +18,6 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import cast
-from urllib.parse import unquote, urlsplit
 
 from html_publish import __version__
 from html_publish.configuration import read_document
@@ -36,18 +34,6 @@ class HostError(Exception):
 
 
 @dataclass(frozen=True)
-class Route:
-    host: str
-    port: int
-    mount: str
-    proxy: str
-
-    @property
-    def key(self) -> str:
-        return f"{self.host}:{self.port}"
-
-
-@dataclass(frozen=True)
 class HostSpec:
     config_path: Path
     fingerprint: str
@@ -60,7 +46,6 @@ class HostSpec:
     environment: Path | None
     bind: str
     port: int
-    route: Route | None
     unit: str | None
 
 
@@ -70,8 +55,6 @@ class Observation:
     unit_bytes: str | None
     unit_mode: int | None
     manager: dict[str, str]
-    route_handler: str | None
-    routes: dict[str, object] | None
 
 
 def _run(
@@ -158,30 +141,8 @@ def _package_hash() -> str:
     return digest.hexdigest()
 
 
-def _route(base_url: str, port: int) -> Route:
-    parsed = urlsplit(base_url)
-    path = parsed.path
-    decoded = unquote(path)
-    if (
-        parsed.scheme != "https"
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.query
-        or parsed.fragment
-        or not path.endswith("/")
-        or decoded != path
-        or "//" in path
-        or any(part in {".", ".."} for part in path.split("/"))
-    ):
-        raise HostError(
-            "invalid_route", "Tailscale setup needs an unambiguous HTTPS base URL ending in /"
-        )
-    return Route(parsed.hostname, parsed.port or 443, path, f"http://127.0.0.1:{port}")
-
-
 def make_spec(
-    config_path: Path, config: Config, unit_name: str, port: int, tailscale: bool
+    config_path: Path, config: Config, unit_name: str, port: int
 ) -> tuple[HostSpec, list[str]]:
     if sys.platform != "linux":
         raise HostError("unsupported_host", "Host setup requires Linux")
@@ -219,7 +180,6 @@ def make_spec(
     fingerprint = hashlib.sha256(
         json.dumps(raw, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
-    route = _route(config.base_url, port) if tailscale else None
     unit = None
     if executable is not None:
         unit = "\n".join(
@@ -264,7 +224,6 @@ def make_spec(
         environment,
         "127.0.0.1",
         port,
-        route,
         unit,
     ), ([executable_error] if executable_error else [])
 
@@ -285,116 +244,6 @@ def _systemd(unit_name: str) -> dict[str, str]:
             "systemd_unavailable", result.stderr.strip() or "systemd user manager unavailable"
         )
     return dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
-
-
-def _tailscale(route: Route) -> dict[str, object]:
-    try:
-        status: object = json.loads(_run(["tailscale", "status", "--json"]).stdout)
-    except json.JSONDecodeError as error:
-        raise HostError("tailscale_state", f"Tailscale status is not JSON: {error}") from error
-    if not isinstance(status, dict):
-        raise HostError("tailscale_state", "Tailscale status is not an object")
-    status = cast(dict[str, object], status)
-    if status.get("BackendState") != "Running":
-        raise HostError(
-            "tailscale_unavailable", "Tailscale must already be running and authenticated"
-        )
-    self_node = status.get("Self")
-    dns = cast(dict[str, object], self_node).get("DNSName") if isinstance(self_node, dict) else None
-    if not isinstance(dns, str) or dns.rstrip(".").lower() != route.host.lower():
-        raise HostError(
-            "tailscale_identity",
-            "Configured HTTPS host does not match the authenticated local node",
-        )
-    domains = status.get("CertDomains")
-    if not isinstance(domains, list) or route.host not in domains:
-        raise HostError(
-            "tailscale_https_unavailable",
-            "Tailscale does not report this host as an enabled HTTPS certificate domain",
-        )
-    try:
-        serve: object = json.loads(_run(["tailscale", "serve", "status", "--json"]).stdout)
-    except json.JSONDecodeError as error:
-        raise HostError("tailscale_state", f"Serve status is not JSON: {error}") from error
-    if not isinstance(serve, dict):
-        raise HostError("tailscale_state", "Serve status is not an object")
-    return cast(dict[str, object], serve)
-
-
-def _route_handler(serve: dict[str, object], route: Route) -> str | None:
-    allow_funnel: object = serve.get("AllowFunnel", {})
-    if not isinstance(allow_funnel, dict):
-        raise HostError("tailscale_state", "Serve Funnel state is malformed")
-    funnel = cast(dict[str, object], allow_funnel)
-    if any(enabled and endpoint.endswith(f":{route.port}") for endpoint, enabled in funnel.items()):
-        raise HostError("route_collision", "Funnel is enabled on the selected HTTPS port")
-    tcp: object = serve.get("TCP", {})
-    if not isinstance(tcp, dict):
-        raise HostError("tailscale_state", "Serve TCP state is malformed")
-    selected_tcp = cast(dict[str, object], tcp).get(str(route.port))
-    if selected_tcp is not None and selected_tcp != {"HTTPS": True}:
-        raise HostError("route_collision", "Selected port has a non-HTTPS TCP Serve handler")
-    web: object = serve.get("Web", {})
-    if not isinstance(web, dict):
-        raise HostError("tailscale_state", "Serve Web state is malformed")
-    web = cast(dict[str, object], web)
-    if selected_tcp is not None and route.key not in web:
-        raise HostError("route_collision", "Selected HTTPS port has no matching web handlers")
-    for endpoint, value in web.items():
-        if endpoint != route.key and endpoint.endswith(f":{route.port}"):
-            raise HostError("route_collision", f"Selected HTTPS port has foreign host {endpoint}")
-        if endpoint != route.key:
-            continue
-        if not isinstance(value, dict):
-            raise HostError("tailscale_state", "Serve handler state is malformed")
-        value = cast(dict[str, object], value)
-        handlers_raw = value.get("Handlers", {})
-        if not isinstance(handlers_raw, dict):
-            raise HostError("tailscale_state", "Serve handler state is malformed")
-        handlers = cast(dict[str, object], handlers_raw)
-        for mount in handlers:
-            if mount != route.mount and (
-                mount.startswith(route.mount) or route.mount.startswith(mount)
-            ):
-                raise HostError("route_collision", f"Serve mount overlaps existing handler {mount}")
-        handler = handlers.get(route.mount)
-        if handler is None:
-            return None
-        if not isinstance(handler, dict):
-            raise HostError("route_collision", "Selected Serve handler is not an HTTP proxy")
-        handler = cast(dict[str, object], handler)
-        if not isinstance(handler.get("Proxy"), str):
-            raise HostError("route_collision", "Selected Serve handler is not an HTTP proxy")
-        return cast(str, handler["Proxy"])
-    return None
-
-
-def _without_handler(serve: dict[str, object], route: Route) -> dict[str, object]:
-    remaining = copy.deepcopy(serve)
-    web = remaining.get("Web")
-    if isinstance(web, dict):
-        web = cast(dict[str, object], web)
-        selected = web.get(route.key)
-        if isinstance(selected, dict):
-            selected = cast(dict[str, object], selected)
-            handlers = selected.get("Handlers")
-            if isinstance(handlers, dict):
-                handlers = cast(dict[str, object], handlers)
-                handlers.pop(route.mount, None)
-                if not handlers:
-                    web.pop(route.key, None)
-        if not web:
-            remaining.pop("Web", None)
-    web_after = cast(dict[str, object], remaining.get("Web", {}))
-    if not any(endpoint.endswith(f":{route.port}") for endpoint in web_after):
-        tcp_after = remaining.get("TCP")
-        if isinstance(tcp_after, dict):
-            tcp_after = cast(dict[str, object], tcp_after)
-            if tcp_after.get(str(route.port)) == {"HTTPS": True}:
-                tcp_after.pop(str(route.port), None)
-            if not tcp_after:
-                remaining.pop("TCP", None)
-    return remaining
 
 
 def observe(spec: HostSpec) -> Observation:
@@ -420,9 +269,7 @@ def observe(spec: HostSpec) -> Observation:
     if unit_bytes is not None and spec.unit_path.stat().st_uid != os.geteuid():
         raise HostError("unit_collision", f"Unit is not owned by this user: {spec.unit_path}")
     manager = _systemd(spec.unit_name)
-    routes = _tailscale(spec.route) if spec.route else None
-    handler = _route_handler(routes, spec.route) if routes is not None and spec.route else None
-    return Observation(record, unit_bytes, unit_mode, manager, handler, routes)
+    return Observation(record, unit_bytes, unit_mode, manager)
 
 
 def _blockers(spec: HostSpec, observed: Observation, prerequisites: list[str]) -> list[str]:
@@ -445,8 +292,6 @@ def _blockers(spec: HostSpec, observed: Observation, prerequisites: list[str]) -
     if record is None:
         if observed.unit_bytes is not None or load != "not-found":
             blockers.append("Unit exists without this installation's ownership record")
-        if observed.route_handler is not None:
-            blockers.append("Serve handler exists without this installation's ownership record")
     else:
         if load != "loaded" and record.get("pending") != "unit":
             blockers.append(f"Owned unit is not loaded by the user manager: {load}")
@@ -456,7 +301,6 @@ def _blockers(spec: HostSpec, observed: Observation, prerequisites: list[str]) -
             "fingerprint": spec.fingerprint,
             "unit_path": str(spec.unit_path),
             "listen_port": spec.port,
-            "route": asdict(spec.route) if spec.route else None,
         }
         for key, value in expected.items():
             if record.get(key) != value:
@@ -473,17 +317,6 @@ def _blockers(spec: HostSpec, observed: Observation, prerequisites: list[str]) -
             mode_ok = observed.unit_mode == 0o644
         if not unit_ok or not mode_ok:
             blockers.append("Owned unit bytes or mode have drifted")
-        if record.get("pending") == "route" and observed.route_handler is not None:
-            blockers.append(
-                "Pending Serve route appeared after an uncertain command; "
-                "inspect ownership manually"
-            )
-        elif record.get("route_done") is True and observed.route_handler != (
-            spec.route.proxy if spec.route else None
-        ):
-            blockers.append("Owned Serve handler has drifted")
-        elif record.get("route_done") is not True and observed.route_handler is not None:
-            blockers.append("Serve handler is present without completed ownership")
         if record.get("enabled") is True and manager.get("UnitFileState") != "enabled":
             blockers.append("Owned user unit enablement has drifted")
     return blockers
@@ -503,7 +336,6 @@ def preview(spec: HostSpec, prerequisites: list[str]) -> dict[str, object]:
         and spec.unit == observed.unit_bytes
         and record.get("package_hash") == spec.package_hash
         and observed.manager.get("ActiveState") == "active"
-        and (spec.route is None or observed.route_handler == spec.route.proxy)
         and not blockers
         and record.get("pending") is None
     )
@@ -528,25 +360,20 @@ def preview(spec: HostSpec, prerequisites: list[str]) -> dict[str, object]:
         "version": __version__,
         "unit": spec.unit,
         "listen": f"{spec.bind}:{spec.port}",
-        "route": asdict(spec.route) if spec.route else None,
         "prerequisites": {
             "durable_uv_tool": spec.executable is not None,
             "systemd_user": observed is not None,
-            "tailscale_https": spec.route is None
-            or (observed is not None and observed.routes is not None),
         },
         "observation": {
             "record": record,
             "unit_bytes": observed.unit_bytes if observed else None,
             "unit_mode": observed.unit_mode if observed else None,
             "manager": observed.manager if observed else None,
-            "route_handler": observed.route_handler if observed else None,
         },
         "blockers": blockers,
         "proposed_effects": []
         if same or blockers
-        else ["record", "unit", "daemon_reload", "enable", "start", "loopback_probe"]
-        + (["tailscale_serve"] if spec.route else []),
+        else ["record", "unit", "daemon_reload", "enable", "start", "loopback_probe"],
     }
 
 
@@ -583,7 +410,6 @@ def _require_selected(spec: HostSpec) -> None:
         config,
         spec.unit_name.removesuffix(".service"),
         spec.port,
-        spec.route is not None,
     )
     if current != spec:
         raise HostError(
@@ -640,7 +466,6 @@ def apply(spec: HostSpec, prerequisites: list[str]) -> dict[str, object]:
             "enable",
             "start",
             "loopback_probe",
-            "tailscale_serve",
         )
     }
     with _lock(spec):
@@ -660,10 +485,8 @@ def apply(spec: HostSpec, prerequisites: list[str]) -> dict[str, object]:
             "package_hash": spec.package_hash,
             "unit_path": str(spec.unit_path),
             "listen_port": spec.port,
-            "route": asdict(spec.route) if spec.route else None,
             "unit": spec.unit,
             "enabled": False,
-            "route_done": False,
             "pending": "unit",
         }
         try:
@@ -753,49 +576,6 @@ def apply(spec: HostSpec, prerequisites: list[str]) -> dict[str, object]:
             record["package_hash"] = spec.package_hash
             record["pending"] = None
             _save_record(spec, record)
-            if spec.route:
-                _require_selected(spec)
-                before = _tailscale(spec.route)
-                current_handler = _route_handler(before, spec.route)
-                if record.get("route_done") is True and current_handler != spec.route.proxy:
-                    raise HostError(
-                        "route_drift", "Owned Serve handler changed before final observation"
-                    )
-                if current_handler is not None and record.get("route_done") is not True:
-                    raise HostError(
-                        "route_collision", "Serve handler appeared before route mutation"
-                    )
-                if current_handler is None:
-                    _require_selected(spec)
-                    record["pending"] = "route"
-                    _save_record(spec, record)
-                    effects["tailscale_serve"] = "unknown"
-                    _run(
-                        [
-                            "tailscale",
-                            "serve",
-                            "--bg",
-                            f"--https={spec.route.port}",
-                            f"--set-path={spec.route.mount}",
-                            spec.route.proxy,
-                        ]
-                    )
-                    effects["tailscale_serve"] = "changed"
-                    after = _tailscale(spec.route)
-                    if _route_handler(after, spec.route) != spec.route.proxy:
-                        raise HostError(
-                            "route_failed", "Selected Serve handler does not match after setup"
-                        )
-                    if _without_handler(before, spec.route) != _without_handler(after, spec.route):
-                        raise HostError(
-                            "route_concurrent_change",
-                            "Unrelated Serve state changed during route setup",
-                        )
-                    record["route_done"] = True
-                    record["pending"] = None
-                    _save_record(spec, record)
-                else:
-                    effects["tailscale_serve"] = "unchanged"
             return {
                 **plan,
                 "outcome": "applied",
