@@ -322,7 +322,12 @@ def _blockers(spec: HostSpec, observed: Observation, prerequisites: list[str]) -
     return blockers
 
 
-def preview(spec: HostSpec, prerequisites: list[str]) -> dict[str, object]:
+def preview(
+    spec: HostSpec,
+    prerequisites: list[str],
+    *,
+    tailscale_base_url: str | None = None,
+) -> dict[str, object]:
     try:
         observed = observe(spec)
         blockers = _blockers(spec, observed, prerequisites)
@@ -339,7 +344,12 @@ def preview(spec: HostSpec, prerequisites: list[str]) -> dict[str, object]:
         and not blockers
         and record.get("pending") is None
     )
-    return {
+    service_effects = (
+        []
+        if same or blockers
+        else ["record", "unit", "daemon_reload", "enable", "start", "loopback_probe"]
+    )
+    report: dict[str, object] = {
         "schema_version": 1,
         "operation": "host.setup",
         "outcome": "blocked" if blockers else "unchanged" if same else "planned",
@@ -371,10 +381,31 @@ def preview(spec: HostSpec, prerequisites: list[str]) -> dict[str, object]:
             "manager": observed.manager if observed else None,
         },
         "blockers": blockers,
-        "proposed_effects": []
-        if same or blockers
-        else ["record", "unit", "daemon_reload", "enable", "start", "loopback_probe"],
+        "proposed_effects": service_effects,
     }
+    if tailscale_base_url is None:
+        return report
+
+    from html_publish.tailscale import inspect_route
+
+    route = inspect_route(tailscale_base_url, spec.port)
+    route_blockers = [asdict(blocker) for blocker in route.blockers]
+    combined_blockers = [*blockers, *(blocker.message for blocker in route.blockers)]
+    route_effects = list(route.proposed_effects) if not combined_blockers else []
+    report["outcome"] = "blocked" if combined_blockers else "planned"
+    report["blockers"] = combined_blockers
+    report["proposed_effects"] = [*service_effects, *route_effects] if not combined_blockers else []
+    report["tailscale"] = {
+        "selected": asdict(route.selected) if route.selected is not None else None,
+        "node": route.node,
+        "serve": route.serve,
+        "prerequisites": route.prerequisites,
+        "state": route.state,
+        "blockers": route_blockers,
+        "proposed_effects": route_effects,
+        "private_https_verified": route.private_https_verified,
+    }
+    return report
 
 
 def _write(path: Path, content: str, mode: int) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import shutil
@@ -38,6 +39,18 @@ class InstalledHostTest(unittest.TestCase):
             raise AssertionError(installation.stderr)
         wheel = next(wheel_dir.glob("*.whl"))
         cls.wheel = wheel
+        source_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=cls.root,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        wheel_sha256 = hashlib.sha256(wheel.read_bytes()).hexdigest()
+        print(
+            f"installed-host-evidence source_head={source_head} wheel_sha256={wheel_sha256}",
+            file=sys.stderr,
+        )
         cls.env = os.environ.copy()
         cls.env.update(
             {
@@ -102,8 +115,28 @@ elif 'start' in args or 'restart' in args:
 sys.exit(0)
 """)
         systemctl.chmod(0o755)
+        tailscale = fake_bin / "tailscale"
+        tailscale.write_text("""#!/usr/bin/env python3
+import json, os, pathlib, sys
+args = sys.argv[1:]
+log_path = pathlib.Path(os.environ['FAKE_TAILSCALE_LOG'])
+with log_path.open('a') as log:
+    log.write(json.dumps(args, separators=(',', ':')) + '\\n')
+if args == ['status', '--json', '--peers=false']:
+    print(pathlib.Path(os.environ['FAKE_TAILSCALE_STATUS']).read_text())
+    sys.exit(0)
+if args == ['serve', 'status', '--json']:
+    print(pathlib.Path(os.environ['FAKE_TAILSCALE_SERVE']).read_text())
+    sys.exit(0)
+print('unexpected tailscale command: ' + ' '.join(args), file=sys.stderr)
+sys.exit(64)
+""")
+        tailscale.chmod(0o755)
         cls.env["PATH"] = str(fake_bin) + os.pathsep + cls.env["PATH"]
         cls.env["FAKE_SYSTEMCTL_STATE"] = str(cls.base / "systemctl.json")
+        cls.env["FAKE_TAILSCALE_STATUS"] = str(cls.base / "tailscale-status.json")
+        cls.env["FAKE_TAILSCALE_SERVE"] = str(cls.base / "tailscale-serve.json")
+        cls.env["FAKE_TAILSCALE_LOG"] = str(cls.base / "tailscale.log")
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -131,6 +164,16 @@ sys.exit(0)
         state = self.base / "systemctl.json"
         if state.exists():
             state.unlink()
+        Path(self.env["FAKE_TAILSCALE_STATUS"]).write_text(
+            json.dumps(
+                {
+                    "BackendState": "Running",
+                    "Self": {"DNSName": "preview.test.ts.net."},
+                }
+            )
+        )
+        Path(self.env["FAKE_TAILSCALE_SERVE"]).write_text("{}")
+        Path(self.env["FAKE_TAILSCALE_LOG"]).write_text("")
         for path in (
             self.base / "config-home/systemd/user/html-publish-test.service",
             self.base / "state-home/html-publish/hosts/html-publish-test.json",
@@ -161,6 +204,28 @@ sys.exit(0)
         )
         return result, json.loads(result.stdout)
 
+    def tailscale_commands(self) -> list[list[str]]:
+        return [
+            cast(list[str], json.loads(line))
+            for line in Path(self.env["FAKE_TAILSCALE_LOG"]).read_text().splitlines()
+        ]
+
+    def tailscale_preview(
+        self, serve: object, *, hostname: str = "preview.test.ts.net"
+    ) -> tuple[subprocess.CompletedProcess[str], dict[str, object]]:
+        self.config.write_text(
+            json.dumps(
+                {
+                    "archive": str(self.archive),
+                    "runtime": str(self.runtime),
+                    "base_url": f"https://{hostname}/pages/",
+                    "allow_http": False,
+                }
+            )
+        )
+        Path(self.env["FAKE_TAILSCALE_SERVE"]).write_text(json.dumps(serve))
+        return self.command("--tailscale")
+
     def test_preview_is_read_only_and_foreign_equal_unit_blocks(self) -> None:
         result, preview = self.command()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -178,6 +243,279 @@ sys.exit(0)
         self.assertIn("without this installation", " ".join(cast(list[str], report["blockers"])))
         self.assertEqual(unit_path.read_text(), preview["unit"])
         self.assertFalse(Path(str(preview["record_path"])).exists())
+        self.assertNotIn("tailscale", preview)
+        self.assertEqual(self.tailscale_commands(), [])
+
+    def test_tailscale_preview_reports_absent_route_without_writes(self) -> None:
+        serve_path = Path(self.env["FAKE_TAILSCALE_SERVE"])
+        status_path = Path(self.env["FAKE_TAILSCALE_STATUS"])
+        serve = {
+            "TCP": {"443": {"HTTPS": True}},
+            "Web": {
+                "preview.test.ts.net:443": {
+                    "Handlers": {"/other": {"Proxy": "http://127.0.0.1:9000"}}
+                }
+            },
+            "AllowFunnel": {"preview.test.ts.net:443": False},
+        }
+        serve_path.write_text(json.dumps(serve))
+        before = (serve_path.read_bytes(), status_path.read_bytes())
+        lock_path = self.base / "state-home/html-publish/hosts/.setup.lock"
+        lock_existed = lock_path.exists()
+
+        result, report = self.tailscale_preview(
+            serve,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(report["outcome"], "planned")
+        self.assertEqual(
+            report["tailscale"],
+            {
+                "selected": {
+                    "node": "preview.test.ts.net",
+                    "https_port": 443,
+                    "mount": "/pages/",
+                    "target": f"http://127.0.0.1:{self.port}",
+                },
+                "node": {
+                    "dns_name": "preview.test.ts.net",
+                    "matches_selected": True,
+                },
+                "serve": {
+                    "https_listener": True,
+                    "selected_handler": None,
+                    "other_routes": [
+                        {
+                            "node": "preview.test.ts.net",
+                            "https_port": 443,
+                            "mount": "/other",
+                            "handler": {"Proxy": "http://127.0.0.1:9000"},
+                        }
+                    ],
+                    "funnel": [
+                        {
+                            "node": "preview.test.ts.net",
+                            "https_port": 443,
+                            "enabled": False,
+                        }
+                    ],
+                },
+                "prerequisites": {
+                    "command_available": True,
+                    "authenticated": True,
+                    "node_matches": True,
+                    "serve_inspected": True,
+                },
+                "state": "absent",
+                "blockers": [],
+                "proposed_effects": ["tailscale_serve_route"],
+                "private_https_verified": False,
+            },
+        )
+        self.assertIn("tailscale_serve_route", cast(list[str], report["proposed_effects"]))
+        self.assertEqual(
+            self.tailscale_commands(),
+            [
+                ["status", "--json", "--peers=false"],
+                ["serve", "status", "--json"],
+            ],
+        )
+        self.assertEqual((serve_path.read_bytes(), status_path.read_bytes()), before)
+        self.assertFalse(Path(str(report["record_path"])).exists())
+        self.assertFalse(Path(str(report["unit_path"])).exists())
+        self.assertEqual(lock_path.exists(), lock_existed)
+        self.assertFalse((self.base / "systemctl.json").exists())
+        self.assertFalse(self.archive.exists())
+        self.assertFalse(self.runtime.exists())
+
+    def test_tailscale_preview_derives_root_and_custom_https_port(self) -> None:
+        self.config.write_text(
+            json.dumps(
+                {
+                    "archive": str(self.archive),
+                    "runtime": str(self.runtime),
+                    "base_url": "https://preview.test.ts.net:8444/",
+                    "allow_http": False,
+                }
+            )
+        )
+        result, report = self.command("--tailscale")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        tailscale = cast(dict[str, object], report["tailscale"])
+        selected = cast(dict[str, object], tailscale["selected"])
+        self.assertEqual(selected["node"], "preview.test.ts.net")
+        self.assertEqual(selected["https_port"], 8444)
+        self.assertEqual(selected["mount"], "/")
+        self.assertEqual(selected["target"], f"http://127.0.0.1:{self.port}")
+
+    def test_tailscale_preview_classifies_foreign_collisions_and_unknown_state(self) -> None:
+        cases = (
+            (
+                "equal",
+                {
+                    "TCP": {"443": {"HTTPS": True}},
+                    "Web": {
+                        "preview.test.ts.net:443": {
+                            "Handlers": {"/pages/": {"Proxy": f"http://127.0.0.1:{self.port}"}}
+                        }
+                    },
+                },
+                "foreign",
+                "route_foreign",
+            ),
+            (
+                "slash-alias",
+                {
+                    "TCP": {"443": {"HTTPS": True}},
+                    "Web": {
+                        "preview.test.ts.net:443": {
+                            "Handlers": {"/pages": {"Proxy": f"http://127.0.0.1:{self.port}"}}
+                        }
+                    },
+                },
+                "collision",
+                "route_overlap",
+            ),
+            (
+                "overlap",
+                {
+                    "TCP": {"443": {"HTTPS": True}},
+                    "Web": {
+                        "preview.test.ts.net:443": {
+                            "Handlers": {"/pages/child": {"Proxy": "http://127.0.0.1:9000"}}
+                        }
+                    },
+                },
+                "collision",
+                "route_overlap",
+            ),
+            (
+                "port",
+                {"TCP": {"443": {"TCPForward": "127.0.0.1:9000"}}},
+                "collision",
+                "https_port_collision",
+            ),
+            (
+                "missing-tcp",
+                {
+                    "Web": {
+                        "preview.test.ts.net:443": {
+                            "Handlers": {"/other": {"Proxy": "http://127.0.0.1:9000"}}
+                        }
+                    }
+                },
+                "unknown",
+                "unknown_serve_state",
+            ),
+            (
+                "unicode-tcp-port",
+                {"TCP": {"²": {"HTTPS": True}}},
+                "unknown",
+                "unknown_serve_state",
+            ),
+            (
+                "unicode-funnel-port",
+                {"AllowFunnel": {"preview.test.ts.net:²": True}},
+                "unknown",
+                "unknown_serve_state",
+            ),
+            (
+                "funnel",
+                {"AllowFunnel": {"preview.test.ts.net:443": True}},
+                "collision",
+                "funnel_enabled",
+            ),
+            (
+                "unsupported-handler",
+                {
+                    "TCP": {"443": {"HTTPS": True}},
+                    "Web": {
+                        "preview.test.ts.net:443": {
+                            "Handlers": {"/other": {"Redirect": "https://example.com/"}}
+                        }
+                    },
+                },
+                "unknown",
+                "unknown_serve_state",
+            ),
+            (
+                "unknown",
+                {"Web": {}, "FutureRoutes": {"enabled": True}},
+                "unknown",
+                "unknown_serve_state",
+            ),
+            (
+                "services",
+                {"Services": {"svc:example": {"TCP": 443}}},
+                "unknown",
+                "unknown_serve_state",
+            ),
+        )
+        for name, serve, state, blocker_code in cases:
+            with self.subTest(name=name):
+                Path(self.env["FAKE_TAILSCALE_LOG"]).write_text("")
+                result, report = self.tailscale_preview(serve)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                tailscale = cast(dict[str, object], report["tailscale"])
+                self.assertEqual(tailscale["state"], state)
+                blockers = cast(list[dict[str, str]], tailscale["blockers"])
+                self.assertEqual(blockers[0]["code"], blocker_code)
+                self.assertTrue(blockers[0]["message"])
+                self.assertTrue(blockers[0]["next_action"])
+                self.assertEqual(tailscale["proposed_effects"], [])
+                self.assertEqual(report["proposed_effects"], [])
+                self.assertEqual(len(self.tailscale_commands()), 2)
+
+    def test_tailscale_preview_blocks_node_mismatch(self) -> None:
+        result, report = self.tailscale_preview({}, hostname="other.test.ts.net")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        tailscale = cast(dict[str, object], report["tailscale"])
+        self.assertEqual(tailscale["state"], "unknown")
+        self.assertEqual(
+            cast(list[dict[str, str]], tailscale["blockers"])[0]["code"],
+            "node_mismatch",
+        )
+        self.assertEqual(tailscale["proposed_effects"], [])
+
+    def test_tailscale_apply_is_rejected_before_config_or_inspection(self) -> None:
+        self.config.write_text("not json")
+        result, report = self.command("--tailscale", "--apply")
+
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertEqual(report["outcome"], "error")
+        self.assertEqual(cast(dict[str, object], report["error"])["code"], "invalid_usage")
+        self.assertIn("issue #59", str(cast(dict[str, object], report["error"])["message"]))
+        self.assertEqual(self.tailscale_commands(), [])
+        self.assertFalse((self.base / "systemctl.json").exists())
+
+    def test_tailscale_flag_is_discoverable(self) -> None:
+        help_result = subprocess.run(
+            [str(self.cli), "host", "setup", "--help"],
+            cwd=self.base,
+            env=self.env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assertEqual(help_result.returncode, 0, help_result.stderr)
+        self.assertIn("--tailscale", help_result.stdout)
+        schema_result = subprocess.run(
+            [str(self.cli), "schema"],
+            cwd=self.base,
+            env=self.env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assertEqual(schema_result.returncode, 0, schema_result.stderr)
+        schema = json.loads(schema_result.stdout)
+        host = next(item for item in schema["commands"] if item["name"] == "host")
+        setup = next(item for item in host["commands"] if item["name"] == "setup")
+        flags = [flag for option in setup["options"] for flag in option["flags"]]
+        self.assertIn("--tailscale", flags)
 
     def test_failed_service_start_retains_completed_effects(self) -> None:
         self.archive.mkdir()

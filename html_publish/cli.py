@@ -617,15 +617,22 @@ def _parser(json_version: bool = False) -> Parser:
         "preview or apply an owned Linux user service",
         examples=(
             "html-publish --config publisher.json --json host setup",
+            "html-publish --config publisher.json --json host setup --tailscale",
             "html-publish --config publisher.json --json host setup --apply",
         ),
         effects=(
             "preview reads only",
+            "--tailscale adds a read-only private HTTPS route preview",
             "--apply writes an ownership record and user unit",
         ),
     )
     setup_command.add_argument(
         "--apply", action="store_true", help="apply the previewed host setup"
+    )
+    setup_command.add_argument(
+        "--tailscale",
+        action="store_true",
+        help="inspect the selected private HTTPS Serve route without changing it",
     )
     setup_command.add_argument(
         "--unit-name", default="html-publish", help="owned unit basename (default: html-publish)"
@@ -1426,6 +1433,13 @@ def main(argv: list[str] | None = None) -> int:
 
             path, _ = selected_path("client", parsed.config)
             return receipt.run(parsed, path, started_at)
+        if (
+            parsed.operation == "host"
+            and parsed.host_action == "setup"
+            and parsed.tailscale
+            and parsed.apply
+        ):
+            raise UsageFailure("--tailscale --apply is unsupported until issue #59")
         config_path, _ = selected_path("publisher", parsed.config)
         if parsed.operation == "host":
             from html_publish.host import HostError, apply, make_spec, preview
@@ -1440,7 +1454,13 @@ def main(argv: list[str] | None = None) -> int:
                     return serve(ServerConfig(config.runtime / "public", parsed.bind, parsed.port))
                 spec, prerequisites = make_spec(config_path, config, parsed.unit_name, parsed.port)
                 result = (
-                    apply(spec, prerequisites) if parsed.apply else preview(spec, prerequisites)
+                    apply(spec, prerequisites)
+                    if parsed.apply
+                    else preview(
+                        spec,
+                        prerequisites,
+                        tailscale_base_url=config.base_url if parsed.tailscale else None,
+                    )
                 )
             except (HostError, PublishError, OSError) as error:
                 if isinstance(error, HostError):
