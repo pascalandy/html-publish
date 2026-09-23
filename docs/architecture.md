@@ -2,7 +2,7 @@
 
 ## Caller usage
 
-The executable is the public interface. A caller supplies a finished artifact, a stable name, and the configured target. The [README publish example](../README.md#publish-one-page) shows the root publisher shell pattern. The reference calls below do not assign mutation output
+The executable is the public interface. A caller supplies a finished artifact, a stable name, and the configured target. The [bundled core guide](../html_publish/guides/core.md) shows the root publisher shell pattern. The reference calls below do not assign mutation output
 
 ```sh
 html-publish --config publisher.json --json plan \
