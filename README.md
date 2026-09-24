@@ -65,7 +65,8 @@ The [core guide](html_publish/guides/core.md) owns the full shell patterns for H
 - Input is one HTML file, an HTML directory with `index.html` and relative assets, or explicit
   Markdown rendered into static HTML with its source kept in the private archive
 - Readers are controlled by tailnet policy; external assets may still contact external hosts
-- Installed Linux hosting previews before apply and never changes Tailscale
+- Installed Linux hosting previews the owned service with `host setup` and inspects its Tailscale
+  Serve route read-only with `host route setup`. Service apply remains separate
 - Linux and macOS are supported; this controlled MVP is not production-ready
 
 ## Current boundary
@@ -74,7 +75,7 @@ The MVP implements the first vertical slice of the [publisher architecture](docs
 
 - `plan`, `publish`, `status`, `verify`, `history`, and `restore`
 - `artifact publish`, `artifact retry`, `artifact status`, and `artifact restore`
-- `config init/show/validate`, `doctor`, and `host serve/setup`
+- `config init/show/validate`, `doctor`, `host serve/setup`, and `host route setup`
 - `skills list` and `skills get` for the bundled guides
 
 ## Publish one page

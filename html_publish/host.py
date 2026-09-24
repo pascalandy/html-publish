@@ -5,13 +5,12 @@ import hashlib
 import json
 import os
 import re
+import socket
 import stat
 import subprocess
 import sys
 import tempfile
 import time
-import urllib.error
-import urllib.request
 import uuid
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -55,6 +54,37 @@ class Observation:
     unit_bytes: str | None
     unit_mode: int | None
     manager: dict[str, str]
+
+
+@dataclass(frozen=True)
+class ServiceBlocker:
+    code: str
+    message: str
+    next_action: str
+
+
+@dataclass(frozen=True)
+class HealthyOwnedService:
+    installation_id: str
+    uid: int
+    config_path: Path
+    config_fingerprint: str
+    executable: Path
+    environment: Path
+    package_hash: str
+    unit_name: str
+    unit_path: Path
+    unit_digest: str
+    listen_port: int
+
+
+@dataclass(frozen=True)
+class ServiceInspection:
+    selected: dict[str, object]
+    manager: dict[str, str] | None
+    health: str
+    blockers: tuple[ServiceBlocker, ...]
+    healthy: HealthyOwnedService | None
 
 
 def _run(
@@ -141,6 +171,20 @@ def _package_hash() -> str:
     return digest.hexdigest()
 
 
+def _config_fingerprint(config: Config) -> str:
+    raw = {
+        "archive": str(config.archive),
+        "runtime": str(config.runtime),
+        "base_url": config.base_url,
+        "allow_http": config.allow_http,
+        "object_format": config.object_format,
+        "limits": asdict(config.limits),
+    }
+    return hashlib.sha256(
+        json.dumps(raw, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
 def make_spec(
     config_path: Path, config: Config, unit_name: str, port: int
 ) -> tuple[HostSpec, list[str]]:
@@ -169,17 +213,7 @@ def make_spec(
     for path in (unit_path, record_path):
         _safe_path(path)
     executable, environment, executable_error = _durable_executable()
-    raw = {
-        "archive": str(config.archive),
-        "runtime": str(config.runtime),
-        "base_url": config.base_url,
-        "allow_http": config.allow_http,
-        "object_format": config.object_format,
-        "limits": asdict(config.limits),
-    }
-    fingerprint = hashlib.sha256(
-        json.dumps(raw, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+    fingerprint = _config_fingerprint(config)
     unit = None
     if executable is not None:
         unit = "\n".join(
@@ -339,7 +373,12 @@ def preview(spec: HostSpec, prerequisites: list[str]) -> dict[str, object]:
         and not blockers
         and record.get("pending") is None
     )
-    return {
+    service_effects = (
+        []
+        if same or blockers
+        else ["record", "unit", "daemon_reload", "enable", "start", "loopback_probe"]
+    )
+    report: dict[str, object] = {
         "schema_version": 1,
         "operation": "host.setup",
         "outcome": "blocked" if blockers else "unchanged" if same else "planned",
@@ -371,10 +410,294 @@ def preview(spec: HostSpec, prerequisites: list[str]) -> dict[str, object]:
             "manager": observed.manager if observed else None,
         },
         "blockers": blockers,
-        "proposed_effects": []
-        if same or blockers
-        else ["record", "unit", "daemon_reload", "enable", "start", "loopback_probe"],
+        "proposed_effects": service_effects,
     }
+    return report
+
+
+def _service_blocker(error: HostError) -> ServiceBlocker:
+    return ServiceBlocker(error.code, str(error), error.next_action)
+
+
+def _read_loopback(port: int, timeout: float) -> tuple[int, bytes]:
+    expires = time.monotonic() + timeout
+    request = (
+        b"GET /_html-publish-health HTTP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Accept-Encoding: identity\r\n"
+        b"Connection: close\r\n\r\n"
+    )
+
+    def remaining() -> float:
+        remaining = expires - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("loopback health deadline expired")
+        return remaining
+
+    with socket.create_connection(("127.0.0.1", port), timeout=remaining()) as connection:
+        connection.settimeout(remaining())
+        connection.sendall(request)
+        response = bytearray()
+        header_end = -1
+        while header_end < 0:
+            connection.settimeout(remaining())
+            chunk = connection.recv(4096)
+            if not chunk:
+                raise OSError("loopback health response ended before its headers")
+            response.extend(chunk)
+            header_end = response.find(b"\r\n\r\n")
+            if header_end < 0 and len(response) > 8192:
+                raise OSError("loopback health headers exceed 8192 bytes")
+        if header_end > 8192:
+            raise OSError("loopback health headers exceed 8192 bytes")
+        raw_headers = bytes(response[:header_end])
+        body = bytearray(response[header_end + 4 : header_end + 8])
+        lines = raw_headers.split(b"\r\n")
+        status_parts = lines[0].split(b" ", 2)
+        if (
+            len(status_parts) < 2
+            or status_parts[0] not in {b"HTTP/1.0", b"HTTP/1.1"}
+            or len(status_parts[1]) != 3
+            or not status_parts[1].isdigit()
+        ):
+            raise OSError("loopback health returned a malformed HTTP status")
+        content_lengths = [
+            value.strip()
+            for line in lines[1:]
+            if b":" in line
+            for name, value in (line.split(b":", 1),)
+            if name.strip().lower() == b"content-length"
+        ]
+        if len(content_lengths) > 1 or (content_lengths and not content_lengths[0].isdigit()):
+            raise OSError("loopback health returned an invalid Content-Length")
+        content_length = int(content_lengths[0]) if content_lengths else None
+        body_limit = min(content_length, 4) if content_length is not None else 4
+        del body[body_limit:]
+        while len(body) < body_limit:
+            connection.settimeout(remaining())
+            chunk = connection.recv(body_limit - len(body))
+            if not chunk:
+                break
+            body.extend(chunk)
+        return int(status_parts[1]), bytes(body)
+
+
+def _check_loopback(port: int) -> None:
+    url = f"http://127.0.0.1:{port}/_html-publish-health"
+    try:
+        status, body = _read_loopback(port, 1)
+        if status != 200 or body != b"ok\n":
+            raise HostError(
+                "health_failed",
+                f"Loopback health response did not match at {url}",
+                "repair_owned_service",
+            )
+    except (TimeoutError, OSError) as error:
+        raise HostError(
+            "health_failed",
+            f"Loopback health failed at {url}: {error}",
+            "repair_owned_service",
+        ) from error
+
+
+def inspect_owned_service(config_path: Path, config: Config, unit_name: str) -> ServiceInspection:
+    selected: dict[str, object] = {
+        "config_path": str(config_path),
+        "unit_name": f"{unit_name}.service",
+    }
+    blockers: list[ServiceBlocker] = []
+    healthy: HealthyOwnedService | None = None
+    manager: dict[str, str] | None = None
+    health = "not_checked"
+    try:
+        if sys.platform != "linux":
+            raise HostError("unsupported_host", "Host route setup requires Linux", "use_linux_host")
+        if not _UNIT_NAME.fullmatch(unit_name):
+            raise HostError(
+                "invalid_unit",
+                "Unit name must be html-publish or html-publish-<lowercase-name>",
+                "select_owned_service",
+            )
+        record_path = (
+            _xdg_path("XDG_STATE_HOME", Path.home() / ".local" / "state")
+            / "html-publish"
+            / "hosts"
+            / f"{unit_name}.json"
+        )
+        unit_path = (
+            _xdg_path("XDG_CONFIG_HOME", Path.home() / ".config")
+            / "systemd"
+            / "user"
+            / f"{unit_name}.service"
+        )
+        for path in (record_path, unit_path):
+            _safe_path(path)
+        executable, environment, _ = _durable_executable()
+        selected.update(
+            {
+                "record_path": str(record_path),
+                "config_fingerprint": _config_fingerprint(config),
+                "package_hash": _package_hash(),
+                "executable": str(executable) if executable else None,
+                "environment": str(environment) if environment else None,
+                "unit_path": str(unit_path),
+            }
+        )
+        if not record_path.exists():
+            manager = _systemd(f"{unit_name}.service")
+            raise HostError(
+                "service_not_owned",
+                f"Owned host record does not exist: {record_path}",
+                "run_host_setup_apply",
+            )
+        if not record_path.is_file() or record_path.stat().st_uid != os.geteuid():
+            raise HostError(
+                "record_collision",
+                f"Host record is not owned by this user: {record_path}",
+                "inspect_service_record",
+            )
+        try:
+            raw_record = json.loads(record_path.read_text())
+        except (OSError, ValueError) as error:
+            raise HostError(
+                "record_corrupt",
+                f"Cannot read host record: {error}",
+                "inspect_service_record",
+            ) from error
+        if not isinstance(raw_record, dict):
+            raise HostError(
+                "record_corrupt", "Host record is not an object", "inspect_service_record"
+            )
+        initial_record = cast(dict[str, object], raw_record)
+        listen_port = initial_record.get("listen_port")
+        if not isinstance(listen_port, int) or isinstance(listen_port, bool):
+            raise HostError(
+                "record_corrupt",
+                "Host record has no valid listen port",
+                "inspect_service_record",
+            )
+        spec, prerequisites = make_spec(config_path, config, unit_name, listen_port)
+        selected.update(
+            {
+                "config_fingerprint": spec.fingerprint,
+                "package_hash": spec.package_hash,
+                "executable": str(spec.executable) if spec.executable else None,
+                "environment": str(spec.environment) if spec.environment else None,
+                "unit_path": str(spec.unit_path),
+                "listen": f"{spec.bind}:{spec.port}",
+            }
+        )
+        observed = observe(spec)
+        manager = observed.manager
+        record = observed.record
+        if record != initial_record:
+            blockers.append(
+                ServiceBlocker(
+                    "service_drift",
+                    "Owned host record changed during service inspection",
+                    "inspect_service_record",
+                )
+            )
+        if record is None:
+            blockers.append(
+                ServiceBlocker(
+                    "service_drift",
+                    "Owned host record disappeared during service inspection",
+                    "inspect_service_record",
+                )
+            )
+            return ServiceInspection(selected, manager, health, tuple(blockers), None)
+        for message in _blockers(spec, observed, prerequisites):
+            blockers.append(ServiceBlocker("service_drift", message, "repair_owned_service"))
+        if spec.unit != observed.unit_bytes or record.get("unit") != spec.unit:
+            blockers.append(
+                ServiceBlocker(
+                    "service_drift",
+                    "Owned unit does not match the selected executable and configuration",
+                    "run_host_setup_apply",
+                )
+            )
+        if record.get("package_hash") != spec.package_hash:
+            blockers.append(
+                ServiceBlocker(
+                    "service_drift",
+                    "Owned host package differs from the selected installed package",
+                    "run_host_setup_apply",
+                )
+            )
+        if record.get("pending") is not None:
+            blockers.append(
+                ServiceBlocker(
+                    "service_pending",
+                    f"Owned host setup has pending step {record.get('pending')}",
+                    "inspect_service_setup",
+                )
+            )
+        if record.get("enabled") is not True or observed.manager.get("UnitFileState") != "enabled":
+            blockers.append(
+                ServiceBlocker(
+                    "service_drift",
+                    "Owned host record and user manager must both show the unit enabled",
+                    "repair_owned_service",
+                )
+            )
+        if observed.manager.get("ActiveState") != "active":
+            blockers.append(
+                ServiceBlocker(
+                    "service_inactive",
+                    "Owned user service is not active",
+                    "repair_owned_service",
+                )
+            )
+        if not blockers:
+            try:
+                _check_loopback(spec.port)
+                health = "passed"
+            except HostError as error:
+                blockers.append(_service_blocker(error))
+                health = "failed"
+        if not blockers:
+            confirmed = observe(spec)
+            if confirmed != observed:
+                blockers.append(
+                    ServiceBlocker(
+                        "service_drift",
+                        "Owned service changed during loopback health inspection",
+                        "inspect_service_state",
+                    )
+                )
+        if not blockers:
+            installation_id = record.get("installation_id")
+            uid = record.get("uid")
+            if (
+                not isinstance(installation_id, str)
+                or not isinstance(uid, int)
+                or isinstance(uid, bool)
+                or spec.executable is None
+                or spec.environment is None
+                or spec.unit is None
+            ):
+                raise HostError(
+                    "record_corrupt",
+                    "Owned host record or selected installation identity is incomplete",
+                    "inspect_service_record",
+                )
+            healthy = HealthyOwnedService(
+                installation_id=installation_id,
+                uid=uid,
+                config_path=spec.config_path,
+                config_fingerprint=spec.fingerprint,
+                executable=spec.executable,
+                environment=spec.environment,
+                package_hash=spec.package_hash,
+                unit_name=spec.unit_name,
+                unit_path=spec.unit_path,
+                unit_digest=hashlib.sha256(spec.unit.encode()).hexdigest(),
+                listen_port=spec.port,
+            )
+    except HostError as error:
+        blockers.append(_service_blocker(error))
+    return ServiceInspection(selected, manager, health, tuple(blockers), healthy)
 
 
 def _write(path: Path, content: str, mode: int) -> None:
@@ -428,17 +751,11 @@ def _probe_loopback(spec: HostSpec) -> None:
                 "health_failed", f"Loopback health did not become ready at {url}: {last_error}"
             )
         try:
-            with urllib.request.urlopen(url, timeout=min(1, remaining)) as response:
-                if response.status != 200 or response.read() != b"ok\n":
-                    raise HostError(
-                        "health_failed", f"Loopback health response did not match at {url}"
-                    )
-                return
-        except urllib.error.HTTPError as error:
-            raise HostError(
-                "health_failed", f"Loopback health returned HTTP {error.code} at {url}"
-            ) from error
-        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            status, body = _read_loopback(spec.port, min(1, remaining))
+            if status != 200 or body != b"ok\n":
+                raise HostError("health_failed", f"Loopback health response did not match at {url}")
+            return
+        except (TimeoutError, OSError) as error:
             last_error = str(error)
         time.sleep(min(0.2, max(0, expires - time.monotonic())))
 
@@ -583,7 +900,7 @@ def apply(spec: HostSpec, prerequisites: list[str]) -> dict[str, object]:
                 "verification": {"loopback": "passed", "private_https": "not_checked"},
                 "observation_after": _systemd(spec.unit_name),
             }
-        except (HostError, OSError, urllib.error.URLError) as error:
+        except (HostError, OSError) as error:
             return {
                 **plan,
                 "outcome": "error",

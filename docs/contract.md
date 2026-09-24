@@ -552,13 +552,49 @@ The host record and user unit live outside the publication archive, runtime, and
 later step reports earlier effects and keeps its record for inspection. Setup attempts for different
 unit names share one user lock.
 
-Generic `host setup` never changes Tailscale. External HTTPS delivery must be configured separately;
-the `--tailscale` setup option is deferred. Loopback health does not verify the configured public URL.
+`host route setup` previews one Tailscale Serve route without changing state. It selects an owned
+service by unit name and requires its exact recorded configuration, package, executable, unit, user
+manager state, and listener to remain current. The service must have no pending setup step and must
+return the exact loopback health response. The route command does not accept an independent port or
+target. It takes the target port from the service ownership record.
+
+The route identity contains the HTTPS host, the HTTPS port, the canonical mount path, and the
+`http://127.0.0.1:<recorded-port>` target. The selected publisher URL must use HTTPS and name the
+authenticated node. An omitted HTTPS port is 443. The mount path is absolute and ends in `/`. Serve
+strips that prefix before proxying to the target.
+
+Route ownership uses a separate unit-keyed record at
+`$XDG_STATE_HOME/html-publish/routes/<unit-basename>.json`, with the usual user state fallback. An
+owned record binds the service installation ID, UID, selected configuration path and fingerprint,
+executable and package identity, unit name, unit path and bytes digest, recorded listener port,
+node ID and DNS name, exact route identity, and loopback target. A pending record adds an attempt ID,
+the exact observed absence before mutation, and a digest of the selected HTTPS port state. Preview
+reads and validates pending and owned records but never creates or changes them.
+
+No record with an absent route and satisfied prerequisites is `planned`. An equal route without the
+matching ownership record is `foreign`. A matching owned record with the exact live route is
+`unchanged`. A pending record is `pending`. Changed binding or a missing or changed owned route is
+`drift`. An overlapping path or port is `collision`. Malformed ownership, failed inspection, and
+unfamiliar Serve state are `unknown`. A node mismatch and enabled or unknown Funnel exposure on the
+selected HTTPS port also block. Each blocked decision has a specific next action and clears proposed
+effects.
+
+Preview reports the selected executable, configuration, service, route identity, node and Serve
+observations, prerequisites, ownership, route decision, blockers, and proposed effects. A `planned`
+preview proposes `route_intent`, `tailscale_serve_route`, and `route_completion`. Preview reports each
+effect as `not_started` and reports private HTTPS as `not_checked`. Future apply reports each effect
+as `not_started`, `completed`, `unchanged`, or `unknown` after it reobserves the selected route.
+Preview invokes only bounded status and health checks. It does not change records, services, routes,
+publications, or receipts.
+
+`host route setup --apply` is reserved for issue #59. It fails with usage exit 2 before configuration
+or external reads. Ordinary `host setup` and `host setup --apply` remain service-only and never
+inspect or change Tailscale. Loopback health does not verify the configured public URL.
 
 Foreground HTTP and simulated systemctl checks do not prove a real service restart. A service claim
-requires a disposable Linux account with a real user manager. Private HTTPS for generic host setup
-remains unverified and requires an authenticated disposable node and a second tailnet client.
-Generic hosting remains an MVP; it is not a production deployment procedure.
+requires a disposable Linux account with a real user manager. The Tailscale preview does not prove
+private HTTPS. That separate proof requires issue #60, an authenticated disposable node, and a
+second tailnet client. Generic hosting remains an MVP; it is not a production deployment procedure.
 
 ## S12. Static Markdown pages
 
