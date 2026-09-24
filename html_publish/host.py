@@ -700,9 +700,24 @@ def inspect_owned_service(config_path: Path, config: Config, unit_name: str) -> 
     return ServiceInspection(selected, manager, health, tuple(blockers), healthy)
 
 
-def _write(path: Path, content: str, mode: int) -> None:
+def _sync_directory(path: Path) -> None:
+    directory_fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def write_host_file(path: Path, content: str, mode: int) -> None:
     _safe_path(path)
+    missing: list[Path] = []
+    ancestor = path.parent
+    while not ancestor.exists():
+        missing.append(ancestor)
+        ancestor = ancestor.parent
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    for created in reversed(missing):
+        _sync_directory(created.parent)
     with tempfile.NamedTemporaryFile(
         mode="w", encoding="utf-8", dir=path.parent, prefix=".html-publish-", delete=False
     ) as file:
@@ -713,12 +728,13 @@ def _write(path: Path, content: str, mode: int) -> None:
             os.fsync(file.fileno())
             os.chmod(temporary, mode)
             os.replace(temporary, path)
+            _sync_directory(path.parent)
         finally:
             temporary.unlink(missing_ok=True)
 
 
 def _save_record(spec: HostSpec, record: dict[str, object]) -> None:
-    _write(spec.record_path, json.dumps(record, sort_keys=True, indent=2) + "\n", 0o600)
+    write_host_file(spec.record_path, json.dumps(record, sort_keys=True, indent=2) + "\n", 0o600)
 
 
 def _require_selected(spec: HostSpec) -> None:
@@ -761,8 +777,13 @@ def _probe_loopback(spec: HostSpec) -> None:
 
 
 @contextmanager
-def _lock(spec: HostSpec) -> Generator[None, None, None]:
-    lock = spec.record_path.parent / ".setup.lock"
+def host_setup_lock() -> Generator[None, None, None]:
+    lock = (
+        _xdg_path("XDG_STATE_HOME", Path.home() / ".local" / "state")
+        / "html-publish"
+        / "hosts"
+        / ".setup.lock"
+    )
     _safe_path(lock)
     lock.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     with lock.open("a+") as file:
@@ -785,7 +806,7 @@ def apply(spec: HostSpec, prerequisites: list[str]) -> dict[str, object]:
             "loopback_probe",
         )
     }
-    with _lock(spec):
+    with host_setup_lock():
         _require_selected(spec)
         plan = preview(spec, prerequisites)
         if plan["blockers"]:
@@ -823,7 +844,7 @@ def apply(spec: HostSpec, prerequisites: list[str]) -> dict[str, object]:
                 record["pending"] = "unit"
                 _save_record(spec, record)
                 if observed.unit_bytes != spec.unit:
-                    _write(spec.unit_path, spec.unit or "", 0o644)
+                    write_host_file(spec.unit_path, spec.unit or "", 0o644)
                     effects["unit"] = "changed"
                 else:
                     effects["unit"] = "unchanged"

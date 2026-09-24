@@ -59,17 +59,23 @@ html-publish --config publisher.json host serve --port 8000
 
 For an installed Linux tool, preview the user service setup before applying it
 (`host setup --apply`). After setup owns and starts a healthy service, inspect its Tailscale Serve
-route separately:
+route. Route setup previews by default; apply requires the explicit `--apply` flag:
 
 ```sh
 html-publish --config publisher.json --json host route setup
+html-publish --config publisher.json --json host route setup --apply
 ```
 
 Route preview rechecks the owned service and its loopback health. It takes the target port from the
 service record, so the route command has no port or target override. The command reports the
-separate route record, route decision, blockers, and proposed effects without changing state.
-`host route setup --apply` is reserved for issue #59. Route preview reports private HTTPS as
-`not_checked`. The controlled `om1` deployment below remains a separate workflow.
+separate route record, route decision, blockers, and proposed effects without changing state. Apply
+rechecks the selected service, configuration, node, route, and Funnel state before it changes one
+scoped Serve path. It writes pending route ownership before mutation and marks the route owned only
+after an exact postcheck. A matching pending attempt can retry while the selected route remains
+absent and its saved HTTPS-port state matches. An equal route after an uncertain command remains
+pending. A verified owned repeat reports `unchanged` without a Serve write. Route setup reports
+private HTTPS as `not_checked`; apply configures the route but does not prove delivery from a second
+tailnet client. The controlled `om1` deployment below remains a separate workflow.
 
 ## Publish one page
 

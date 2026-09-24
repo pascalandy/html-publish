@@ -596,7 +596,7 @@ def _parser(json_version: bool = False) -> Parser:
             "serve reads public pages",
             "setup previews by default",
             "setup --apply changes only owned host resources",
-            "route setup previews Tailscale Serve state",
+            "route setup previews by default; --apply changes one owned Serve path",
         ),
     )
     _globals(host, version)
@@ -639,26 +639,27 @@ def _parser(json_version: bool = False) -> Parser:
     route_command = register_command(
         host_actions,
         "route",
-        "inspect private HTTPS route setup",
+        "preview or apply private HTTPS route setup",
         examples=("html-publish --config publisher.json --json host route setup",),
-        effects=("route setup reads service and Tailscale state only",),
+        effects=("route setup previews by default; --apply changes one owned Serve path",),
     )
     _globals(route_command, version)
     route_actions = route_command.add_subparsers(dest="route_action", required=True)
     route_setup = register_command(
         route_actions,
         "setup",
-        "preview one route for an owned healthy service",
+        "preview or apply one route for an owned healthy service",
         examples=(
             "html-publish --config publisher.json --json host route setup --unit-name html-publish",
+            "html-publish --config publisher.json --json host route setup --apply",
         ),
         effects=(
             "preview reads owned service, node, Serve, and route record state",
-            "--apply is reserved for issue #59",
+            "--apply writes pending ownership, changes one Serve path, then checks the result",
         ),
     )
     route_setup.add_argument(
-        "--apply", action="store_true", help="reserved route mutation for issue #59"
+        "--apply", action="store_true", help="apply the selected owned Tailscale Serve route"
     )
     route_setup.add_argument(
         "--unit-name", default="html-publish", help="owned unit basename (default: html-publish)"
@@ -1456,13 +1457,6 @@ def main(argv: list[str] | None = None) -> int:
 
             path, _ = selected_path("client", parsed.config)
             return receipt.run(parsed, path, started_at)
-        if (
-            parsed.operation == "host"
-            and parsed.host_action == "route"
-            and parsed.route_action == "setup"
-            and parsed.apply
-        ):
-            raise UsageFailure("host route setup --apply is reserved for issue #59")
         config_path, _ = selected_path("publisher", parsed.config)
         if parsed.operation == "host":
             from html_publish.host import HostError, apply, make_spec, preview
@@ -1476,10 +1470,15 @@ def main(argv: list[str] | None = None) -> int:
                         raise UsageFailure("serve port must be between 0 and 65535")
                     return serve(ServerConfig(config.runtime / "public", parsed.bind, parsed.port))
                 if parsed.host_action == "route":
+                    from html_publish.host_route import apply as route_apply
                     from html_publish.host_route import preview as route_preview
 
-                    result = route_preview(config_path, config, parsed.unit_name)
-                    code = 0 if result["outcome"] in {"planned", "unchanged"} else 1
+                    result = (
+                        route_apply(config_path, config, parsed.unit_name)
+                        if parsed.apply
+                        else route_preview(config_path, config, parsed.unit_name)
+                    )
+                    code = 0 if result["outcome"] in {"planned", "applied", "unchanged"} else 1
                     if parsed.json:
                         return emit_json(result, code)
                     print(
