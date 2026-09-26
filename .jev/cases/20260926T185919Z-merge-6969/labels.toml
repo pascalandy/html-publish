@@ -1,0 +1,11 @@
+schema = "jevgate.labels/v1"
+run_id = "20260926T185919Z-merge-6969"
+
+[[labels]]
+id = "L20260926T190002615720Z"
+scope = "gate"
+outcome = "unknown"
+by = "reproduced"
+assesses = "whether the captured change met the gate's requirements, not whether Jev agreed"
+evidence = "setup proof; semantic outcome not reviewed"
+recorded_at = "2026-09-26T19:00:02.615904+00:00"

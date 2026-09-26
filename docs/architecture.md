@@ -248,3 +248,19 @@ transaction framework, journal, daemon, and database.
 ## Verification boundary
 
 Tests drive the real CLI with temporary Git and runtime directories. A controlled loopback HTTP server proves publisher behavior. Installed-executable tests retain controlled command results, status-command logs, source and wheel identity, and before-and-after manifests. They cover service health, route ownership states, Tailscale blockers, and the absence of preview writes. They do not prove Tailscale authorization, private HTTPS delivery, browser freshness, host durability, or production readiness.
+
+## Advisory development review
+
+The vendored `.jev/jevgate.py` owns Jev requests and run evidence. `.jev/config.toml` selects
+`origin/main`, the pinned model, the `just check` prerequisite, and payload exclusions for publisher
+configuration, receipts, archives, and runtime files. The publisher modules do not call this engine.
+
+Follow the [project decision skill](../.agents/skills/jev-decide-html-publish/SKILL.md) for the
+check, application-verification, and advisory-review sequence. `just jev-merge --dry-run` previews
+the selected evidence; `just jev explain <run-id>` retrieves the recorded reasoning. Keep each run
+ID with its review evidence.
+
+`lefthook.yml` passes outgoing ref updates to `scripts/jev_pre_push.py`. The adapter supplies the
+remote destination commit as `--base` for the pushed checked-out HEAD. It leaves the engine's
+verdict visible and always allows the push; the coverage rules live in the
+[behavior contract](contract.md#developer-review-tooling).

@@ -1,0 +1,5 @@
+pre-push:
+  commands:
+    jev-advisory:
+      use_stdin: true
+      run: uv run --no-project python scripts/jev_pre_push.py || echo "jevgate advisory engine error; push allowed"
