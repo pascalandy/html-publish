@@ -1,0 +1,28 @@
+# jevgate project configuration, written by create-a-jev-cli-decision-wrapped-in-a-skill.
+# Precedence: flags, then JEVGATE_* environment variables, then this file, then built-in defaults.
+schema = "jevgate.config/v1"
+
+# A versioned model ID; aliases such as jev-latest are refused as pins.
+model = "jev-1.13.0"
+
+# The branch every change is judged against: `run` judges base..HEAD.
+integration_ref = "origin/main"
+
+# Recorded now for the maintain effort; the create milestone does not use it.
+fix_pattern = "^(🚑️? )?fix(\\(.+\\))?!?:"
+
+# Extends the built-in deny list (.env, keys, certificates, secrets/ folders). It can never shrink it.
+deny_globs = [".github/workflows/**", "publisher.json", "client.json", "**/receipts/**", "**/archive/**", "**/runtime/**"]
+
+[check]
+# The project's own offline check command. `just jev-merge` runs it, or reuses its
+# record for the same clean HEAD, before asking Jev anything.
+command = "just check"
+timeout_s = 3600
+
+[budget]
+bytes_per_token = 3
+max_state_tokens = 30000
+max_requests = 100
+existing_test_bytes = 12000
+

@@ -1,0 +1,32 @@
+schema = "jevgate.pack/v1"
+id = "rules"
+
+[[rules]]
+id = "contract-first"
+text = "A behavior change starts in docs/contract.md"
+source = "AGENTS.md"
+
+[[rules]]
+id = "cli-boundary"
+text = "html_publish/cli.py owns the JSON and command-line boundary"
+source = "AGENTS.md"
+
+[[rules]]
+id = "storage-owner"
+text = "html_publish/store.py is the only publication storage mutation owner"
+source = "AGENTS.md"
+
+[[rules]]
+id = "evidence-boundary"
+text = "Controlled HTTP evidence must remain separate from Tailscale, browser, and production evidence"
+source = "AGENTS.md"
+
+[[rules]]
+id = "mvp-claims"
+text = "Do not describe this MVP as production-ready"
+source = "AGENTS.md"
+
+[[rules]]
+id = "behavioral-proof"
+text = "Prove CLI and HTTP behavior with verify-html-publish before claiming a fix or feature works"
+source = "AGENTS.md"

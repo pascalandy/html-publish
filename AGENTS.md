@@ -3,6 +3,7 @@
 - Treat [docs/contract.md](docs/contract.md) as the behavior contract; a behavior change starts there
 - Read [docs/architecture.md](docs/architecture.md) before changing ownership or state transitions
 - Run `just check` before handing off code changes
+- Follow the [Jev decision skill](.agents/skills/jev-decide-html-publish/SKILL.md) for advisory merge review after checks and application verification; a verdict grants no merge or deploy authority
 - Treat `html_publish/cli.py` as the JSON and command-line boundary
 - Treat `html_publish/store.py` as the only mutation owner
 - Keep controlled HTTP evidence separate from Tailscale, browser, and production evidence

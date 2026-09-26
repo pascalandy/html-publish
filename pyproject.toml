@@ -33,6 +33,7 @@ typeCheckingMode = "strict"
 include = ["html_publish", "tests"]
 
 [tool.ruff]
+extend-exclude = [".jev"]
 target-version = "py311"
 line-length = 100
 

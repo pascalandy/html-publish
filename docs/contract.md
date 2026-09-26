@@ -669,6 +669,19 @@ identities, and results, history, restore, remote reports, and Markdown-aware re
 Rendering or mapping failure returns before any archive or runtime publication mutation, leaving
 the active page unchanged.
 
+## Developer review tooling
+
+`just check` runs local lint, type checks, and tests without TypeSafe traffic. `just jev-merge`
+is a separate advisory review: it runs that check command, or reuses its record for the same clean
+HEAD, before asking Jev. A dirty tree yields insufficient evidence. A Jev verdict grants no merge,
+deployment, or publication authority. The [project decision skill](../.agents/skills/jev-decide-html-publish/SKILL.md)
+defines how to inspect verdicts, record outcomes, and upgrade the vendored engine.
+
+The optional Lefthook pre-push hook judges only a pushed checked-out HEAD against the outgoing
+remote destination commit when that commit is available locally. A first push, missing base, or
+other ref reports insufficient coverage. Every verdict and engine error allows the push. Enabling
+the hook is a local installation choice; it is not part of `just check`.
+
 ## Technical references
 
 These describe primitives, not evidence that om1 passes the gates:

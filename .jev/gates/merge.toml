@@ -1,0 +1,19 @@
+schema = "jevgate.gate/v1"
+id = "merge"
+question = "Is this PR ready to merge into main?"
+preconditions = ["check_green", "no_conflict", "no_conflict_markers"]
+collectors = ["files", "groups", "claims", "facts", "existing_tests"]
+packs = ["merge", "rules"]
+
+[help]
+summary = """
+Code checks the preconditions first: the check command is green on this exact
+clean HEAD, the branch merges into its base without conflicts, and no conflict
+markers were added. Only then does Jev answer narrow questions: one request for
+the author text and one per module group, each with its tests. A verdict is
+advisory; pass never authorizes the merge.
+"""
+examples = [
+    "just jev-merge",
+    "just jev-merge --dry-run",
+]
