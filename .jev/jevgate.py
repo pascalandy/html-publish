@@ -3,8 +3,8 @@
 # requires-python = ">=3.11"
 # dependencies = ["typesafe-sdk==0.7.1"]
 # ///
-# jevgate-version: 0.1.0
-# jevgate-hash: sha256:b6cd9d0e6c0826516c7c355573b8a7505e94a738f6ab3f751b8d65c84ff6ead0
+# jevgate-version: 0.1.1
+# jevgate-hash: sha256:2a81c95904d3768fd18c0e2b21c4d5bd3fa8420d3133bb88ca5a5e5e941caf64
 """jevgate: advisory Jev decision gates for one project.
 
 Code collects the evidence, Jev answers typed questions about it, and one verdict
@@ -387,9 +387,11 @@ usage: jevgate doctor [--online]
 Check the runtime and pinned SDK, the project config and gate packs, the
 collectors (git, ignore rules, secret scanner), which key source works (never
 its value), the [privacy] permission and terms, and the engine version, hash,
-and local-edit status. --online also lists TypeSafe's models, confirms the pin
-is served, and reports when jev-latest no longer matches the pin. Without
---online it makes no network call.
+and local-edit status. --online adds an authenticated GET /v1/models: any
+successful listing passes and shows the listed names, a rejected key fails as
+credentials, and any other failure as service. The listing never judges the
+pin; every run checks the model that answered. Without --online it makes no
+network call.
 
 examples:
   jevgate doctor
@@ -4467,29 +4469,6 @@ def sdk_pin() -> str | None:
     return match.group(1) if match else None
 
 
-def alias_target(models: list[dict[str, str]], alias: str = "jev-latest") -> str | None:
-    """Work out which versioned model an alias serves from the model listing."""
-    versioned = [model for model in models if VERSIONED_MODEL.match(model["name"])]
-    entry = next((model for model in models if model["name"] == alias), None)
-    if entry is None:
-        return None
-    named = re.findall(r"[a-z][a-z0-9-]*-\d+\.\d+\.\d+", entry.get("description", ""))
-    if named:
-        return named[0]
-    same_day = [
-        model["name"]
-        for model in versioned
-        if model.get("release_date") == entry.get("release_date")
-    ]
-    if len(same_day) == 1:
-        return same_day[0]
-
-    def version(name: str) -> tuple[int, ...]:
-        return tuple(int(part) for part in name.rsplit("-", 1)[1].split("."))
-
-    return max((model["name"] for model in versioned), key=version, default=None)
-
-
 def cmd_doctor(args: argparse.Namespace, output: Output) -> int:
     checks: list[dict[str, Any]] = []
 
@@ -4699,14 +4678,7 @@ def cmd_doctor(args: argparse.Namespace, output: Output) -> int:
             try:
                 client = open_client(key, model)
                 try:
-                    listing = [
-                        {
-                            "name": item.name,
-                            "description": item.description,
-                            "release_date": item.release_date,
-                        }
-                        for item in client.models.list().models
-                    ]
+                    names = [item.name for item in client.models.list().models]
                 finally:
                     client.close()
             except Exception as error:
@@ -4715,34 +4687,13 @@ def cmd_doctor(args: argparse.Namespace, output: Output) -> int:
                     "models", "fail", failure.message, failure.remediation, failure.kind
                 )
             else:
-                names = [item["name"] for item in listing]
-                if model not in names:
-                    add(
-                        "models",
-                        "fail",
-                        f"the pin {model} is not served; available: {', '.join(names)}",
-                        "pin a served versioned model after review",
-                        "service",
-                    )
-                else:
-                    add("models", "ok", f"{model} is served")
-                target = alias_target(listing)
-                if target is None:
-                    add(
-                        "alias",
-                        "warn",
-                        "jev-latest is not listed",
-                        "nothing to compare",
-                    )
-                elif target != model:
-                    add(
-                        "alias",
-                        "warn",
-                        f"jev-latest now serves {target}; the pin stays {model}",
-                        "keep the pin until the maintain effort evaluates the new model",
-                    )
-                else:
-                    add("alias", "ok", f"jev-latest still serves the pin {model}")
+                # The listing names aliases only, so it cannot judge the pin; every
+                # run fails as service when a model other than the pin answers.
+                add(
+                    "models",
+                    "ok",
+                    f"authenticated listing: {', '.join(names) or 'no models'}",
+                )
 
     failed = [check for check in checks if check["status"] == "fail"]
     result: dict[str, Any] = {
