@@ -50,8 +50,8 @@ Questions and thresholds change only in a requested maintenance session, through
 
 ## Setup and upgrades
 
-The project configuration records Pascal's permission to send selected evidence and commit admitted cases. Preview it with `just jev-merge --dry-run`. Keep publication archives, runtime files, receipts, and credentials outside the payload.
+The project configuration records Pascal's permission to send selected evidence and commit admitted cases. Preview it with `just jev-merge --dry-run`.
 
-Use `lefthook install` to enable the local advisory pre-push hook. It judges a pushed checked-out HEAD against the remote destination commit when that commit is available locally. Other refs and missing bases report insufficient coverage. Every verdict or engine error allows the push.
+Use `lefthook install` to enable the local advisory pre-push hook. Its coverage rules live in the [behavior contract](../../../docs/contract.md#developer-review-tooling).
 
-To upgrade, invoke `create-a-jev-cli-decision-wrapped-in-a-skill`. It compares the canonical and vendored engines, shows local changes, and requests acceptance before replacing the engine and lockfile. Project config, questions, cases, and runs stay in place.
+To upgrade, invoke `create-a-jev-cli-decision-wrapped-in-a-skill`.
