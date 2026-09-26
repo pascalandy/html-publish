@@ -26,3 +26,12 @@ max_state_tokens = 30000
 max_requests = 100
 existing_test_bytes = 12000
 
+[privacy]
+# Pascal's 2026-09-26 implementation request explicitly approved both settings for
+# pascalandy/html-publish. Recorded after showing the dry-run payload and the
+# engine's terms summary in the Codex/T3 Code issue-23 implementation session.
+send_code = true
+commit_cases = true
+approved_by = "Pascal, explicit issue-23 implementation request in Codex/T3 Code"
+approved_on = 2026-09-26
+terms = "typesafe-2026-09-26"
