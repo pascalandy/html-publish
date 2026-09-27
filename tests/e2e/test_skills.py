@@ -9,8 +9,6 @@ import unittest
 from pathlib import Path
 from typing import Any, cast
 
-from html_publish import __version__
-
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -27,14 +25,15 @@ def run_cli(*arguments: str) -> subprocess.CompletedProcess[str]:
 class SkillsCliTest(unittest.TestCase):
     def test_get_recovery_can_emit_json(self) -> None:
         result = run_cli("skills", "get", "recovery", "--json")
+        version = json.loads(run_cli("--version", "--json").stdout)["version"]
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(result.stderr, "")
         payload = cast(dict[str, Any], json.loads(result.stdout))
         self.assertEqual(payload["schema_version"], 1)
-        self.assertEqual(payload["version"], __version__)
+        self.assertEqual(payload["version"], version)
         self.assertEqual(payload["name"], "recovery")
-        self.assertIn(f"html-publish {__version__}", str(payload["content"]))
+        self.assertIn(f"html-publish {version}", str(payload["content"]))
 
     def test_list_does_not_read_configuration(self) -> None:
         result = run_cli("skills", "list", "--config", "/nonexistent/x.json")
