@@ -23,7 +23,7 @@ listeners, process tokens, full state, and browser accessibility data are omitte
 The original records remain under
 `/home/pascal/.local/state/html-publish-probe-evidence/issue2-percent-path-f911278-638f9a68`.
 `coordinator-provenance.md` records the browser actions and second-device commands.
-The pinned [probe](../../../scripts/probe_om1_issue2.py) invokes and checks the real
+The pinned [probe](https://github.com/pascalandy/html-publish/blob/fc924760b579f4e56601184e964a1c5f1f1ba1c4/scripts/probe_om1_issue2.py) invokes and checks the real
 CLI. Individual nested CLI JSON results were not retained. The operation results
 and HTTP checkpoints were retained.
 
