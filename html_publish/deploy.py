@@ -5,6 +5,7 @@ import contextlib
 import hashlib
 import json
 import os
+import shutil
 import signal
 import stat
 import subprocess
@@ -334,11 +335,12 @@ def _unit_content(layout: Layout) -> str:
     )
 
 
-def _release_name(wheel: Path) -> str:
+def _release_name(wheel: Path, requirements: Path) -> str:
     digest = hashlib.sha256()
-    with wheel.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
+    for path in (wheel, requirements):
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
     return f"sha256-{digest.hexdigest()}"
 
 
@@ -352,8 +354,8 @@ def _build_wheel(source: Path, runner: Runner, output: Path) -> Path:
     return wheels[0]
 
 
-def _install_release(layout: Layout, wheel: Path, runner: Runner) -> Path:
-    release = layout.releases / _release_name(wheel)
+def _install_release(layout: Layout, wheel: Path, requirements: Path, runner: Runner) -> Path:
+    release = layout.releases / _release_name(wheel, requirements)
     marker = release / ".ready"
     if marker.is_file():
         return release
@@ -362,7 +364,21 @@ def _install_release(layout: Layout, wheel: Path, runner: Runner) -> Path:
     release.mkdir(parents=True)
     python = release / ".venv" / "bin" / "python"
     try:
+        release_requirements = release / "requirements.txt"
+        shutil.copyfile(requirements, release_requirements)
         runner(("uv", "venv", "--python", sys.executable, str(release / ".venv")))
+        runner(
+            (
+                "uv",
+                "pip",
+                "install",
+                "--python",
+                str(python),
+                "--require-hashes",
+                "--requirements",
+                str(release_requirements),
+            )
+        )
         runner(
             (
                 "uv",
@@ -374,9 +390,9 @@ def _install_release(layout: Layout, wheel: Path, runner: Runner) -> Path:
                 str(wheel),
             )
         )
-        runner((str(python), "-m", "html_publish", "--help"))
-        runner((str(python), "-m", "html_publish.deploy", "--help"))
-        _atomic_write(marker, _release_name(wheel) + "\n", 0o644)
+        runner((str(release / ".venv" / "bin" / "html-publish"), "--help"))
+        runner((str(release / ".venv" / "bin" / "html-publish-deploy"), "--help"))
+        _atomic_write(marker, release.name + "\n", 0o644)
     except Exception as error:
         raise DeployError(f"Release preparation failed; retained {release}: {error}") from error
     return release
@@ -665,8 +681,26 @@ def install(
     layout.releases.mkdir(exist_ok=True)
 
     with tempfile.TemporaryDirectory(prefix="html-publish-wheel-") as directory:
-        wheel = _build_wheel(source.resolve(), runner, Path(directory))
-        release = _install_release(layout, wheel, runner)
+        resolved_source = source.resolve()
+        wheel = _build_wheel(resolved_source, runner, Path(directory))
+        requirements = Path(directory) / "requirements.txt"
+        runner(
+            (
+                "uv",
+                "export",
+                "--locked",
+                "--no-dev",
+                "--no-emit-project",
+                "--no-header",
+                "--format",
+                "requirements-txt",
+                "--project",
+                str(resolved_source),
+                "--output-file",
+                str(requirements),
+            )
+        )
+        release = _install_release(layout, wheel, requirements, runner)
 
     if _installation_snapshot(layout, runner) != snapshot:
         raise DeployError("Installation state changed during release preparation")
