@@ -22,6 +22,11 @@ RULE_SCRIPTS = (
     "check_test_only_code.py",
     "check_e2e_artifacts.py",
 )
+# A Git hook exports GIT_DIR and related variables. A fixture command that inherited them would
+# act on the repository running the hook, not on the throwaway one, so none of them pass through
+FIXTURE_ENVIRONMENT = {
+    key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+}
 
 CLEAN_TREE = {
     "pyproject.toml": '[project.scripts]\nhtml-publish = "html_publish.cli:main"\n',
@@ -97,6 +102,7 @@ class RuleScriptTest(unittest.TestCase):
         return subprocess.run(
             [sys.executable, f"scripts/{name}.py", *args],
             cwd=root,
+            env=FIXTURE_ENVIRONMENT,
             capture_output=True,
             text=True,
             timeout=60,
@@ -348,8 +354,15 @@ class RuleScriptTest(unittest.TestCase):
                 "fixture",
             ],
         ):
-            subprocess.run(command, cwd=root, check=True, capture_output=True, timeout=30)
-        environment = {**os.environ, "HTML_PUBLISH_E2E_ROOT": str(artifacts_root)}
+            subprocess.run(
+                command,
+                cwd=root,
+                env=FIXTURE_ENVIRONMENT,
+                check=True,
+                capture_output=True,
+                timeout=30,
+            )
+        environment = {**FIXTURE_ENVIRONMENT, "HTML_PUBLISH_E2E_ROOT": str(artifacts_root)}
 
         def record(run_id: str) -> subprocess.CompletedProcess[str]:
             return subprocess.run(
@@ -376,7 +389,12 @@ class RuleScriptTest(unittest.TestCase):
         run = artifacts_root / "e2e-good" / "artifacts"
         manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
         head = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True
+            ["git", "rev-parse", "HEAD"],
+            cwd=root,
+            env=FIXTURE_ENVIRONMENT,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout.strip()
         self.assertEqual(manifest["commit"], head)
         [test] = manifest["tests"]
