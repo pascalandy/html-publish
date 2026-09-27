@@ -11,12 +11,11 @@ import tempfile
 import time
 import unittest
 import urllib.error
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 from typing import cast
 from unittest import mock
 
-import html_publish.deploy as deploy_module
 from html_publish.deploy import (
     CommandResult,
     DeployError,
@@ -24,7 +23,9 @@ from html_publish.deploy import (
     health,
     install,
     main,
+    probe_health,
     rollback,
+    run_command,
 )
 
 
@@ -279,11 +280,7 @@ class DeploymentTest(unittest.TestCase):
             mock.patch("html_publish.deploy.urllib.request.urlopen", side_effect=open_url),
             mock.patch("html_publish.deploy.time.sleep") as sleep,
         ):
-            probe = cast(
-                Callable[[str], tuple[bool, str]],
-                deploy_module.__dict__["_probe"],
-            )
-            result = probe("http://127.0.0.1:4177/_html-publish-health")
+            result = probe_health("http://127.0.0.1:4177/_html-publish-health")
 
         self.assertEqual(result, (True, "HTTP 200"))
         self.assertEqual(len(timeouts), 3)
@@ -474,12 +471,10 @@ class DeploymentTest(unittest.TestCase):
         self.assertFalse(self.layout.current.is_symlink())
 
     def test_installed_release_runs_outside_the_source_checkout(self) -> None:
-        run = cast(Callable[..., CommandResult], deploy_module.__dict__["_run"])
-
         def real_release(argv: Sequence[str]) -> CommandResult:
             if argv[0] in {"systemctl", "tailscale"}:
                 return self.runner(argv)
-            return run(argv)
+            return run_command(argv)
 
         result = install(
             self.layout, Path(__file__).resolve().parents[2], real_release, successful_probe
@@ -513,7 +508,6 @@ class DeploymentTest(unittest.TestCase):
         self.assertFalse(any(call[-1] == "off" for call in self.runner.calls))
 
     def test_command_deadline_and_normal_exit_kill_descendants(self) -> None:
-        run = cast(Callable[..., CommandResult], deploy_module.__dict__["_run"])
         for wait in (True, False):
             with self.subTest(wait=wait):
                 identity = self.root / f"child-{wait}"
@@ -533,9 +527,9 @@ class DeploymentTest(unittest.TestCase):
                 try:
                     if wait:
                         with self.assertRaisesRegex(DeployError, "timed out"):
-                            run((sys.executable, "-c", parent_code), timeout_seconds=0.5)
+                            run_command((sys.executable, "-c", parent_code), timeout_seconds=0.5)
                     else:
-                        result = run((sys.executable, "-c", parent_code), timeout_seconds=2)
+                        result = run_command((sys.executable, "-c", parent_code), timeout_seconds=2)
                         self.assertEqual(result.stdout, "parent exited\n")
                     self.assertLess(time.monotonic() - started, 5)
                     pid = int(identity.read_text())

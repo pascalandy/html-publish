@@ -22,8 +22,6 @@ from unittest import mock
 
 from html_publish import receipt
 
-# pyright: reportPrivateUsage=false
-
 SCRIPT = Path(receipt.__file__).resolve()
 
 FAKE_PUBLISHER = r"""#!/usr/bin/env python3
@@ -126,6 +124,7 @@ call = {
     "requested_revision": requested,
     "requested_record_revision": requested_record,
     "source_digest": digest,
+    "argv": arguments,
 }
 with calls_path.open("a") as stream:
     stream.write(json.dumps(call) + "\n")
@@ -1379,7 +1378,7 @@ class HelperCliTest(ReceiptFixture):
                     "target": {"id": "om1", "base_url": self.target},
                     "execution": {
                         "kind": "remote",
-                        "command": ["/stable/html-publish-remote"],
+                        "command": [sys.executable, str(self.fake)],
                         "host": "pascal@om1.example",
                         "remote_executable": "/stable/html-publish",
                         "remote_config": "/stable/publisher.json",
@@ -1389,22 +1388,47 @@ class HelperCliTest(ReceiptFixture):
                 }
             )
         )
-        config = receipt.load_config(remote_config)
+        source = self.root / "remote.html"
+        source.write_text("remote")
 
-        command = receipt._executor_command(
-            config,
-            "publish",
-            "page",
-            Path("/tmp/snapshot"),
-            "revision-a",
-            "attempt-a",
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--config",
+                str(remote_config),
+                "publish",
+                str(source),
+                "--new",
+                "page",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
         )
 
-        self.assertEqual(command[0], "/stable/html-publish-remote")
-        self.assertIn("pascal@om1.example", command)
-        self.assertIn("/stable/html-publish", command)
-        self.assertIn("/tmp/snapshot", command)
-        self.assertNotIn("ssh", command)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        [call] = self.calls()
+        argv = cast(list[str], call["argv"])
+        self.assertEqual(
+            argv[:12],
+            [
+                "--host",
+                "pascal@om1.example",
+                "--target",
+                self.target,
+                "--remote-executable",
+                "/stable/html-publish",
+                "--remote-config",
+                "/stable/publisher.json",
+                "--incoming-root",
+                "/stable/incoming",
+                "--connect-timeout",
+                "7",
+            ],
+        )
+        self.assertEqual(argv[12:15], ["publish", "--name", "page"])
+        self.assertNotIn("ssh", argv)
 
 
 class PersistenceRecoveryTest(ReceiptFixture):
@@ -1420,10 +1444,9 @@ class PersistenceRecoveryTest(ReceiptFixture):
 
         self.assertEqual(code, 0)
         self.assertEqual(payload["outcome"], "completed")
-        self.assertIsNotNone(payload["cleanup_pending"])
-        state = receipt.load_receipt(receipt_dir)
-        classification = receipt.Classification(state, "completed", "cleanup")
-        self.assertIsNone(receipt._cleanup_completed_attempt(receipt_dir, classification))
+        leftover = Path(str(payload["cleanup_pending"]))
+        self.assertEqual(leftover.parent, receipt_dir)
+        self.assertTrue(leftover.is_dir())
 
     def test_result_save_failure_still_reports_bounded_host_facts(self) -> None:
         source = self.root / "result-save.html"
@@ -1450,7 +1473,7 @@ class PersistenceRecoveryTest(ReceiptFixture):
         source = self.root / "report.html"
         source.write_text("recover")
         receipt_dir = Path(str(source) + ".publish")
-        real_sync = receipt._sync_directory
+        real_sync = receipt._sync_directory  # pyright: ignore[reportPrivateUsage]
         failed = False
 
         def fail_final_receipt_sync(path: Path) -> None:
