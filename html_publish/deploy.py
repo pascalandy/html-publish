@@ -113,7 +113,7 @@ class InstallationSnapshot:
     unit_file_state: str
 
 
-def _run(
+def run_command(
     argv: Sequence[str],
     *,
     timeout_seconds: float = COMMAND_TIMEOUT_SECONDS,
@@ -158,7 +158,7 @@ def _run(
     return CommandResult(stdout, stderr)
 
 
-def _probe(url: str) -> tuple[bool, str]:
+def probe_health(url: str) -> tuple[bool, str]:
     request = urllib.request.Request(
         url,
         headers={"Accept-Encoding": "identity", "Cache-Control": "no-cache"},
@@ -501,7 +501,9 @@ def _release_id(path: Path | None, releases: Path) -> str | None:
         return None
 
 
-def health(layout: Layout, runner: Runner = _run, probe: Probe = _probe) -> dict[str, object]:
+def health(
+    layout: Layout, runner: Runner = run_command, probe: Probe = probe_health
+) -> dict[str, object]:
     current_target = _symlink_target(layout.current)
     release = _release_id(current_target, layout.releases)
     checks = [
@@ -670,8 +672,8 @@ def _raise_after_recovery(error: Exception, recovery_errors: Sequence[str]) -> N
 def install(
     layout: Layout,
     source: Path,
-    runner: Runner = _run,
-    probe: Probe = _probe,
+    runner: Runner = run_command,
+    probe: Probe = probe_health,
 ) -> dict[str, object]:
     config_needed = _preflight_config(layout)
     original_route = _preflight_route(layout, runner)
@@ -765,8 +767,8 @@ def install(
 def rollback(
     layout: Layout,
     release_id: str | None,
-    runner: Runner = _run,
-    probe: Probe = _probe,
+    runner: Runner = run_command,
+    probe: Probe = probe_health,
 ) -> dict[str, object]:
     original = _pointer_pair(layout)
     original_current = _symlink_target(layout.current)
@@ -836,8 +838,8 @@ def _parser() -> argparse.ArgumentParser:
 def main(
     argv: Sequence[str] | None = None,
     *,
-    runner: Runner = _run,
-    probe: Probe = _probe,
+    runner: Runner = run_command,
+    probe: Probe = probe_health,
 ) -> int:
     arguments = _parser().parse_args(argv)
     try:

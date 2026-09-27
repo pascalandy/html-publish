@@ -26,11 +26,11 @@ changes one owned Tailscale Serve path and records the result.
 Preconditions:
 
 - Use an isolated installed wheel. The host instance script still launches the legacy server, so
-  the installed host command receives its own process in `tests.test_host`.
+  the installed host command receives its own process in `tests.e2e.test_host`.
 - Keep the service proof on a dedicated Ubuntu runner account. Do not run it on `om1`.
 
 - **Foreground, service preview, route preview, and route apply.** Run
-  `uv run python -m unittest -v tests.test_host`. It builds a wheel from the current source,
+  `uv run python -m unittest -v tests.e2e.test_host`. It builds a wheel from the current source,
   installs it as an isolated uv tool, serves first and updated page bytes through `host serve`,
   and checks SIGTERM exit. The command also drives route preview and explicit apply through the
   installed CLI with controlled systemctl and Tailscale fixtures plus a delayed listener.

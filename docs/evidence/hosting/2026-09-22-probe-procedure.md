@@ -6,7 +6,7 @@ Run the script locally on `om1` from the clean, independently reviewed checkout.
 
 ## Review and preflight
 
-Review [the probe script](../../../scripts/probe_om1_issue2.py) before the first host mutation. Then choose a fresh evidence directory. The command rejects an existing directory
+Review [the probe script](https://github.com/pascalandy/html-publish/blob/fc924760b579f4e56601184e964a1c5f1f1ba1c4/scripts/probe_om1_issue2.py) before the first host mutation. Then choose a fresh evidence directory. The command rejects an existing directory
 
 ```sh
 PROBE_SOURCE=/home/pascal/.t3/worktrees/html-publish/release-host-proof

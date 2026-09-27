@@ -12,7 +12,7 @@ import unittest
 import urllib.parse
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 STARTUP_SECONDS = 15
 
 
@@ -115,13 +115,14 @@ class PublicationServerTest(unittest.TestCase):
         future_runtime = Path(self.temporary.name) / "future-runtime"
         future_public = future_runtime / "public"
         future_port = self._unused_port()
-        entry = (
+        no_reverse_dns = Path(self.temporary.name) / "no-reverse-dns"
+        no_reverse_dns.mkdir()
+        (no_reverse_dns / "sitecustomize.py").write_text(
             "import socket\n"
-            "from html_publish.server import main\n"
             "def reject(_host):\n"
             "    raise RuntimeError('reverse DNS attempted')\n"
-            "socket.getfqdn = reject\n"
-            "raise SystemExit(main())\n"
+            "socket.getfqdn = reject\n",
+            encoding="utf-8",
         )
         future_log_path = Path(self.temporary.name) / "future-server.log"
         future_log = future_log_path.open("w", encoding="utf-8")
@@ -129,14 +130,15 @@ class PublicationServerTest(unittest.TestCase):
         process = subprocess.Popen(
             [
                 sys.executable,
-                "-c",
-                entry,
+                "-m",
+                "html_publish.server",
                 "--directory",
                 str(future_public),
                 "--port",
                 str(future_port),
             ],
             cwd=ROOT,
+            env={**os.environ, "PYTHONPATH": str(no_reverse_dns)},
             stdout=future_log,
             stderr=subprocess.STDOUT,
         )

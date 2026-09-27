@@ -10,7 +10,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, cast
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 INSTANCE = ROOT / ".agents/skills/verify-html-publish/scripts/instance.sh"
 
 

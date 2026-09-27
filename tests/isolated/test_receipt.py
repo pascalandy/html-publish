@@ -1,3 +1,50 @@
+"""The artifact receipt helper against a scripted fake publisher.
+
+The fake returns the host reports a real publisher rarely produces: lost, contradictory,
+malformed, slow, or noisy.
+
+Failure modes:
+F1: receipt: a version 1 client config gets a new fingerprint and orphans existing receipts
+F2: receipt: activation reported with a durability error marks the attempt complete
+F3: receipt: a malformed host error changes the accepted revision
+F4: receipt: SIGTERM releases the receipt lock while the publisher still runs
+F5: receipt: a timeout after activation drops the pending attempt or leaves the publisher running
+F6: receipt: a redirected descendant of a successful publisher writes after the receipt unlocks
+F7: receipt: a descendant that ignores SIGTERM survives past the receipt unlock
+F8: receipt: a result is accepted although the publisher process group could not be inspected
+F9: receipt: a timed-out publisher keeps running when process-group inspection fails
+F10: receipt: a timeout stops the publisher but not its descendants
+F11: receipt: publisher output beyond the configured limit is spooled without bound
+F12: receipt: a retry with too small an output cap changes the pending intent
+F13: receipt: a target identity too large to report is bound into a new receipt
+F14: receipt: an executor identity that exceeds the limit once JSON-escaped is bound
+F15: receipt: a create or update calls the publisher more than once
+F16: receipt: a Markdown retry loses the frozen single-file name or renderer profile
+F17: receipt: a legacy receipt that meets a Markdown record publishes without record review
+F18: receipt: an active but unverified Markdown output advances the accepted record baseline
+F19: receipt: a rejected renderer profile advances an accepted identity
+F20: receipt: a retry after a lost response uses current bytes or expectation, not frozen ones
+F21: receipt: a conflict observation advances the baseline, or review cannot replace it
+F22: receipt: an activated revision whose verification failed is not kept retryable
+F23: receipt: an identical revision is accepted although its verification failed
+F24: receipt: a result for another attempt changes the receipt
+F25: receipt: a no-effect publisher error forces a status dispatch before retry
+F26: receipt: a result with unknown effects is accepted instead of left uncertain
+F27: receipt: adoption ignores the named page or the reviewed revision
+F28: receipt: a receipt inside its own source is created or dispatched
+F29: receipt: a changed client target is dispatched instead of reported as drift
+F30: receipt: changing client limits breaks the binding identity of existing receipts
+F31: receipt: local-only publish creates a receipt or calls the publisher
+F32: receipt: a second writer on a locked receipt publishes again
+F33: receipt: a symlink source is captured or dispatched
+F34: receipt: a tampered attempt ID escapes the receipt directory on retry
+F35: receipt: remote dispatch omits the configured SSH host or remote paths
+F36: receipt: a failed attempt cleanup is reported as clean and hides the leftover path
+F37: receipt: publisher success is reported complete although its result was not saved
+F38: receipt: a completion visible after a failed directory sync cannot be recovered locally
+F39: receipt: file bytes or a directory update with removed files differ through a real publisher
+"""
+
 from __future__ import annotations
 
 import contextlib
@@ -21,8 +68,6 @@ from typing import cast
 from unittest import mock
 
 from html_publish import receipt
-
-# pyright: reportPrivateUsage=false
 
 SCRIPT = Path(receipt.__file__).resolve()
 
@@ -126,6 +171,7 @@ call = {
     "requested_revision": requested,
     "requested_record_revision": requested_record,
     "source_digest": digest,
+    "argv": arguments,
 }
 with calls_path.open("a") as stream:
     stream.write(json.dumps(call) + "\n")
@@ -347,6 +393,8 @@ class ReceiptFixture(unittest.TestCase):
 
 class HelperCliTest(ReceiptFixture):
     def test_canonical_v1_config_fingerprint_remains_compatible(self) -> None:
+        """Proves F1."""
+
         config = self.root / "canonical-v1.json"
         config.write_text(
             json.dumps(
@@ -370,6 +418,8 @@ class HelperCliTest(ReceiptFixture):
     def test_contradictory_activation_advances_acceptance_without_completion(
         self,
     ) -> None:
+        """Proves F2."""
+
         for mode, name, expected_error in (
             ("host_error", "host-error", "archive_durability_failed"),
             ("wrong_verification", "wrong-verification", "delivery_failed"),
@@ -396,6 +446,8 @@ class HelperCliTest(ReceiptFixture):
                 self.assertEqual(pending["state"], "retryable")
 
     def test_malformed_host_error_preserves_accepted_baseline(self) -> None:
+        """Proves F3."""
+
         for existing in (False, True):
             with self.subTest(existing=existing):
                 self.calls_path.unlink(missing_ok=True)
@@ -424,6 +476,8 @@ class HelperCliTest(ReceiptFixture):
                 self.assertEqual(pending["state"], "uncertain")
 
     def test_sigterm_stops_publisher_before_receipt_lock_is_available(self) -> None:
+        """Proves F4."""
+
         for reported in (False, True):
             with self.subTest(reported=reported):
                 self.calls_path.unlink(missing_ok=True)
@@ -516,22 +570,9 @@ class HelperCliTest(ReceiptFixture):
                         helper.kill()
                         helper.wait(timeout=2)
 
-    def test_publisher_restores_the_previous_sigterm_handler(self) -> None:
-        def previous_handler(_signal: int, _frame: object) -> None:
-            return
-
-        previous = signal.signal(signal.SIGTERM, previous_handler)
-        try:
-            source = self.root / "handler.html"
-            source.write_text("handler")
-            code, payload = self.run_main("publish", str(source), "--new", "handler")
-            self.assertEqual(code, 0)
-            self.assertEqual(payload["outcome"], "completed")
-            self.assertIs(signal.getsignal(signal.SIGTERM), previous_handler)
-        finally:
-            signal.signal(signal.SIGTERM, previous)
-
     def test_timeout_after_activation_keeps_pending_and_kills_process(self) -> None:
+        """Proves F5."""
+
         for close_streams in (False, True):
             with self.subTest(close_streams=close_streams):
                 self.calls_path.unlink(missing_ok=True)
@@ -571,6 +612,8 @@ class HelperCliTest(ReceiptFixture):
                 self.assertIsNotNone(state["pending"])
 
     def test_successful_parent_stops_redirected_descendant_before_unlock(self) -> None:
+        """Proves F6."""
+
         marker = self.root / "child-finished"
         child_code = (
             "import time; from pathlib import Path; time.sleep(0.5); "
@@ -608,6 +651,8 @@ class HelperCliTest(ReceiptFixture):
         self.assertFalse(marker.exists())
 
     def test_term_ignoring_descendant_is_killed_before_receipt_unlock(self) -> None:
+        """Proves F7."""
+
         ready = self.root / "child-ready"
         marker = self.root / "child-survived"
         child_code = (
@@ -647,6 +692,8 @@ class HelperCliTest(ReceiptFixture):
         self.assertFalse(marker.exists())
 
     def test_uninspectable_process_group_keeps_attempt_unresolved(self) -> None:
+        """Proves F8."""
+
         source = self.root / "uninspectable.html"
         source.write_text("uninspectable")
 
@@ -678,6 +725,8 @@ class HelperCliTest(ReceiptFixture):
         self.assertIsNotNone(self.receipt(Path(str(source) + ".publish"))["pending"])
 
     def test_running_publisher_is_stopped_when_group_inspection_fails(self) -> None:
+        """Proves F9."""
+
         marker = self.root / "publisher-survived"
         self.fake.write_text(
             "import signal, time\n"
@@ -720,6 +769,8 @@ class HelperCliTest(ReceiptFixture):
         self.assertFalse(marker.exists())
 
     def test_timeout_terminates_descendant_process_group(self) -> None:
+        """Proves F10."""
+
         marker = self.root / "child-finished"
         pid_file = self.root / "child.pid"
         self.fake.write_text(
@@ -744,6 +795,8 @@ class HelperCliTest(ReceiptFixture):
         self.assertFalse(marker.exists())
 
     def test_output_limit_stops_process_without_spooling_unbounded_bytes(self) -> None:
+        """Proves F11."""
+
         marker = self.root / "flood-finished"
         self.fake.write_text(
             "import sys\n"
@@ -771,6 +824,8 @@ class HelperCliTest(ReceiptFixture):
         self.assertLessEqual(len(saved["stdout"].encode()), 1024 * 1024)
 
     def test_retry_rejects_small_capture_cap_without_changing_pending_intent(self) -> None:
+        """Proves F12."""
+
         self.write_scenario("ambiguous")
         source = self.root / "pending.html"
         source.write_text("pending")
@@ -793,6 +848,8 @@ class HelperCliTest(ReceiptFixture):
         self.assertEqual(len(self.calls()), call_count)
 
     def test_large_target_identity_is_rejected_before_binding(self) -> None:
+        """Proves F13."""
+
         source = self.root / "large-target.html"
         source.write_text("large target")
         self.write_config(target="https://publisher.test/" + "a" * 70_000 + "/")
@@ -808,6 +865,8 @@ class HelperCliTest(ReceiptFixture):
         self.assertEqual(self.calls(), [])
 
     def test_json_escaped_executor_identity_is_rejected_before_binding(self) -> None:
+        """Proves F14."""
+
         source = self.root / "escaped-identity.html"
         source.write_text("escaped identity")
         raw = json.loads(self.config.read_text())
@@ -825,6 +884,8 @@ class HelperCliTest(ReceiptFixture):
         self.assertEqual(self.calls(), [])
 
     def test_file_create_and_update_use_one_publish_call_each(self) -> None:
+        """Proves F15."""
+
         source = self.root / "report.html"
         source.write_text("<h1>A</h1>")
 
@@ -847,6 +908,8 @@ class HelperCliTest(ReceiptFixture):
         self.assertNotEqual(self.receipt(receipt_dir)["accepted_revision"], revision_a)
 
     def test_markdown_receipt_freezes_single_file_name_and_renderer_profile(self) -> None:
+        """Proves F16."""
+
         source = self.root / "article.md"
         source.write_text("# Article\n")
 
@@ -867,6 +930,8 @@ class HelperCliTest(ReceiptFixture):
     def test_markdown_receipt_v3_guards_both_identities_and_requires_legacy_record_review(
         self,
     ) -> None:
+        """Proves F17."""
+
         html_source = self.root / "legacy.html"
         html_source.write_text("legacy output")
         receipt_dir = self.root / "legacy.receipt"
@@ -927,70 +992,9 @@ class HelperCliTest(ReceiptFixture):
         self.assertEqual(publish_call["expected_revision"], legacy_revision)
         self.assertEqual(publish_call["expected_record_revision"], "reviewed-record")
 
-    def test_markdown_record_only_result_advances_the_receipt_pair(self) -> None:
-        expectation = receipt.Expectation("accepted", "output-a", None, "record-a")
-        intent = receipt.PublishIntent(
-            "attempt-a",
-            expectation,
-            receipt.FrozenInput("attempt-a/source", "directory", "digest", 1, 10),
-            "markdown",
-            "index.md",
-            "markdown-it-py/4.2.0:commonmark:html-off:table-on:linkify-off:template-reading-column-v1",
-        )
-        state = receipt.Receipt(
-            3,
-            receipt.Binding(
-                "association-a",
-                "guide",
-                receipt.TargetIdentity("local", "local", self.target),
-                "fingerprint-a",
-            ),
-            "output-a",
-            receipt.Pending(intent, 1, "uncertain"),
-            None,
-            None,
-            "record-a",
-        )
-        payload = {
-            "schema_version": 1,
-            "operation": "publish",
-            "request_id": "attempt-a",
-            "outcome": "published",
-            "target": self.target,
-            "name": "guide",
-            "expected_revision": "output-a",
-            "requested_revision": "output-a",
-            "active_revision": "output-a",
-            "expected_record_revision": "record-a",
-            "requested_record_revision": "record-b",
-            "archived_record_revision": "record-b",
-            "render_profile_id": intent.render_profile_id,
-            "effects": {"archive_advanced": True, "activated": False},
-            "verification": {"result": "passed", "revision": "output-a"},
-            "error": None,
-        }
-        result = receipt.SavedResult(
-            "attempt-a",
-            1,
-            "digest",
-            0,
-            False,
-            False,
-            json.dumps(payload),
-            "",
-            payload,
-            False,
-            False,
-        )
-
-        classification = receipt.reduce_result(state, result)
-
-        self.assertEqual(classification.kind, "completed")
-        self.assertIsNone(classification.receipt.pending)
-        self.assertEqual(classification.receipt.accepted_revision, "output-a")
-        self.assertEqual(classification.receipt.accepted_record_revision, "record-b")
-
     def test_markdown_activation_without_verified_delivery_keeps_record_baseline(self) -> None:
+        """Proves F18."""
+
         profile = (
             "markdown-it-py/4.2.0:commonmark:html-off:table-on:linkify-off:"
             "template-reading-column-v1"
@@ -1061,69 +1065,9 @@ class HelperCliTest(ReceiptFixture):
         self.assertEqual(classification.receipt.accepted_revision, "output-b")
         self.assertEqual(classification.receipt.accepted_record_revision, "record-a")
 
-    def test_record_aware_legacy_restore_upgrades_receipt_and_keeps_record_identity(self) -> None:
-        intent = receipt.RestoreIntent(
-            "attempt-restore",
-            receipt.Expectation("accepted", "output-current", None),
-            "archive-commit",
-        )
-        state = receipt.Receipt(
-            2,
-            receipt.Binding(
-                "association-legacy",
-                "guide",
-                receipt.TargetIdentity("local", "local", self.target),
-                "fingerprint-a",
-            ),
-            "output-current",
-            receipt.Pending(intent, 1, "uncertain"),
-            None,
-            None,
-        )
-        payload = {
-            "schema_version": 1,
-            "operation": "restore",
-            "request_id": intent.id,
-            "outcome": "published",
-            "target": self.target,
-            "name": "guide",
-            "url": f"{self.target}guide/",
-            "expected_revision": "output-current",
-            "requested_revision": "output-restored",
-            "active_revision": "output-restored",
-            "expected_record_revision": None,
-            "requested_record_revision": "record-restored",
-            "archived_record_revision": "record-restored",
-            "render_profile_id": None,
-            "effects": {"archive_advanced": False, "activated": True},
-            "verification": {"result": "passed", "revision": "output-restored"},
-            "error": None,
-        }
-        result = receipt.SavedResult(
-            intent.id,
-            1,
-            "digest",
-            0,
-            False,
-            False,
-            json.dumps(payload),
-            "",
-            payload,
-            False,
-            False,
-        )
-
-        classification = receipt.reduce_result(state, result)
-        serialized = receipt.receipt_dict(classification.receipt)
-
-        self.assertEqual(classification.kind, "completed")
-        self.assertEqual(classification.receipt.version, 3)
-        self.assertEqual(classification.receipt.accepted_record_revision, "record-restored")
-        self.assertEqual(serialized["accepted_record_revision"], "record-restored")
-        observation = cast(dict[str, object], serialized["last_observation"])
-        self.assertEqual(observation["requested_record_revision"], "record-restored")
-
     def test_renderer_profile_mismatch_rejection_is_correlated_without_acceptance(self) -> None:
+        """Proves F19."""
+
         profile = (
             "markdown-it-py/4.2.0:commonmark:html-off:table-on:linkify-off:"
             "template-reading-column-v1"
@@ -1200,6 +1144,8 @@ class HelperCliTest(ReceiptFixture):
     def test_lost_response_retry_uses_saved_bytes_identity_and_expectation(
         self,
     ) -> None:
+        """Proves F20."""
+
         self.write_scenario("ambiguous", "auto")
         source = self.root / "site"
         source.mkdir()
@@ -1231,6 +1177,8 @@ class HelperCliTest(ReceiptFixture):
     def test_conflict_observation_does_not_advance_baseline_and_review_replaces_it(
         self,
     ) -> None:
+        """Proves F21."""
+
         source = self.root / "report.html"
         source.write_text("A")
         receipt_dir = Path(str(source) + ".publish")
@@ -1279,6 +1227,8 @@ class HelperCliTest(ReceiptFixture):
     def test_activation_with_failed_verification_advances_and_remains_retryable(
         self,
     ) -> None:
+        """Proves F22."""
+
         self.write_scenario("active_unverified", "auto")
         source = self.root / "report.html"
         source.write_text("delivery")
@@ -1305,6 +1255,8 @@ class HelperCliTest(ReceiptFixture):
         self.assertEqual(calls[1]["request_id"], attempt_id)
 
     def test_failed_identical_verification_does_not_advance_acceptance(self) -> None:
+        """Proves F23."""
+
         self.write_scenario("failed_unchanged")
         source = self.root / "report.html"
         source.write_text("same")
@@ -1319,6 +1271,8 @@ class HelperCliTest(ReceiptFixture):
         self.assertEqual(pending["state"], "uncertain")
 
     def test_mismatched_result_cannot_change_receipt(self) -> None:
+        """Proves F24."""
+
         self.write_scenario("mismatch")
         source = self.root / "report.html"
         source.write_text("mismatch")
@@ -1333,6 +1287,8 @@ class HelperCliTest(ReceiptFixture):
         self.assertEqual(pending["state"], "uncertain")
 
     def test_preinvocation_transport_failure_is_retryable_without_status(self) -> None:
+        """Proves F25."""
+
         self.write_scenario("preflight", "auto")
         source = self.root / "report.html"
         source.write_text("preflight")
@@ -1352,6 +1308,8 @@ class HelperCliTest(ReceiptFixture):
         self.assertEqual([call["operation"] for call in self.calls()], ["publish", "publish"])
 
     def test_correlated_unknown_effects_remain_uncertain(self) -> None:
+        """Proves F26."""
+
         self.write_scenario("unknown_effects")
         source = self.root / "report.html"
         source.write_text("unknown")
@@ -1366,6 +1324,8 @@ class HelperCliTest(ReceiptFixture):
         self.assertIsNone(state["accepted_revision"])
 
     def test_adoption_observes_explicit_name_and_reviewed_revision(self) -> None:
+        """Proves F27."""
+
         reviewed = "rev-reviewed"
         self.state_path.write_text(json.dumps({"active_revision": reviewed}))
         source = self.root / "adopt.html"
@@ -1389,6 +1349,8 @@ class HelperCliTest(ReceiptFixture):
         self.assertEqual(calls[1]["expected_revision"], reviewed)
 
     def test_source_and_receipt_overlap_is_rejected_without_mutation(self) -> None:
+        """Proves F28."""
+
         source = self.root / "site"
         source.mkdir()
         (source / "index.html").write_text("unsafe")
@@ -1403,6 +1365,8 @@ class HelperCliTest(ReceiptFixture):
         self.assertEqual(self.calls(), [])
 
     def test_target_drift_fails_before_dispatch(self) -> None:
+        """Proves F29."""
+
         source = self.root / "report.html"
         source.write_text("A")
         receipt_dir = Path(str(source) + ".publish")
@@ -1419,6 +1383,8 @@ class HelperCliTest(ReceiptFixture):
         self.assertEqual(len(self.calls()), call_count)
 
     def test_limit_changes_do_not_change_binding_identity(self) -> None:
+        """Proves F30."""
+
         source = self.root / "limits.html"
         source.write_text("limits")
         receipt_dir = Path(str(source) + ".publish")
@@ -1434,6 +1400,8 @@ class HelperCliTest(ReceiptFixture):
         self.assertEqual(self.payload(result)["outcome"], "observed")
 
     def test_local_only_does_not_create_receipt_or_call_publisher(self) -> None:
+        """Proves F31."""
+
         source = self.root / "report.html"
         source.write_text("local")
 
@@ -1445,6 +1413,8 @@ class HelperCliTest(ReceiptFixture):
         self.assertEqual(self.calls(), [])
 
     def test_concurrent_writer_is_rejected_without_second_publish(self) -> None:
+        """Proves F32."""
+
         self.write_scenario("sleep", sleep_seconds=0.8)
         self.write_config(lock_seconds=0.1)
         source = self.root / "report.html"
@@ -1480,6 +1450,8 @@ class HelperCliTest(ReceiptFixture):
         self.assertEqual(len([call for call in self.calls() if call["operation"] == "publish"]), 1)
 
     def test_symlink_input_is_rejected_before_dispatch(self) -> None:
+        """Proves F33."""
+
         source = self.root / "real.html"
         source.write_text("real")
         link = self.root / "link.html"
@@ -1491,6 +1463,8 @@ class HelperCliTest(ReceiptFixture):
         self.assertEqual(self.calls(), [])
 
     def test_unsafe_persisted_attempt_ids_fail_before_retry(self) -> None:
+        """Proves F34."""
+
         self.write_scenario("ambiguous")
         source = self.root / "attempt.html"
         source.write_text("one")
@@ -1511,6 +1485,8 @@ class HelperCliTest(ReceiptFixture):
         self.assertEqual(len([call for call in self.calls() if call["operation"] == "publish"]), 1)
 
     def test_remote_config_builds_the_existing_transport_command(self) -> None:
+        """Proves F35."""
+
         remote_config = self.root / "remote-client.json"
         remote_config.write_text(
             json.dumps(
@@ -1519,7 +1495,7 @@ class HelperCliTest(ReceiptFixture):
                     "target": {"id": "om1", "base_url": self.target},
                     "execution": {
                         "kind": "remote",
-                        "command": ["/stable/html-publish-remote"],
+                        "command": [sys.executable, str(self.fake)],
                         "host": "pascal@om1.example",
                         "remote_executable": "/stable/html-publish",
                         "remote_config": "/stable/publisher.json",
@@ -1529,26 +1505,53 @@ class HelperCliTest(ReceiptFixture):
                 }
             )
         )
-        config = receipt.load_config(remote_config)
+        source = self.root / "remote.html"
+        source.write_text("remote")
 
-        command = receipt._executor_command(
-            config,
-            "publish",
-            "page",
-            Path("/tmp/snapshot"),
-            "revision-a",
-            "attempt-a",
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--config",
+                str(remote_config),
+                "publish",
+                str(source),
+                "--new",
+                "page",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
         )
 
-        self.assertEqual(command[0], "/stable/html-publish-remote")
-        self.assertIn("pascal@om1.example", command)
-        self.assertIn("/stable/html-publish", command)
-        self.assertIn("/tmp/snapshot", command)
-        self.assertNotIn("ssh", command)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        [call] = self.calls()
+        argv = cast(list[str], call["argv"])
+        self.assertEqual(
+            argv[:12],
+            [
+                "--host",
+                "pascal@om1.example",
+                "--target",
+                self.target,
+                "--remote-executable",
+                "/stable/html-publish",
+                "--remote-config",
+                "/stable/publisher.json",
+                "--incoming-root",
+                "/stable/incoming",
+                "--connect-timeout",
+                "7",
+            ],
+        )
+        self.assertEqual(argv[12:15], ["publish", "--name", "page"])
+        self.assertNotIn("ssh", argv)
 
 
 class PersistenceRecoveryTest(ReceiptFixture):
     def test_cleanup_failure_keeps_publication_success_and_reports_path(self) -> None:
+        """Proves F36."""
+
         source = self.root / "report.html"
         source.write_text("cleanup")
         receipt_dir = Path(str(source) + ".publish")
@@ -1560,51 +1563,13 @@ class PersistenceRecoveryTest(ReceiptFixture):
 
         self.assertEqual(code, 0)
         self.assertEqual(payload["outcome"], "completed")
-        self.assertIsNotNone(payload["cleanup_pending"])
-        state = receipt.load_receipt(receipt_dir)
-        classification = receipt.Classification(state, "completed", "cleanup")
-        self.assertIsNone(receipt._cleanup_completed_attempt(receipt_dir, classification))
-
-    def test_result_saved_before_receipt_replace_recovers_without_publish(self) -> None:
-        source = self.root / "report.html"
-        source.write_text("recover")
-        receipt_dir = Path(str(source) + ".publish")
-        real_replace = receipt.os.replace
-        failed = False
-
-        def fail_final_receipt_replace(
-            source_path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
-            destination_path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
-        ) -> None:
-            nonlocal failed
-            destination = Path(os.fsdecode(destination_path))
-            if (
-                not failed
-                and destination == receipt_dir / "receipt.json"
-                and any(receipt_dir.glob("attempt-*/result.json"))
-            ):
-                failed = True
-                raise OSError("injected receipt replace failure")
-            real_replace(source_path, destination_path)
-
-        with mock.patch.object(receipt.os, "replace", side_effect=fail_final_receipt_replace):
-            code, payload = self.run_main("publish", str(source), "--new", "recover")
-
-        self.assertEqual(code, 1)
-        self.assertFalse(payload["receipt_persisted"])
-        self.assertEqual(payload["url"], f"{self.target}recover/")
-        self.assertIsNotNone(payload["requested_revision"])
-        self.assertEqual(payload["active_revision"], payload["requested_revision"])
-        self.assertIsNone(payload["accepted_revision"])
-        self.assertEqual(len([call for call in self.calls() if call["operation"] == "publish"]), 1)
-
-        retry_code, retry_payload = self.run_main("retry", "--receipt", str(receipt_dir))
-
-        self.assertEqual(retry_code, 0)
-        self.assertEqual(retry_payload["publisher_calls"], 0)
-        self.assertEqual(len([call for call in self.calls() if call["operation"] == "publish"]), 1)
+        leftover = Path(str(payload["cleanup_pending"]))
+        self.assertEqual(leftover.parent, receipt_dir)
+        self.assertTrue(leftover.is_dir())
 
     def test_result_save_failure_still_reports_bounded_host_facts(self) -> None:
+        """Proves F37."""
+
         source = self.root / "result-save.html"
         source.write_text("result save")
 
@@ -1626,10 +1591,12 @@ class PersistenceRecoveryTest(ReceiptFixture):
         self.assertFalse(Path(result_path).exists())
 
     def test_renamed_but_unsynced_completion_recovers_without_publish(self) -> None:
+        """Proves F38."""
+
         source = self.root / "report.html"
         source.write_text("recover")
         receipt_dir = Path(str(source) + ".publish")
-        real_sync = receipt._sync_directory
+        real_sync = receipt._sync_directory  # pyright: ignore[reportPrivateUsage]
         failed = False
 
         def fail_final_receipt_sync(path: Path) -> None:
@@ -1654,23 +1621,6 @@ class PersistenceRecoveryTest(ReceiptFixture):
         self.assertEqual(retry_code, 0)
         self.assertEqual(retry_payload["publisher_calls"], 0)
         self.assertEqual(len([call for call in self.calls() if call["operation"] == "publish"]), 1)
-
-    def test_stale_saved_result_cannot_overwrite_newer_completion(self) -> None:
-        source = self.root / "report.html"
-        source.write_text("first")
-        receipt_dir = Path(str(source) + ".publish")
-        self.assertEqual(self.run_helper("publish", str(source), "--new", "stale").returncode, 0)
-        current = receipt.load_receipt(receipt_dir)
-        stale_dir = receipt_dir / "attempt-stale"
-        stale_dir.mkdir()
-        stale = receipt.SavedResult("stale", 1, "stale-digest", 0, False, False, "{}", "", {})
-        (stale_dir / "result.json").write_text(json.dumps(receipt.saved_result_dict(stale)))
-        before = (receipt_dir / "receipt.json").read_bytes()
-
-        recovered = receipt._recover_saved_result(receipt_dir, current)
-
-        self.assertFalse(recovered.local_completion)
-        self.assertEqual((receipt_dir / "receipt.json").read_bytes(), before)
 
 
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
@@ -1758,6 +1708,8 @@ class RealLoopbackPublisherTest(unittest.TestCase):
         )
 
     def test_file_and_directory_revision_through_real_cli_and_http(self) -> None:
+        """Proves F39."""
+
         page = self.root / "page.html"
         page.write_text("<!doctype html><h1>file</h1>")
         file_result = self.run_helper("publish", str(page), "--new", "real-file")

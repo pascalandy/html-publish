@@ -1,3 +1,25 @@
+"""Publisher behavior when a process dies, a durable write fails, or Git misbehaves.
+
+Faults come from tests/isolated/_fault.py, Git shims on PATH, and patched store calls.
+
+Failure modes:
+F1: store: a publisher killed before the archive ref advances leaves state its retry cannot recover
+F2: store: a first publication killed before the ref advances leaves a half-created page
+F3: store: a retry after a kill past the ref advance creates a second archive commit
+F4: store: a retry after a crash refuses to reuse a validated release already on disk
+F5: store: a kill after selection hides that the page is active but unverified
+F6: store: a directory fsync failure after selection is reported as activation_failure
+F7: store: a failed public symlink replacement is reported as export_failure
+F8: store: an export write failure deletes the partial stage before reporting its byte count
+F9: store: a failed release rename deletes the complete stage needed for inspection and retry
+F10: artifact: capture publishes a source whose metadata changed while it was copied
+F11: git: a Git child that outlives the command deadline is not reaped
+F12: git: a missing executable is reported as an archive failure instead of git_unavailable
+F13: store: an external ref move is overwritten and the losing commit becomes selected
+F14: git: a version older than 2.36 is accepted and the command proceeds
+F15: cli: Git version preflight time is refunded, so the command exceeds its total budget
+"""
+
 from __future__ import annotations
 
 import contextlib
@@ -8,6 +30,8 @@ import io
 import json
 import os
 import re
+import shlex
+import shutil
 import stat
 import subprocess
 import sys
@@ -17,36 +41,16 @@ import time
 import types
 import unittest
 import urllib.request
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 from unittest import mock
 
 from html_publish import _git, cli, store
 from html_publish.model import Deadline
-from tests.test_cli import QuietServer
 
-
-class StallHandler(http.server.BaseHTTPRequestHandler):
-    body = b"<!doctype html><h1>stalled</h1>\n"
-
-    def log_message(self, format: str, *args: object) -> None:
-        pass
-
-    def do_GET(self) -> None:
-        if self.path not in {"/report/", "/report/index.html"}:
-            self.send_error(404)
-            return
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html")
-        self.send_header("Content-Length", str(len(self.body)))
-        self.end_headers()
-        time.sleep(1.5)
-        with contextlib.suppress(BrokenPipeError, ConnectionResetError):
-            self.wfile.write(self.body)
-
-
-ROOT = Path(__file__).resolve().parents[1]
-FAULT_SCRIPT = ROOT / "tests" / "_fault.py"
+ROOT = Path(__file__).resolve().parents[2]
+FAULT_SCRIPT = ROOT / "tests" / "isolated" / "_fault.py"
 
 
 class RecoveryTest(unittest.TestCase):
@@ -90,7 +94,7 @@ class RecoveryTest(unittest.TestCase):
         self.temporary.cleanup()
 
     def run_cli(
-        self, *arguments: str, json_output: bool = True
+        self, *arguments: str, json_output: bool = True, env: dict[str, str] | None = None
     ) -> subprocess.CompletedProcess[str]:
         command = [
             sys.executable,
@@ -102,7 +106,14 @@ class RecoveryTest(unittest.TestCase):
         if json_output:
             command.append("--json")
         command.extend(arguments)
-        return subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=False)
+        return subprocess.run(
+            command,
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+            env={**os.environ, **env} if env else None,
+        )
 
     def run_fault(self, fault: str, *arguments: str) -> subprocess.CompletedProcess[str]:
         command = [
@@ -118,6 +129,9 @@ class RecoveryTest(unittest.TestCase):
 
     def payload(self, result: subprocess.CompletedProcess[str]) -> dict[str, Any]:
         return json.loads(result.stdout)
+
+    def config_payload(self) -> dict[str, Any]:
+        return json.loads(self.config.read_text(encoding="utf-8"))
 
     def git(self, *arguments: str) -> str:
         return subprocess.run(
@@ -142,6 +156,8 @@ class RecoveryTest(unittest.TestCase):
         return arguments
 
     def test_kill_before_ref_advancement_recovers_by_retry(self) -> None:
+        """Proves F1."""
+
         source = self.root / "report.html"
         source.write_bytes(b"<!doctype html><h1>A</h1>\n")
         published = self.run_cli(
@@ -181,6 +197,8 @@ class RecoveryTest(unittest.TestCase):
         )
 
     def test_kill_on_first_publication_recovers_by_retry(self) -> None:
+        """Proves F2."""
+
         source = self.root / "report.html"
         source.write_bytes(b"<!doctype html><h1>first</h1>\n")
         killed = self.run_fault("before_ref", *self.publish_arguments(source))
@@ -198,6 +216,8 @@ class RecoveryTest(unittest.TestCase):
         self.assertEqual(self.git("rev-list", "--count", "refs/heads/published"), "1")
 
     def test_kill_after_ref_advancement_reuses_the_saved_archive(self) -> None:
+        """Proves F3."""
+
         source = self.root / "report.html"
         source.write_bytes(b"<!doctype html><h1>A</h1>\n")
         published = self.run_cli(
@@ -237,6 +257,8 @@ class RecoveryTest(unittest.TestCase):
         self.assertEqual(self.git("rev-list", "--count", "refs/heads/published"), "2")
 
     def test_kill_after_export_completion_reuses_the_validated_export(self) -> None:
+        """Proves F4."""
+
         source = self.root / "report.html"
         source.write_bytes(b"<!doctype html><h1>A</h1>\n")
         published = self.run_cli(
@@ -271,6 +293,8 @@ class RecoveryTest(unittest.TestCase):
         )
 
     def test_kill_after_selection_leaves_active_but_unverified_content(self) -> None:
+        """Proves F5."""
+
         source = self.root / "report.html"
         source.write_bytes(b"<!doctype html><h1>A</h1>\n")
         published = self.run_cli(
@@ -316,6 +340,8 @@ class RecoveryTest(unittest.TestCase):
         self.assertEqual(self.payload(changed)["error"]["code"], "revision_conflict")
 
     def test_fsync_failure_after_selection_reports_persistence_failure(self) -> None:
+        """Proves F6."""
+
         source = self.root / "report.html"
         source.write_bytes(b"<!doctype html><h1>A</h1>\n")
         published = self.run_cli(
@@ -361,6 +387,8 @@ class RecoveryTest(unittest.TestCase):
         self.assertEqual(payload["verification"]["result"], "not_checked")
 
     def test_replace_failure_reports_activation_failure(self) -> None:
+        """Proves F7."""
+
         source = self.root / "report.html"
         source.write_bytes(b"<!doctype html><h1>A</h1>\n")
         published = self.run_cli(
@@ -401,6 +429,8 @@ class RecoveryTest(unittest.TestCase):
         self.assertEqual(payload["effects"], {"archive_advanced": True, "activated": False})
 
     def test_export_write_failure_retains_private_bytes_and_reuses_saved_commit(self) -> None:
+        """Proves F8."""
+
         source = self.root / "report.html"
         body_a = b"<!doctype html><h1>A</h1>\n"
         body_b = b"<!doctype html><h1>B</h1>\n"
@@ -480,6 +510,8 @@ class RecoveryTest(unittest.TestCase):
             self.assertEqual(response.read(), body_b)
 
     def test_rename_failure_reports_export_failure_with_stage_usage(self) -> None:
+        """Proves F9."""
+
         source = self.root / "report.html"
         source.write_bytes(b"<!doctype html><h1>A</h1>\n")
         published = self.run_cli(
@@ -524,38 +556,9 @@ class RecoveryTest(unittest.TestCase):
         self.assertGreater(int(match.group(1) if match else "0"), 0)
         self.assertEqual(len(list((self.runtime / "staging").iterdir())), 1)
 
-    def test_orphaned_git_lock_is_reported_and_never_removed(self) -> None:
-        source = self.root / "report.html"
-        source.write_bytes(b"<!doctype html><h1>A</h1>\n")
-        published = self.run_cli(
-            "publish",
-            "--name",
-            "report",
-            "--source",
-            str(source),
-            "--target",
-            self.base_url,
-        )
-        self.assertEqual(published.returncode, 0, published.stderr)
-        revision_a = self.payload(published)["active_revision"]
-        lock_path = self.archive / "refs" / "heads" / "published.lock"
-        lock_path.write_text("", encoding="utf-8")
-
-        source.write_bytes(b"<!doctype html><h1>B</h1>\n")
-        failed = self.run_cli(*self.publish_arguments(source, revision_a))
-        self.assertEqual(failed.returncode, 1)
-        failed_payload = self.payload(failed)
-        self.assertEqual(failed_payload["error"]["code"], "archive_failure")
-        self.assertIn("published.lock", failed_payload["error"]["message"])
-        self.assertEqual(failed_payload["effects"], {"archive_advanced": False, "activated": False})
-        self.assertTrue(lock_path.exists())
-
-        lock_path.unlink()
-        retry = self.run_cli(*self.publish_arguments(source, revision_a))
-        self.assertEqual(retry.returncode, 0, retry.stderr)
-        self.assertEqual(self.payload(retry)["outcome"], "published")
-
     def test_source_change_during_capture_fails_without_persistent_state(self) -> None:
+        """Proves F10."""
+
         source = self.root / "report.html"
         source.write_bytes(b"<!doctype html><h1>A</h1>\n")
         original_fstat = os.fstat
@@ -592,6 +595,8 @@ class RecoveryTest(unittest.TestCase):
         self.assertFalse(self.runtime.exists())
 
     def test_git_child_timeout_is_reaped(self) -> None:
+        """Proves F11."""
+
         stub = self.root / "stub-bin"
         stub.mkdir()
         (stub / "git").write_text("#!/bin/sh\nsleep 5\n", encoding="utf-8")
@@ -610,43 +615,171 @@ class RecoveryTest(unittest.TestCase):
         self.assertEqual(raised.exception.failure.code, "git_timeout")
         self.assertLess(elapsed, 2.0)
 
-    def test_verification_timeout_reports_failed_delivery(self) -> None:
-        self.server.shutdown()
-        self.server.server_close()
-        self.server_thread.join(timeout=2)
-        slow_server = QuietServer(("127.0.0.1", 0), StallHandler)
-        slow_thread = threading.Thread(target=slow_server.serve_forever, daemon=True)
-        slow_thread.start()
-        address = slow_server.server_address
-        slow_url = f"http://{address[0]}:{address[1]}/"
-        payload = json.loads(self.config.read_text(encoding="utf-8"))
-        payload["base_url"] = slow_url
-        payload["limits"]["verification_seconds"] = 0.2
-        self.config.write_text(json.dumps(payload), encoding="utf-8")
-        source = self.root / "report.html"
-        source.write_bytes(StallHandler.body)
-        try:
-            result = self.run_cli(
-                "publish",
-                "--name",
-                "report",
-                "--source",
-                str(source),
-                "--target",
-                slow_url,
-            )
-        finally:
-            slow_server.shutdown()
-            slow_server.server_close()
-            slow_thread.join(timeout=2)
+    def test_a_missing_git_executable_is_reported_as_unavailable(self) -> None:
+        """Proves F12."""
+
+        result = self.run_cli("status", env={"PATH": "/nonexistent-html-publish-bin"})
 
         self.assertEqual(result.returncode, 1)
-        result_payload = self.payload(result)
-        self.assertEqual(result_payload["error"]["code"], "delivery_failure")
-        self.assertEqual(result_payload["verification"]["result"], "failed")
-        self.assertIsNotNone(result_payload["verification"]["detail"])
-        self.assertEqual(result_payload["effects"], {"archive_advanced": True, "activated": True})
-        self.assertEqual(result_payload["active_revision"], result_payload["requested_revision"])
+        payload = self.payload(result)
+        self.assertEqual(payload["error"]["code"], "git_unavailable")
+        self.assertEqual(payload["error"]["phase"], "version")
+
+    def test_conditional_ref_failure_leaves_the_proposed_commit_unreferenced(self) -> None:
+        """Proves F13."""
+
+        source = self.root / "report.html"
+        source.write_bytes(b"<!doctype html><h1>A</h1>\n")
+        published = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+        )
+        self.assertEqual(published.returncode, 0, published.stderr)
+        revision_a = self.payload(published)["active_revision"]
+
+        source.write_bytes(b"<!doctype html><h1>B</h1>\n")
+        original_command = _git.command
+        proposed: list[str] = []
+        rival: list[str] = []
+
+        def racing_command(
+            git_dir: Path | None,
+            args: Sequence[str],
+            deadline: Deadline,
+            **kwargs: Any,
+        ) -> bytes:
+            if args and args[0] == "update-ref":
+                head = (
+                    original_command(git_dir, ["rev-parse", "refs/heads/published"], deadline)
+                    .decode()
+                    .strip()
+                )
+                tree = (
+                    original_command(git_dir, ["rev-parse", f"{head}^{{tree}}"], deadline)
+                    .decode()
+                    .strip()
+                )
+                rival_commit = (
+                    original_command(
+                        git_dir, ["commit-tree", tree, "-p", head, "-m", "rival"], deadline
+                    )
+                    .decode()
+                    .strip()
+                )
+                original_command(
+                    git_dir, ["update-ref", "refs/heads/published", rival_commit, head], deadline
+                )
+                rival.append(rival_commit)
+                proposed.append(str(args[2]))
+            return original_command(git_dir, args, deadline, **kwargs)
+
+        report = io.StringIO()
+        arguments = [
+            "--config",
+            str(self.config),
+            "--json",
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            revision_a,
+        ]
+        with (
+            mock.patch.object(_git, "command", racing_command),
+            contextlib.redirect_stdout(report),
+        ):
+            exit_code = cli.main(arguments)
+
+        self.assertEqual(exit_code, 1)
+        payload = json.loads(report.getvalue())
+        self.assertEqual(payload["error"]["code"], "archive_failure")
+        self.assertEqual(payload["error"]["phase"], "archive")
+        self.assertEqual(payload["effects"], {"archive_advanced": False, "activated": False})
+        self.assertEqual(payload["archived_revision"], revision_a)
+        self.assertEqual(self.git("rev-parse", "refs/heads/published"), rival[0])
+        proposed_commit = proposed[0]
+        self.assertNotEqual(proposed_commit, rival[0])
+        subprocess.run(
+            ["git", f"--git-dir={self.archive}", "cat-file", "-e", f"{proposed_commit}^{{commit}}"],
+            capture_output=True,
+            check=True,
+        )
+        reachable = self.git("rev-list", "refs/heads/published")
+        self.assertNotIn(proposed_commit, reachable.splitlines())
+        self.assertEqual(self.git("rev-list", "--count", "refs/heads/published"), "2")
+
+    def test_git_older_than_the_supported_minimum_is_rejected(self) -> None:
+        """Proves F14."""
+
+        stub = self.root / "stub-bin"
+        stub.mkdir()
+        (stub / "git").write_text("#!/bin/sh\necho 'git version 2.35.0'\n", encoding="utf-8")
+        (stub / "git").chmod(0o755)
+
+        result = self.run_cli("status", env={"PATH": f"{stub}:{os.environ['PATH']}"})
+
+        self.assertEqual(result.returncode, 1)
+        payload = self.payload(result)
+        self.assertEqual(payload["error"]["code"], "git_unsupported")
+        self.assertEqual(payload["error"]["phase"], "version")
+        self.assertIn("2.36", payload["error"]["message"])
+
+    def test_git_preflight_uses_the_total_command_deadline(self) -> None:
+        """Proves F15."""
+
+        real_git = shutil.which("git")
+        assert real_git is not None
+        stub = self.root / "stub-bin"
+        stub.mkdir()
+        (stub / "git").write_text(
+            "#!/bin/sh\n"
+            'for argument in "$@"; do\n'
+            '  if [ "$argument" = "--version" ]; then\n'
+            "    sleep 0.45\n"
+            "  else\n"
+            "    continue\n"
+            "  fi\n"
+            f'  exec {shlex.quote(real_git)} "$@"\n'
+            "done\n"
+            "sleep 0.10\n"
+            f'exec {shlex.quote(real_git)} "$@"\n',
+            encoding="utf-8",
+        )
+        (stub / "git").chmod(0o755)
+        payload = self.config_payload()
+        payload["limits"]["command_seconds"] = 0.6
+        self.config.write_text(json.dumps(payload), encoding="utf-8")
+        source = self.root / "report.html"
+        source.write_bytes(b"<!doctype html><h1>deadline</h1>\n")
+
+        started = time.monotonic()
+        result = self.run_cli(
+            "plan",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+            env={"PATH": f"{stub}:{os.environ['PATH']}"},
+        )
+        elapsed = time.monotonic() - started
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(
+            self.payload(result)["error"]["code"],
+            {"command_timeout", "git_timeout"},
+        )
+        self.assertLess(elapsed, 1.2)
 
 
 if __name__ == "__main__":

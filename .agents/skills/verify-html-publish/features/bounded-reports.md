@@ -24,7 +24,7 @@ Preconditions:
 
 - **Read detail.** Run `"$CLI" --config "$CONFIG" --json plan --name warnings-page --source "$INSTANCE/warnings.html" --target "$URL/"`. Exit 0 with `report.mode` `detail`, `warnings` including `missing_relative_asset`, and a `warning_details` entry naming `missing.css`
 - **Read summary.** Repeat the plan with `--report summary`. Exit 0 with the same `requested_revision`, `prediction`, and effects; `warning_details` and `differences.added` are empty, while `report.collections` records their exact totals and omitted counts
-- **Prove the installed cap.** Run `uv run python -m unittest -v tests.test_reports_installed`. Its isolated installed wheel proves a large warning report, the summary bound, unchanged core facts, and an artifact client that rejects a too-small output cap before publication
+- **Prove the installed cap.** Run `uv run python -m unittest -v tests.e2e.test_reports_installed`. Its isolated installed wheel proves a large warning report, the summary bound, unchanged core facts, and an artifact client that rejects a too-small output cap before publication
 - **Proof.** Save both plan reports, the focused test result, and exits under `$ARTIFACTS/bounded-reports-<run_id>.txt`
 
 ## Gotchas

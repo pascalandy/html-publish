@@ -1,3 +1,34 @@
+"""Deployment install, rollback, and health against a simulated om1 host.
+
+FakeRunner stands in for uv, systemctl, and tailscale, so these failure paths run
+without touching a real host. No E2E test reaches them.
+
+Failure modes:
+F1: deploy: reinstalling the same checkout creates a release or rewrites config, unit, or route
+F2: deploy: an upgrade overwrites publication data or the existing publisher config
+F3: deploy: a changed lock with the same wheel reuses the old release and its stale requirements
+F4: deploy: a foreign Tailscale route is replaced instead of blocking the install before any write
+F5: deploy: rollback without arguments does not swap back to the previous release
+F6: deploy: a failed health probe after an upgrade leaves the broken release active
+F7: deploy: the health probe gives up on a transient failure instead of retrying within its budget
+F8: deploy: a failed restart during install leaves the current and previous pointers changed
+F9: deploy: a failed restart during rollback leaves the current and previous pointers changed
+F10: deploy: an invalid or colliding config or unit file changes before preflight rejects it
+F11: deploy: recovery after a same-wheel failure changes unit or config bytes, modes, or links
+F12: deploy: a failed first install removes state it does not own or deletes the prepared release
+F13: deploy: recovery from a failed upgrade enables a disabled service or loses publication data
+F14: deploy: a failure between the two pointer swaps leaves a mismatched pointer pair
+F15: deploy: recovery overwrites a unit file edited mid-install or hides the original error
+F16: deploy: a failed recovery restart is missing from the install error
+F17: deploy: a route removed during the build is ignored and the new release activates
+F18: deploy: a retry overwrites an incomplete release left by an earlier failure
+F19: deploy: the installed release depends on the source checkout and fails from another directory
+F20: deploy: recovery removes a route that another owner replaced after install created it
+F21: deploy: a command descendant outlives its deadline or its parent's normal exit
+F22: deploy: SIGTERM stops the deploy executable but leaves its command or descendant running
+F23: deploy: cancellation skips install or rollback recovery or leaves the signal handlers replaced
+"""
+
 from __future__ import annotations
 
 import contextlib
@@ -11,12 +42,11 @@ import tempfile
 import time
 import unittest
 import urllib.error
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 from typing import cast
 from unittest import mock
 
-import html_publish.deploy as deploy_module
 from html_publish.deploy import (
     CommandResult,
     DeployError,
@@ -24,7 +54,9 @@ from html_publish.deploy import (
     health,
     install,
     main,
+    probe_health,
     rollback,
+    run_command,
 )
 
 
@@ -115,6 +147,8 @@ class DeploymentTest(unittest.TestCase):
         self.temporary.cleanup()
 
     def test_reinstall_is_idempotent(self) -> None:
+        """Proves F1."""
+
         probed: list[str] = []
 
         def recording_probe(url: str) -> tuple[bool, str]:
@@ -167,6 +201,8 @@ class DeploymentTest(unittest.TestCase):
         self.assertLess(first_restart, first_serve_write)
 
     def test_upgrade_preserves_publication_state_and_existing_config(self) -> None:
+        """Proves F2."""
+
         install(self.layout, self.source, self.runner, successful_probe)
         self.layout.archive.mkdir()
         self.layout.runtime.mkdir()
@@ -189,6 +225,8 @@ class DeploymentTest(unittest.TestCase):
         self.assertEqual(self.layout.config.read_bytes(), preserved_config)
 
     def test_changed_locked_requirements_create_a_new_release(self) -> None:
+        """Proves F3."""
+
         install(self.layout, self.source, self.runner, successful_probe)
         first_release = self.layout.current.resolve()
         self.runner.requirements = "markdown-it-py==4.2.0 \\\n    --hash=sha256:bb\n"
@@ -204,6 +242,8 @@ class DeploymentTest(unittest.TestCase):
         )
 
     def test_route_collision_refuses_to_change_tailscale(self) -> None:
+        """Proves F4."""
+
         self.runner.serve = {
             "TCP": {"8444": {"HTTPS": True}},
             "Web": {
@@ -228,6 +268,8 @@ class DeploymentTest(unittest.TestCase):
         self.assertEqual(self.runner.calls, [("tailscale", "serve", "status", "--json")])
 
     def test_upgrade_then_default_rollback_swaps_releases(self) -> None:
+        """Proves F5."""
+
         first = install(self.layout, self.source, self.runner, successful_probe)
         first_release = cast(str, first["release"])
         self.runner.wheel_bytes = b"release-b"
@@ -244,6 +286,8 @@ class DeploymentTest(unittest.TestCase):
         self.assertEqual(report["release"], first_release)
 
     def test_failed_upgrade_health_restores_prior_release(self) -> None:
+        """Proves F6."""
+
         first = install(self.layout, self.source, self.runner, successful_probe)
         first_release = cast(str, first["release"])
         self.runner.wheel_bytes = b"release-b"
@@ -260,6 +304,8 @@ class DeploymentTest(unittest.TestCase):
         self.assertEqual(self.layout.previous.resolve().name, first_release)
 
     def test_real_probe_retries_transient_failures_until_healthy(self) -> None:
+        """Proves F7."""
+
         outcomes: list[Exception | FakeResponse] = [
             urllib.error.URLError("connection refused"),
             FakeResponse(503),
@@ -279,11 +325,7 @@ class DeploymentTest(unittest.TestCase):
             mock.patch("html_publish.deploy.urllib.request.urlopen", side_effect=open_url),
             mock.patch("html_publish.deploy.time.sleep") as sleep,
         ):
-            probe = cast(
-                Callable[[str], tuple[bool, str]],
-                deploy_module.__dict__["_probe"],
-            )
-            result = probe("http://127.0.0.1:4177/_html-publish-health")
+            result = probe_health("http://127.0.0.1:4177/_html-publish-health")
 
         self.assertEqual(result, (True, "HTTP 200"))
         self.assertEqual(len(timeouts), 3)
@@ -291,6 +333,8 @@ class DeploymentTest(unittest.TestCase):
         self.assertEqual(sleep.call_count, 2)
 
     def test_install_restart_failure_restores_both_pointers(self) -> None:
+        """Proves F8."""
+
         install(self.layout, self.source, self.runner, successful_probe)
         original_current = self.layout.current.resolve()
         original_previous = self.layout.previous.resolve()
@@ -305,6 +349,8 @@ class DeploymentTest(unittest.TestCase):
         self.assertEqual(self.runner.restart_failures, 0)
 
     def test_rollback_restart_failure_restores_both_pointers(self) -> None:
+        """Proves F9."""
+
         install(self.layout, self.source, self.runner, successful_probe)
         self.runner.wheel_bytes = b"release-b"
         install(self.layout, self.source, self.runner, successful_probe)
@@ -320,6 +366,8 @@ class DeploymentTest(unittest.TestCase):
         self.assertEqual(self.runner.restart_failures, 0)
 
     def test_config_collision_and_invalid_files_precede_all_mutations(self) -> None:
+        """Proves F10."""
+
         self.layout.config.parent.mkdir()
         for content in ('{"archive":"other"}', "[]"):
             with self.subTest(content=content):
@@ -338,6 +386,8 @@ class DeploymentTest(unittest.TestCase):
         self.assertTrue(self.layout.unit.is_symlink())
 
     def test_same_wheel_failure_restores_exact_unit_config_and_relative_pointers(self) -> None:
+        """Proves F11."""
+
         install(self.layout, self.source, self.runner, successful_probe)
         release = self.layout.current.resolve()
         for pointer in (self.layout.current, self.layout.previous):
@@ -361,6 +411,8 @@ class DeploymentTest(unittest.TestCase):
         self.assertEqual(self.runner.unit_file_state, "enabled")
 
     def test_failed_first_install_removes_only_owned_state_and_retains_release(self) -> None:
+        """Proves F12."""
+
         self.runner.serve = {
             "TCP": {"443": {"HTTPS": True}, "8444": {"HTTPS": True}},
             "Web": {
@@ -381,6 +433,8 @@ class DeploymentTest(unittest.TestCase):
         self.assertEqual(len(list(self.layout.releases.glob("*/.ready"))), 1)
 
     def test_failed_upgrade_preserves_disabled_state_and_publication_data(self) -> None:
+        """Proves F13."""
+
         install(self.layout, self.source, self.runner, successful_probe)
         self.runner.unit_file_state = "disabled"
         self.layout.archive.mkdir()
@@ -398,6 +452,8 @@ class DeploymentTest(unittest.TestCase):
         self.assertEqual(len(list(self.layout.releases.glob("*/.ready"))), 2)
 
     def test_partial_pointer_activation_recovers_exact_original_pair(self) -> None:
+        """Proves F14."""
+
         install(self.layout, self.source, self.runner, successful_probe)
         self.runner.wheel_bytes = b"release-b"
         install(self.layout, self.source, self.runner, successful_probe)
@@ -420,6 +476,8 @@ class DeploymentTest(unittest.TestCase):
         )
 
     def test_changed_unit_is_preserved_and_original_and_recovery_errors_are_reported(self) -> None:
+        """Proves F15."""
+
         install(self.layout, self.source, self.runner, successful_probe)
 
         def concurrent_edit(_: str) -> tuple[bool, str]:
@@ -434,6 +492,8 @@ class DeploymentTest(unittest.TestCase):
         self.assertEqual(self.layout.unit.read_bytes(), b"someone else's unit")
 
     def test_recovery_restart_error_is_not_suppressed(self) -> None:
+        """Proves F16."""
+
         install(self.layout, self.source, self.runner, successful_probe)
         self.runner.restart_failures = 2
         with self.assertRaisesRegex(
@@ -442,6 +502,8 @@ class DeploymentTest(unittest.TestCase):
             install(self.layout, self.source, self.runner, successful_probe)
 
     def test_route_removed_during_build_stops_before_activation(self) -> None:
+        """Proves F17."""
+
         install(self.layout, self.source, self.runner, successful_probe)
         original = os.readlink(self.layout.current)
         self.runner.wheel_bytes = b"release-b"
@@ -458,6 +520,8 @@ class DeploymentTest(unittest.TestCase):
         self.assertEqual(self.runner.serve, {})
 
     def test_incomplete_release_is_retained_and_not_overwritten(self) -> None:
+        """Proves F18."""
+
         def failed_pip(argv: Sequence[str]) -> CommandResult:
             if tuple(argv[:2]) == ("uv", "pip"):
                 raise DeployError("fixture install failure")
@@ -474,15 +538,15 @@ class DeploymentTest(unittest.TestCase):
         self.assertFalse(self.layout.current.is_symlink())
 
     def test_installed_release_runs_outside_the_source_checkout(self) -> None:
-        run = cast(Callable[..., CommandResult], deploy_module.__dict__["_run"])
+        """Proves F19."""
 
         def real_release(argv: Sequence[str]) -> CommandResult:
             if argv[0] in {"systemctl", "tailscale"}:
                 return self.runner(argv)
-            return run(argv)
+            return run_command(argv)
 
         result = install(
-            self.layout, Path(__file__).resolve().parents[1], real_release, successful_probe
+            self.layout, Path(__file__).resolve().parents[2], real_release, successful_probe
         )
         version = subprocess.run(
             [str(self.layout.current / ".venv/bin/html-publish"), "--version"],
@@ -497,6 +561,8 @@ class DeploymentTest(unittest.TestCase):
         self.assertRegex(version.stdout, r"^html-publish \d")
 
     def test_route_changed_after_creation_is_not_removed_by_recovery(self) -> None:
+        """Proves F20."""
+
         def concurrent_route(_: str) -> tuple[bool, str]:
             self.runner.serve = {
                 "Web": {
@@ -513,7 +579,8 @@ class DeploymentTest(unittest.TestCase):
         self.assertFalse(any(call[-1] == "off" for call in self.runner.calls))
 
     def test_command_deadline_and_normal_exit_kill_descendants(self) -> None:
-        run = cast(Callable[..., CommandResult], deploy_module.__dict__["_run"])
+        """Proves F21."""
+
         for wait in (True, False):
             with self.subTest(wait=wait):
                 identity = self.root / f"child-{wait}"
@@ -533,9 +600,9 @@ class DeploymentTest(unittest.TestCase):
                 try:
                     if wait:
                         with self.assertRaisesRegex(DeployError, "timed out"):
-                            run((sys.executable, "-c", parent_code), timeout_seconds=0.5)
+                            run_command((sys.executable, "-c", parent_code), timeout_seconds=0.5)
                     else:
-                        result = run((sys.executable, "-c", parent_code), timeout_seconds=2)
+                        result = run_command((sys.executable, "-c", parent_code), timeout_seconds=2)
                         self.assertEqual(result.stdout, "parent exited\n")
                     self.assertLess(time.monotonic() - started, 5)
                     pid = int(identity.read_text())
@@ -553,6 +620,8 @@ class DeploymentTest(unittest.TestCase):
                             os.kill(int(identity.read_text()), signal.SIGKILL)
 
     def test_executable_sigterm_stops_owned_command_and_descendant(self) -> None:
+        """Proves F22."""
+
         identity = self.root / "command-pids"
         child_identity = self.root / "child-pid"
         child_code = (
@@ -630,6 +699,8 @@ class DeploymentTest(unittest.TestCase):
             process.communicate(timeout=5)
 
     def test_cancellation_recovers_install_and_rollback_and_restores_handlers(self) -> None:
+        """Proves F23."""
+
         install(self.layout, self.source, self.runner, successful_probe)
         self.runner.wheel_bytes = b"release-b"
         install(self.layout, self.source, self.runner, successful_probe)

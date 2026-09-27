@@ -1,0 +1,14 @@
+# Run `lefthook install` once per clone. To reproduce a hook failure, run its just recipe
+output:
+  - execution_out
+  - failure
+
+pre-commit:
+  commands:
+    check:
+      run: just check --fast
+
+pre-push:
+  commands:
+    check:
+      run: just check

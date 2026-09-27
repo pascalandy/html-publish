@@ -26,7 +26,7 @@ from typing import cast
 class InstalledHostTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.root = Path(__file__).resolve().parents[1]
+        cls.root = Path(__file__).resolve().parents[2]
         run_id = f"route-preview-{time.time_ns()}-{os.getpid()}"
         cls.run_root = Path("/tmp/html-publish-verify") / run_id
         cls.artifacts = cls.run_root / "artifacts"

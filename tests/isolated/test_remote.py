@@ -1,3 +1,35 @@
+"""html-publish-remote against fake ssh and scp programs.
+
+The fake transport returns the host responses and transport failures a real SSH route
+rarely produces.
+
+Failure modes:
+F1: remote: global options after the operation change the forwarded JSON result
+F2: remote: summary metadata with inconsistent omission counts is accepted
+F3: remote: a usage error loses the report mode, or schema omits its choices
+F4: remote: cleanup failure detail and byte accounting drop out of either report mode
+F5: remote: an explicit --host is ignored, or the client file is rewritten
+F6: remote: an argument with shell syntax splits into extra SSH command tokens
+F7: remote: staging cleanup is never requested after a validated host result
+F8: remote: Markdown goes without its raw source or without both revision guards
+F9: remote: a single Markdown file is transferred as a directory
+F10: remote: a transfer failure lacks the common error envelope or exits other than 1
+F11: remote: staging is deleted after SSH exits 255 while publication effects are unknown
+F12: remote: the generated request ID is hidden after a lost restore response
+F13: remote: a usage error drops valid request context or exits other than 2
+F14: remote: malformed or request-mismatched host JSON is accepted as a result
+F15: remote: next_action is dropped from a valid host error
+F16: remote: a mismatched mutation response is trusted and staging is cleaned
+F17: remote: an unverified publish success is accepted and staging is cleaned
+F18: remote: restore or verify success for a different revision is accepted
+F19: remote: an additive nested host field is stripped from the report
+F20: remote: a malformed observation in a degraded status listing is passed through
+F21: remote: a transport descendant survives the deadline
+F22: remote: an SSH descendant survives caller cancellation
+F23: remote: help stops explaining how to continue an uncertain operation
+F24: remote: a valid failed publication that already activated becomes a protocol failure
+"""
+
 from __future__ import annotations
 
 import contextlib
@@ -15,7 +47,7 @@ import unittest
 from pathlib import Path
 from typing import Any, cast
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 TARGET = "https://review.example/pages/"
 HOST_EXECUTABLE = "/usr/local/bin/html-publish"
 HOST_CONFIG = "/etc/html-publish/publisher.json"
@@ -239,6 +271,8 @@ class RemoteCliTest(unittest.TestCase):
         return args + (["--request-id", "attempt-1"] if operation == "publish" else [])
 
     def test_global_options_after_command_preserve_remote_json_result(self) -> None:
+        """Proves F1."""
+
         options = [
             "--host",
             "operator@example.test",
@@ -270,6 +304,8 @@ class RemoteCliTest(unittest.TestCase):
             self.assertIn("/etc/html-publish/publisher.json", invocation["argv"][-1])
 
     def test_summary_protocol_validates_mode_counts_and_warning_context(self) -> None:
+        """Proves F2."""
+
         payload = report("status")
         payload["warning_details"] = []
         payload["report"] = {
@@ -316,6 +352,8 @@ class RemoteCliTest(unittest.TestCase):
             self.assertEqual(json.loads(invalid.stdout)["error"]["code"], "remote_protocol_failure")
 
     def test_report_mode_survives_usage_errors_and_schema_lists_choices(self) -> None:
+        """Proves F3."""
+
         invalid = self.run_remote(
             "status", "--name", "release-notes", "--report", "summary", "--limit", "0"
         )
@@ -330,6 +368,8 @@ class RemoteCliTest(unittest.TestCase):
         self.assertIn("summary", option["help"])
 
     def test_cleanup_warning_keeps_text_metadata_in_both_modes(self) -> None:
+        """Proves F4."""
+
         for mode in ("detail", "summary"):
             with self.subTest(mode=mode):
                 payload = report(
@@ -357,6 +397,8 @@ class RemoteCliTest(unittest.TestCase):
                 )
 
     def test_explicit_host_overrides_client_file_without_rewriting_it(self) -> None:
+        """Proves F5."""
+
         client = self.root / "client.json"
         client.write_text(
             json.dumps(
@@ -414,6 +456,8 @@ class RemoteCliTest(unittest.TestCase):
                 self.fail(f"owned child {pid} survived the command")
 
     def test_all_non_upload_commands_forward_exact_arguments_and_additive_fields(self) -> None:
+        """Proves F6."""
+
         unsafe = "value with ' quotes ; $(touch should-not-exist)"
         cases = [
             (
@@ -520,6 +564,8 @@ class RemoteCliTest(unittest.TestCase):
         self.assertEqual([r["stage"] for r in self.records()], ["invoke"] * 4)
 
     def test_plan_captures_private_source_and_cleans_after_validated_completion(self) -> None:
+        """Proves F7."""
+
         payload = report("plan", expected="rev-a", outcome="planned")
         result = self.run_remote(
             *self.artifact_args("plan"),
@@ -539,6 +585,8 @@ class RemoteCliTest(unittest.TestCase):
         self.assertIn("--expected-revision rev-a", command)
 
     def test_markdown_transfer_preserves_raw_source_and_forwards_both_guards(self) -> None:
+        """Proves F8."""
+
         source = self.root / "docs"
         (source / "assets").mkdir(parents=True)
         (source / "index.md").write_text("# Guide\n")
@@ -600,6 +648,8 @@ class RemoteCliTest(unittest.TestCase):
         )
 
     def test_markdown_file_transfer_keeps_file_input_shape(self) -> None:
+        """Proves F9."""
+
         source = self.root / "article.md"
         source.write_text("# Article\n")
         payload = report("plan", expected="output-a", outcome="planned")
@@ -625,6 +675,8 @@ class RemoteCliTest(unittest.TestCase):
         self.assertTrue(command[command.index("--source") + 1].endswith("/source/article.md"))
 
     def test_transfer_failure_has_complete_common_envelope_and_exit_one(self) -> None:
+        """Proves F10."""
+
         result = self.run_remote(
             *self.artifact_args(), environment=self.environment | {"FIXTURE_TRANSFER_EXIT": "23"}
         )
@@ -646,6 +698,8 @@ class RemoteCliTest(unittest.TestCase):
         self.assertEqual(self.source.read_text(), "<!doctype html><h1>A</h1>\n")
 
     def test_lost_mutation_response_retains_staging_and_caller_context(self) -> None:
+        """Proves F11."""
+
         for operation in ("publish", "restore"):
             with self.subTest(operation=operation):
                 args = (
@@ -688,6 +742,8 @@ class RemoteCliTest(unittest.TestCase):
         self.assertNotIn("cleanup", [r["stage"] for r in self.records()])
 
     def test_generated_identity_is_reported_after_lost_response(self) -> None:
+        """Proves F12."""
+
         result = self.run_remote(
             "restore",
             "--name",
@@ -702,6 +758,8 @@ class RemoteCliTest(unittest.TestCase):
         self.assertIn(payload["request_id"], shlex.split(self.records()[-1]["argv"][-1]))
 
     def test_usage_failure_preserves_valid_context_and_exits_two(self) -> None:
+        """Proves F13."""
+
         result = self.run_remote("--command-seconds", "0", *self.artifact_args())
         expected = self.failure(
             "publish",
@@ -719,6 +777,8 @@ class RemoteCliTest(unittest.TestCase):
         self.assertEqual(self.records(), [])
 
     def test_malformed_and_mismatched_results_are_protocol_failures(self) -> None:
+        """Proves F14."""
+
         valid = report("status")
         bad = [
             "",
@@ -751,6 +811,8 @@ class RemoteCliTest(unittest.TestCase):
                 )
 
     def test_host_operational_and_usage_errors_keep_structured_actions(self) -> None:
+        """Proves F15."""
+
         for exit_code, phase, outcome in ((1, "status", "observed"), (2, "usage", "error")):
             payload = report("status", outcome=outcome)
             payload["error"] = {
@@ -770,6 +832,8 @@ class RemoteCliTest(unittest.TestCase):
             self.assertEqual(json.loads(result.stdout), payload)
 
     def test_untrusted_mutation_results_retain_staging(self) -> None:
+        """Proves F16."""
+
         valid = report("publish", request_id="attempt-1", expected="rev-a", outcome="published")
         valid["effects"] = {"archive_advanced": True, "activated": True}
         for changed in (
@@ -791,6 +855,8 @@ class RemoteCliTest(unittest.TestCase):
         self.assertNotIn("cleanup", [record["stage"] for record in self.records()])
 
     def test_nested_mutation_report_contract_rejects_false_success_without_cleanup(self) -> None:
+        """Proves F17."""
+
         valid = report("publish", request_id="attempt-1", expected="rev-a", outcome="published")
         cases: list[tuple[str, object]] = [
             ("verification", {"result": "passed"}),
@@ -848,6 +914,8 @@ class RemoteCliTest(unittest.TestCase):
         self.assertNotIn("cleanup", [record["stage"] for record in self.records()])
 
     def test_restore_and_verify_require_successful_revision_bound_verification(self) -> None:
+        """Proves F18."""
+
         for operation in ("restore", "verify"):
             args = [operation, "--name", "release-notes"]
             if operation == "restore":
@@ -881,6 +949,8 @@ class RemoteCliTest(unittest.TestCase):
                     )
 
     def test_valid_pending_archive_noop_preserves_nested_additive_fields(self) -> None:
+        """Proves F19."""
+
         payload = report("publish", request_id="attempt-1", expected="rev-a", outcome="unchanged")
         payload["archived_revision"] = "pending-revision"
         payload["archive_commit"] = "pending-commit"
@@ -903,6 +973,8 @@ class RemoteCliTest(unittest.TestCase):
         self.assertEqual(self.records()[-1]["stage"], "cleanup")
 
     def test_status_preserves_failed_host_checks_and_degraded_observations(self) -> None:
+        """Proves F20."""
+
         payload = report("status")
         payload["archived_revision"] = "rev-b"
         payload["archive_commit"] = "commit-b"
@@ -994,6 +1066,8 @@ class RemoteCliTest(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout)["error"]["code"], "remote_protocol_failure")
 
     def test_valid_failed_mutation_preserves_activation_and_failed_verification(self) -> None:
+        """Proves F24."""
+
         payload = report("publish", request_id="attempt-1", expected="rev-a", outcome="published")
         payload["outcome"] = "error"
         payload["verification"].update(
@@ -1022,6 +1096,8 @@ class RemoteCliTest(unittest.TestCase):
         self.assertEqual(self.records()[-1]["stage"], "cleanup")
 
     def test_deadline_reaps_children_in_every_phase_and_preserves_effects(self) -> None:
+        """Proves F21."""
+
         success = report("publish", request_id="attempt-1", expected="rev-a", outcome="published")
         success["effects"] = {"archive_advanced": True, "activated": True}
         for stage in ("setup", "transfer", "invoke", "cleanup"):
@@ -1072,6 +1148,8 @@ class RemoteCliTest(unittest.TestCase):
                     self.assertEqual(payload["transport"]["cleanup"], "skipped")
 
     def test_cancelled_invocation_reaps_transport_group_and_reports_uncertainty(self) -> None:
+        """Proves F22."""
+
         environment = self.environment | {"FIXTURE_HANG": "invoke"}
         with subprocess.Popen(
             self.command(*self.artifact_args()),
@@ -1094,6 +1172,8 @@ class RemoteCliTest(unittest.TestCase):
         self.assert_no_live_children()
 
     def test_help_explains_continuation(self) -> None:
+        """Proves F23."""
+
         root_help = self.run_remote("--help")
         self.assertEqual(root_help.returncode, 0)
         normalized = " ".join(root_help.stdout.split())

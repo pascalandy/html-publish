@@ -1,3 +1,10 @@
+"""scripts/verify_om1_mvp.py against a fake remote command and a test-owned HTTP server.
+
+Failure modes:
+F1: verify_om1_mvp: the stale publish sends the wrong expected revision and misses a broken guard
+F2: verify_om1_mvp: an over-limit timeout reaches the remote command
+"""
+
 from __future__ import annotations
 
 import json
@@ -12,7 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, cast
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 VERIFIER = ROOT / "scripts" / "verify_om1_mvp.py"
 
 
@@ -187,6 +194,8 @@ class VerifyOm1MvpTest(unittest.TestCase):
         ]
 
     def test_real_process_verifies_update_conflict_http_and_source_preservation(self) -> None:
+        """Proves F1."""
+
         result = self.run_verifier()
 
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -237,6 +246,8 @@ class VerifyOm1MvpTest(unittest.TestCase):
         self.assertIn("om1 deployment MVP B", final["content"])
 
     def test_timeout_argument_is_bounded_before_remote_execution(self) -> None:
+        """Proves F2."""
+
         result = self.run_verifier("--timeout", "301")
 
         self.assertEqual(result.returncode, 1)

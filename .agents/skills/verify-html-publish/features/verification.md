@@ -23,7 +23,7 @@ Preconditions:
 - **Verify healthy content.** Run `HP verify --name release-notes`. Exit 0, `outcome` is `verified`, `verification.result` is `passed`, `verification.revision` is `$R1`, and scope contains `local_export`, `directory_url`, `index_html`, `all_files`, and `missing_path`.
 - **Confirm no mutation.** Compare `HP status --name release-notes` before and after verify. The archive commit, selected revision, and public link stay unchanged. `curl -fsS "$URL/release-notes/"` still returns the published body.
 - **Verify an offline failure last.** Run `scripts/instance.sh offline "$RUN_ID"`, then `HP verify --name release-notes`. Exit 1 with `delivery_failure`; archived and active revisions remain `$R1`, `verification.result` is `failed`, and `verification.revision` is `$R1`.
-- **Use the corruption owner.** Run `uv run python -m unittest -v tests.test_cli.PublisherCliTest.test_verify_failures_preserve_observed_state_and_verification_facts` for the local-corruption case. Do not create a second fault harness.
+- **Use the corruption owner.** Run `uv run python -m unittest -v tests.e2e.test_cli.PublisherCliTest.test_verify_failures_preserve_observed_state_and_verification_facts` for the local-corruption case. Do not create a second fault harness.
 - **Proof.** Save healthy, status, HTTP, and offline outputs under `$ARTIFACTS/verification-<run_id>.txt`.
 
 ## Gotchas

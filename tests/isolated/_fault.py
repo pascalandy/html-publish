@@ -1,6 +1,6 @@
 """Run the real CLI with a durable-transition interruption for recovery tests.
 
-Usage: python tests/_fault.py <fault> [html-publish arguments...]
+Usage: python tests/isolated/_fault.py <fault> [html-publish arguments...]
 
 faults:
   before_ref      terminate before the archive ref advances
@@ -17,7 +17,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from html_publish import _git, cli
 from html_publish.model import Deadline

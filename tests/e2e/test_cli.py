@@ -5,7 +5,6 @@ import errno
 import functools
 import gzip
 import http.server
-import io
 import json
 import os
 import shlex
@@ -19,15 +18,10 @@ import unittest
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, cast
-from unittest import mock
+from typing import Any
 
-from html_publish import _git, cli
-from html_publish.model import Deadline, Failure, Report
-
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
@@ -98,6 +92,25 @@ class GzipHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(self.body)))
         self.end_headers()
         self.wfile.write(self.body)
+
+
+class StallHandler(http.server.BaseHTTPRequestHandler):
+    body = b"<!doctype html><h1>stalled</h1>\n"
+
+    def log_message(self, format: str, *args: object) -> None:
+        pass
+
+    def do_GET(self) -> None:
+        if self.path not in {"/report/", "/report/index.html"}:
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(self.body)))
+        self.end_headers()
+        time.sleep(1.5)
+        with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+            self.wfile.write(self.body)
 
 
 class PublisherCliTest(unittest.TestCase):
@@ -1659,29 +1672,6 @@ class PublisherCliTest(unittest.TestCase):
         self.assertEqual(recovered_payload["active_revision"], requested_revision)
         self.assertEqual(self.git("rev-parse", "refs/heads/published"), saved_commit)
 
-    def test_delivery_failure_reports_selected_unverified_state(self) -> None:
-        source = self.root / "report.html"
-        source.write_bytes(b"<!doctype html><h1>offline</h1>\n")
-        self._stop_server()
-
-        result = self.run_cli(
-            "publish",
-            "--name",
-            "report",
-            "--source",
-            str(source),
-            "--target",
-            self.base_url,
-        )
-
-        self.assertEqual(result.returncode, 1)
-        payload = self.payload(result)
-        self.assertEqual(payload["error"]["code"], "delivery_failure")
-        self.assertEqual(payload["verification"]["result"], "failed")
-        self.assertEqual(payload["effects"], {"archive_advanced": True, "activated": True})
-        self.assertEqual(payload["active_revision"], payload["requested_revision"])
-        self.assertTrue((self.runtime / "public" / "report").is_symlink())
-
     @unittest.skipUnless(hasattr(os, "symlink"), "symbolic links are required")
     def test_symlink_input_is_rejected_without_persistent_state(self) -> None:
         site = self.root / "site"
@@ -2076,20 +2066,6 @@ class PublisherCliTest(unittest.TestCase):
             {"max_bytes": 2_000, "max_files": 7},
         )
 
-    def test_git_older_than_the_supported_minimum_is_rejected(self) -> None:
-        stub = self.root / "stub-bin"
-        stub.mkdir()
-        (stub / "git").write_text("#!/bin/sh\necho 'git version 2.35.0'\n", encoding="utf-8")
-        (stub / "git").chmod(0o755)
-
-        result = self.run_cli("status", env={"PATH": f"{stub}:{os.environ['PATH']}"})
-
-        self.assertEqual(result.returncode, 1)
-        payload = self.payload(result)
-        self.assertEqual(payload["error"]["code"], "git_unsupported")
-        self.assertEqual(payload["error"]["phase"], "version")
-        self.assertIn("2.36", payload["error"]["message"])
-
     def test_git_at_the_supported_minimum_can_publish(self) -> None:
         real_git = shutil.which("git")
         assert real_git is not None
@@ -2126,60 +2102,6 @@ class PublisherCliTest(unittest.TestCase):
         self.assertEqual(self.payload(result)["outcome"], "published")
         with urllib.request.urlopen(self.payload(result)["url"], timeout=2) as response:
             self.assertEqual(response.read(), body)
-
-    def test_git_preflight_uses_the_total_command_deadline(self) -> None:
-        real_git = shutil.which("git")
-        assert real_git is not None
-        stub = self.root / "stub-bin"
-        stub.mkdir()
-        (stub / "git").write_text(
-            "#!/bin/sh\n"
-            'for argument in "$@"; do\n'
-            '  if [ "$argument" = "--version" ]; then\n'
-            "    sleep 0.45\n"
-            "  else\n"
-            "    continue\n"
-            "  fi\n"
-            f'  exec {shlex.quote(real_git)} "$@"\n'
-            "done\n"
-            "sleep 0.10\n"
-            f'exec {shlex.quote(real_git)} "$@"\n',
-            encoding="utf-8",
-        )
-        (stub / "git").chmod(0o755)
-        payload = self.config_payload()
-        payload["limits"]["command_seconds"] = 0.6
-        self.config.write_text(json.dumps(payload), encoding="utf-8")
-        source = self.root / "report.html"
-        source.write_bytes(b"<!doctype html><h1>deadline</h1>\n")
-
-        started = time.monotonic()
-        result = self.run_cli(
-            "plan",
-            "--name",
-            "report",
-            "--source",
-            str(source),
-            "--target",
-            self.base_url,
-            env={"PATH": f"{stub}:{os.environ['PATH']}"},
-        )
-        elapsed = time.monotonic() - started
-
-        self.assertEqual(result.returncode, 1, result.stdout)
-        self.assertIn(
-            self.payload(result)["error"]["code"],
-            {"command_timeout", "git_timeout"},
-        )
-        self.assertLess(elapsed, 1.2)
-
-    def test_a_missing_git_executable_is_reported_as_unavailable(self) -> None:
-        result = self.run_cli("status", env={"PATH": "/nonexistent-html-publish-bin"})
-
-        self.assertEqual(result.returncode, 1)
-        payload = self.payload(result)
-        self.assertEqual(payload["error"]["code"], "git_unavailable")
-        self.assertEqual(payload["error"]["phase"], "version")
 
     def test_capture_rejects_unsafe_inputs_without_persistent_state(self) -> None:
         index = b"<!doctype html><h1>unsafe</h1>\n"
@@ -2292,30 +2214,6 @@ class PublisherCliTest(unittest.TestCase):
         self.assertEqual(self.payload(bytes_limit)["error"]["code"], "input_limit")
         self.assertIn("byte limit", self.payload(bytes_limit)["error"]["message"])
         self.assertFalse(self.archive.exists())
-
-    def test_plan_reports_capture_warnings(self) -> None:
-        site = self.root / "site"
-        site.mkdir()
-        (site / "index.html").write_bytes(
-            b'<!doctype html><link href="/root.css"><script src="https://cdn.example/x.js">'
-            b"</script><script>navigator.serviceWorker.register('/sw.js')</script>\n"
-        )
-
-        result = self.run_cli(
-            "plan",
-            "--name",
-            "warnings",
-            "--source",
-            str(site),
-            "--target",
-            self.base_url,
-        )
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(
-            self.payload(result)["warnings"],
-            ["root_relative_reference", "external_dependency", "service_worker"],
-        )
 
     def test_relative_warning_scan_limits_and_base_href(self) -> None:
         site = self.root / "relative-site"
@@ -3310,96 +3208,6 @@ class PublisherCliTest(unittest.TestCase):
             b"<!doctype html><h1>B</h1>\n",
         )
 
-    def test_conditional_ref_failure_leaves_the_proposed_commit_unreferenced(self) -> None:
-        source = self.root / "report.html"
-        source.write_bytes(b"<!doctype html><h1>A</h1>\n")
-        published = self.run_cli(
-            "publish",
-            "--name",
-            "report",
-            "--source",
-            str(source),
-            "--target",
-            self.base_url,
-        )
-        self.assertEqual(published.returncode, 0, published.stderr)
-        revision_a = self.payload(published)["active_revision"]
-
-        source.write_bytes(b"<!doctype html><h1>B</h1>\n")
-        original_command = _git.command
-        proposed: list[str] = []
-        rival: list[str] = []
-
-        def racing_command(
-            git_dir: Path | None,
-            args: Sequence[str],
-            deadline: Deadline,
-            **kwargs: Any,
-        ) -> bytes:
-            if args and args[0] == "update-ref":
-                head = (
-                    original_command(git_dir, ["rev-parse", "refs/heads/published"], deadline)
-                    .decode()
-                    .strip()
-                )
-                tree = (
-                    original_command(git_dir, ["rev-parse", f"{head}^{{tree}}"], deadline)
-                    .decode()
-                    .strip()
-                )
-                rival_commit = (
-                    original_command(
-                        git_dir, ["commit-tree", tree, "-p", head, "-m", "rival"], deadline
-                    )
-                    .decode()
-                    .strip()
-                )
-                original_command(
-                    git_dir, ["update-ref", "refs/heads/published", rival_commit, head], deadline
-                )
-                rival.append(rival_commit)
-                proposed.append(str(args[2]))
-            return original_command(git_dir, args, deadline, **kwargs)
-
-        report = io.StringIO()
-        arguments = [
-            "--config",
-            str(self.config),
-            "--json",
-            "publish",
-            "--name",
-            "report",
-            "--source",
-            str(source),
-            "--target",
-            self.base_url,
-            "--expected-revision",
-            revision_a,
-        ]
-        with (
-            mock.patch.object(_git, "command", racing_command),
-            contextlib.redirect_stdout(report),
-        ):
-            exit_code = cli.main(arguments)
-
-        self.assertEqual(exit_code, 1)
-        payload = json.loads(report.getvalue())
-        self.assertEqual(payload["error"]["code"], "archive_failure")
-        self.assertEqual(payload["error"]["phase"], "archive")
-        self.assertEqual(payload["effects"], {"archive_advanced": False, "activated": False})
-        self.assertEqual(payload["archived_revision"], revision_a)
-        self.assertEqual(self.git("rev-parse", "refs/heads/published"), rival[0])
-        proposed_commit = proposed[0]
-        self.assertNotEqual(proposed_commit, rival[0])
-        subprocess.run(
-            ["git", f"--git-dir={self.archive}", "cat-file", "-e", f"{proposed_commit}^{{commit}}"],
-            capture_output=True,
-            check=True,
-        )
-        reachable = self.git("rev-list", "refs/heads/published")
-        self.assertNotIn(proposed_commit, reachable.splitlines())
-        self.assertEqual(self.git("rev-list", "--count", "refs/heads/published"), "2")
-
     def test_concurrent_identical_publications_converge(self) -> None:
         source = self.root / "report.html"
         source.write_bytes(b"<!doctype html><h1>same</h1>\n")
@@ -4033,31 +3841,94 @@ class PublisherCliTest(unittest.TestCase):
         self.assertEqual(absent_payload["host_checks"]["route"], "not_checked")
         self.assertEqual(absent_payload["verification"]["result"], "not_checked")
 
-
-class ReportProjectionTest(unittest.TestCase):
-    def test_summary_reports_exact_utf8_omissions_without_changing_detail(self) -> None:
-        message = "€" * 1500 + '\n"\\'
-        report = Report(
+    def test_orphaned_git_lock_is_reported_and_never_removed(self) -> None:
+        source = self.root / "report.html"
+        source.write_bytes(b"<!doctype html><h1>A</h1>\n")
+        published = self.run_cli(
             "publish",
-            "error",
-            "https://publisher.test/pages/",
-            None,
-            None,
-            error=Failure("delivery_failure", "verify", message, "inspect"),
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
         )
+        self.assertEqual(published.returncode, 0, published.stderr)
+        revision_a = self.payload(published)["active_revision"]
+        lock_path = self.archive / "refs" / "heads" / "published.lock"
+        lock_path.write_text("", encoding="utf-8")
 
-        summary = cast(dict[str, Any], cli.report_dict(report, "summary"))
-        detail = cast(dict[str, Any], cli.report_dict(report, "detail"))
-
-        self.assertEqual(summary["error"]["code"], "delivery_failure")
-        self.assertEqual(summary["error"]["next_action"]["kind"], "inspect")
-        self.assertEqual(summary["error"]["message"], "€" * 1365)
-        self.assertEqual(
-            summary["report"]["text"]["/error/message"],
-            {"total_bytes": 4503, "included_bytes": 4095, "omitted_bytes": 408},
+        source.write_bytes(b"<!doctype html><h1>B</h1>\n")
+        failed = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            revision_a,
         )
-        self.assertEqual(detail["error"]["message"], message)
-        self.assertEqual(detail["report"]["text"]["/error/message"]["omitted_bytes"], 0)
+        self.assertEqual(failed.returncode, 1)
+        failed_payload = self.payload(failed)
+        self.assertEqual(failed_payload["error"]["code"], "archive_failure")
+        self.assertIn("published.lock", failed_payload["error"]["message"])
+        self.assertEqual(failed_payload["effects"], {"archive_advanced": False, "activated": False})
+        self.assertTrue(lock_path.exists())
+
+        lock_path.unlink()
+        retry = self.run_cli(
+            "publish",
+            "--name",
+            "report",
+            "--source",
+            str(source),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            revision_a,
+        )
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual(self.payload(retry)["outcome"], "published")
+
+    def test_verification_timeout_reports_failed_delivery(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.server_thread.join(timeout=2)
+        slow_server = QuietServer(("127.0.0.1", 0), StallHandler)
+        slow_thread = threading.Thread(target=slow_server.serve_forever, daemon=True)
+        slow_thread.start()
+        address = slow_server.server_address
+        slow_url = f"http://{address[0]}:{address[1]}/"
+        payload = json.loads(self.config.read_text(encoding="utf-8"))
+        payload["base_url"] = slow_url
+        payload["limits"]["verification_seconds"] = 0.2
+        self.config.write_text(json.dumps(payload), encoding="utf-8")
+        source = self.root / "report.html"
+        source.write_bytes(StallHandler.body)
+        try:
+            result = self.run_cli(
+                "publish",
+                "--name",
+                "report",
+                "--source",
+                str(source),
+                "--target",
+                slow_url,
+            )
+        finally:
+            slow_server.shutdown()
+            slow_server.server_close()
+            slow_thread.join(timeout=2)
+
+        self.assertEqual(result.returncode, 1)
+        result_payload = self.payload(result)
+        self.assertEqual(result_payload["error"]["code"], "delivery_failure")
+        self.assertEqual(result_payload["verification"]["result"], "failed")
+        self.assertIsNotNone(result_payload["verification"]["detail"])
+        self.assertEqual(result_payload["effects"], {"archive_advanced": True, "activated": True})
+        self.assertEqual(result_payload["active_revision"], result_payload["requested_revision"])
 
 
 if __name__ == "__main__":

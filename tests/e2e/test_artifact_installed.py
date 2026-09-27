@@ -12,9 +12,7 @@ import urllib.request
 from pathlib import Path
 from typing import cast
 
-from html_publish.configuration import load_client_config
-
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 INSTANCE = ROOT / ".agents/skills/verify-html-publish/scripts/instance.sh"
 
 
@@ -278,6 +276,10 @@ class InstalledArtifactTest(unittest.TestCase):
             self.assertEqual(local["accepted_revision"], recovered["accepted_revision"])
             self.assertEqual(local["publisher_calls"], 0)
 
+            shown = call(
+                "config", "show", "--role", "client", "--config", str(client_config), "--json"
+            )
+            client_fingerprint = cast(dict[str, object], shown["values"])["fingerprint"]
             legacy_first = publisher(
                 "publish", "--name", "legacy", "--source", str(competing), "--target", target
             )
@@ -291,7 +293,7 @@ class InstalledArtifactTest(unittest.TestCase):
                             "association_id": "existing-v1-association",
                             "name": "legacy",
                             "target": {"kind": "local", "host": "loopback", "base_url": target},
-                            "config_fingerprint": load_client_config(client_config).fingerprint,
+                            "config_fingerprint": client_fingerprint,
                         },
                         "accepted_revision": legacy_first["active_revision"],
                         "pending": None,
