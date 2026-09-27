@@ -187,6 +187,17 @@ class RuleScriptTest(unittest.TestCase):
                 edited(
                     "tests/e2e/test_cli.py",
                     'self.assertEqual(result.stdout, "hi\\n")',
+                    "self.failing_step(result)",
+                ),
+                "error: tests/e2e/test_cli.py:7: [no-assertion] "
+                "tests/e2e/test_cli.py::CliTest::test_child_prints asserts nothing; "
+                "fix: assert the observable result, or delete the test\n",
+            ),
+            (
+                "check_test_smells",
+                edited(
+                    "tests/e2e/test_cli.py",
+                    'self.assertEqual(result.stdout, "hi\\n")',
                     "self.assertEqual(result.stdout, result.stdout)",
                 ),
                 "error: tests/e2e/test_cli.py:11: [self-comparison] "

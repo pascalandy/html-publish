@@ -77,7 +77,7 @@ def asserts_directly(function: Function) -> bool:
                 return True
         if isinstance(node, ast.Call):
             name = callee_name(node)
-            if name is not None and name.startswith(("assert", "fail")):
+            if name is not None and (name.startswith("assert") or name == "fail"):
                 return True
     return False
 
