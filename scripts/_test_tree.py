@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import ast
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -89,9 +89,19 @@ def test_sources(root: Path) -> list[SourceFile]:
     return [parse(root, path) for path in python_files(tests)] if tests.is_dir() else []
 
 
+def module_statements(nodes: Iterable[ast.AST]) -> Iterator[ast.stmt]:
+    """Statements that run in the module namespace, including those inside if, try, with, for,
+    while, and match blocks, but not inside a function or class body."""
+    for node in nodes:
+        if isinstance(node, ast.stmt):
+            yield node
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            yield from module_statements(ast.iter_child_nodes(node))
+
+
 def test_functions(tree: ast.Module) -> Iterator[tuple[ast.ClassDef | None, TestFunction]]:
     """Module-level test functions and test methods of module-level classes."""
-    for node in tree.body:
+    for node in module_statements(tree.body):
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name.startswith(
             "test"
         ):
