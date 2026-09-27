@@ -54,9 +54,8 @@ Six of those 74 already run a shipped executable as a process, so they count as 
 calling `server.main` through `python -c`. With the server's reverse-DNS guard removed, the test
 failed with `reverse DNS attempted`
 
-The other 68 stay isolated, each citing a listed failure. Moving them behind the executable is
-follow-up work on issue #66, because it adds host command shims and does not remove a low-value
-test
+The other 68 stay isolated tests. Moving them behind the executable is follow-up work on issue #66,
+because it adds host command shims and does not remove a low-value test
 
 - `test_deploy.py`: all 23 tests, through `html-publish-deploy` with `systemctl`, `tailscale`, and `uv` shims
 - `test_recovery.py`: the 5 crash-point tests, through a Git shim that pauses the real publisher
