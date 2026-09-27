@@ -42,6 +42,17 @@ The tests called private probe helpers through 37 mock uses. The dated
 | `test_skills.py::test_get_core_prints_plain_guide_text` | Same title and version check | `test_installed.py` `skills get core` |
 | `test_skills.py::test_unknown_guide_is_a_usage_error` | Same plain and JSON usage errors | `test_installed.py` missing-guide checks |
 
+### Correction
+
+The owner named for `test_markdown_record_only_result_advances_the_receipt_pair` did not own its
+contract. The `test_cli.py` legacy receipt test drove the frontmatter-only update but asserted
+neither the accepted record revision nor the saved receipt. The review of this stack reported that
+keeping the previous accepted record revision in the record-only result branch failed the deleted
+test at `a9f3136` while every retained test passed. At `9084d02`, the retained E2E test still
+passed with that defect. [Issue #71](https://github.com/pascalandy/html-publish/issues/71) extends
+that test to assert the accepted pair in the result and the receipt, then publish again through the
+same receipt. That defect now fails it
+
 ## Kept
 
 An independent review (GPT-6 Sol, xhigh reasoning) then disputed the deletion of
