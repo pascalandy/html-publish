@@ -30,7 +30,7 @@ packages = ["html_publish"]
 [tool.pyright]
 pythonVersion = "3.11"
 typeCheckingMode = "strict"
-include = ["html_publish", "tests"]
+include = ["html_publish", "tests", "scripts/_*.py", "scripts/check*.py"]
 
 [tool.ruff]
 target-version = "py311"
