@@ -453,6 +453,29 @@ class DeploymentTest(unittest.TestCase):
         self.assertEqual(executable.read_text(), "fake")
         self.assertFalse(self.layout.current.is_symlink())
 
+    def test_installed_release_runs_outside_the_source_checkout(self) -> None:
+        run = cast(Callable[..., CommandResult], deploy_module.__dict__["_run"])
+
+        def real_release(argv: Sequence[str]) -> CommandResult:
+            if argv[0] in {"systemctl", "tailscale"}:
+                return self.runner(argv)
+            return run(argv)
+
+        result = install(
+            self.layout, Path(__file__).resolve().parents[1], real_release, successful_probe
+        )
+        version = subprocess.run(
+            [str(self.layout.current / ".venv/bin/html-publish"), "--version"],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result["outcome"], "updated")
+        self.assertEqual(version.returncode, 0, version.stderr)
+        self.assertRegex(version.stdout, r"^html-publish \d")
+
     def test_route_changed_after_creation_is_not_removed_by_recovery(self) -> None:
         def concurrent_route(_: str) -> tuple[bool, str]:
             self.runner.serve = {
