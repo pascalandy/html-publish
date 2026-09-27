@@ -3,9 +3,10 @@ set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 # Run every local check
 default: check
 
-# Run the CLI behavior tests
+# Run the isolated tests, then the E2E tests, which record an artifact per test
 test:
-  uv run python -m unittest discover -s tests -v
+  uv run python -m unittest discover -s tests/isolated -t . -v
+  uv run python -m tests.e2e
 
 # Check formatting and lint rules
 lint:
