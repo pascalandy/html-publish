@@ -13,6 +13,9 @@ Install a reviewed release from a wheel or a pinned Git source; the path and tag
 uv tool install --from /path/to/html_publish-0.1.0-py3-none-any.whl html-publish
 uv tool install git+https://github.com/pascalandy/html-publish@<reviewed-tag>
 ```
+
+Keep one installation per host. On a host that runs the publisher, the deployed release is also the client. On `om1`, [install or upgrade](docs/operations.md#install-or-upgrade) through `html-publish-install`, which moves both. Do not add a `uv tool` copy there. That copy upgrades on its own, and the older publisher then rejects its arguments
+
 ```sh
 html-publish skills list
 html-publish skills get core
