@@ -17,6 +17,8 @@ Tests prove behavior a user can observe. `just check` enforces the rules below, 
 
 There is no third bucket. If a test fits neither, do not write it
 
+A test is a `test*` method of a `unittest.TestCase` subclass in a `test_*.py` module. unittest never runs a module-level `test*` function, so its failures would stay hidden. `test-layout` rejects one in either bucket, and the artifact audit rejects one under `tests/e2e/` on its own
+
 An E2E test takes its faults from outside the product: a shim on `PATH`, a `sitecustomize.py`, or a loopback server that stalls or lies. A fault that patches product code makes the test isolated. The one exception is the installed receipt lifecycle in `tests/e2e/test_artifact_installed.py`: its launcher patches receipt persistence inside the installed wheel, because no outside fault reaches that write. Do not add a second one
 
 ## Before adding a test
@@ -64,7 +66,7 @@ Run one test with `uv run python -m unittest tests.e2e.test_cli.PublisherCliTest
 | Check | Enforces |
 | --- | --- |
 | `format`, `lint` | ruff formatting and lint rules |
-| `test-layout` | Every test lives in one of the two buckets |
+| `test-layout` | Every test lives in one of the two buckets, as a method unittest runs |
 | `e2e-boundary` | Rule 2: E2E tests reach the product only through executables |
 | `isolated-failure-modes` | Rule 3: the failure list comes first, and each failure has a test |
 | `test-smells` | No assertion-free tests, self-comparisons, private helper calls, or silenced private-usage checks |
