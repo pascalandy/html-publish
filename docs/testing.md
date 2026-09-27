@@ -1,6 +1,6 @@
 # Testing
 
-Tests prove behavior a user can observe. `just check` enforces the rules below, and each rule names the script that owns it
+Tests prove behavior a user can observe. `just check` enforces the rules below, and [Checks](#checks) maps each rule to the check that owns it
 
 ## Rules
 
@@ -17,11 +17,7 @@ Tests prove behavior a user can observe. `just check` enforces the rules below, 
 
 There is no third bucket. If a test fits neither, do not write it
 
-An E2E test takes its faults from outside the product: a shim on `PATH`, a `sitecustomize.py`, or a
-loopback server that stalls or lies. A fault that patches product code makes the test isolated. The
-one exception is the installed receipt lifecycle in `tests/e2e/test_artifact_installed.py`: its
-launcher patches receipt persistence inside the installed wheel, because no outside fault reaches
-that write. Do not add a second one
+An E2E test takes its faults from outside the product: a shim on `PATH`, a `sitecustomize.py`, or a loopback server that stalls or lies. A fault that patches product code makes the test isolated. The one exception is the installed receipt lifecycle in `tests/e2e/test_artifact_installed.py`: its launcher patches receipt persistence inside the installed wheel, because no outside fault reaches that write. Do not add a second one
 
 ## Before adding a test
 
@@ -71,7 +67,7 @@ Run one test with `uv run python -m unittest tests.e2e.test_cli.PublisherCliTest
 | `isolated-failure-modes` | Rule 3: the failure list comes first, and each failure has a test |
 | `test-smells` | No assertion-free tests, self-comparisons, private helper calls, or silenced private-usage checks |
 | `test-only-code` | No public product definition exists only for tests |
-| `typecheck` | pyright strict over the package, tests, and scripts |
+| `typecheck` | pyright strict over the package, the tests, and the check scripts |
 | `isolated` | Runs `tests/isolated/` |
 | `e2e` | Runs `tests/e2e/` and writes the artifact |
 | `e2e-artifacts` | Verifies that artifact |
@@ -80,4 +76,4 @@ Rule 1 has no direct check, because no script can tell when a test was written. 
 
 ## Hooks
 
-Run `lefthook install` once per clone. Before each commit, lefthook runs `just check --fast`, which skips the two E2E rows. Before each push, it runs `just check`. The full verdict takes several minutes, so give an agent's shell call a 15-minute timeout
+Run `lefthook install` once per clone. Before each commit, lefthook runs `just check --fast`, which skips the two E2E rows. Before each push, it runs `just check`. Both hooks check the working tree, including unstaged edits. The full verdict takes about 3 minutes, so give an agent's shell call a 15-minute timeout
