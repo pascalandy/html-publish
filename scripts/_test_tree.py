@@ -104,6 +104,19 @@ def test_functions(tree: ast.Module) -> Iterator[tuple[ast.ClassDef | None, Test
                     yield node, item
 
 
+def undiscovered_tests(source: SourceFile, check: str) -> list[str]:
+    """One error per module-level test function in a test module; unittest runs only methods."""
+    if not source.is_test_module:
+        return []
+    return [
+        f"{source.label}:{function.lineno}: [{check}] {source.test_id(owner, function)} is a "
+        "module-level function that unittest never runs; fix: make it a method of a "
+        "unittest.TestCase subclass"
+        for owner, function in test_functions(source.tree)
+        if owner is None
+    ]
+
+
 def imported_modules(tree: ast.Module) -> Iterator[tuple[ast.stmt, str]]:
     """Each import statement with every module it names, including `from X import Y` as X.Y."""
     for node in ast.walk(tree):

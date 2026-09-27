@@ -11,7 +11,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from _common import ScriptError, run_script
-from _test_tree import BUCKETS, add_root_argument, python_files, test_functions, test_sources
+from _test_tree import (
+    BUCKETS,
+    add_root_argument,
+    python_files,
+    test_functions,
+    test_sources,
+    undiscovered_tests,
+)
 
 EPILOG = """\
 rule:
@@ -19,7 +26,8 @@ rule:
   Git, files, and loopback HTTP. tests/isolated/ tests one system alone and opens
   with its failure list. There is no third bucket for after-the-fact unit tests.
   Inside a bucket, test modules are test_*.py and support modules are _*.py.
-  See docs/testing.md.
+  A test is a test* method of a unittest.TestCase subclass; unittest never runs
+  a module-level test function. See docs/testing.md.
 
 examples:
   just check --only test-layout
@@ -75,6 +83,7 @@ def check(root: Path) -> str:
             )
         if source.is_test_module:
             counts[source.bucket] += 1
+            errors += undiscovered_tests(source, "test-layout")
         elif name.startswith("_"):
             for owner, function in test_functions(source.tree):
                 errors.append(
