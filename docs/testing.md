@@ -44,14 +44,16 @@ F2: store: a kill before the ref advances blocks the retry
 
 Each test's docstring cites the IDs it proves, such as `"""Proves F2."""`. Mocks and in-process calls belong here and nowhere else
 
+To wrap a private helper for fault injection, read it as a plain attribute and add `# pyright: ignore[reportPrivateUsage]` to that line. `test-smells` rejects `getattr` and `__dict__` reads because they hide the access from pyright
+
 ## E2E artifacts
 
 `just check` runs `python -m tests.e2e`, which records every E2E test under `/tmp/html-publish-verify/<run id>/artifacts/`
 
 - `manifest.json` names the commit, the rerun command for the suite and for each test, each test's outcome, and the sha256 of every record
-- `tests/<test id>.jsonl` holds one line per process the test started: argv, working directory, exit code, and stdout and stderr digests with a readable head
+- `tests/<test id>.jsonl` holds one line per process the test started: argv, working directory, and exit code. Processes started with `subprocess.run` also record stdout and stderr digests with a readable head
 
-`scripts/check_e2e_artifacts.py` then requires that the run matches the checkout, covers every E2E test, reports no failure, shows each test starting a process, and still matches its digests. CI uploads the same directory
+`scripts/check_e2e_artifacts.py` then requires that the run matches the checkout, covers every E2E test, reports no failure, and still matches its digests. Each passing test must start `html-publish`, the `html_publish` package, or a repository script. CI uploads the same directory
 
 Run one test with `uv run python -m unittest tests.e2e.test_cli.PublisherCliTest.<test name>`. That run writes no artifact; only `python -m tests.e2e`, which `just check` calls, does
 
