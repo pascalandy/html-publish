@@ -91,7 +91,9 @@ def expected_tests(root: Path) -> tuple[set[str], list[str]]:
         undiscovered += undiscovered_tests(source, "e2e-artifacts")
         module = source.label.removesuffix(".py").replace("/", ".")
         for owner, function in test_functions(source.tree):
-            if owner is not None:
+            # A class inside an if or try block may not exist on this platform, so only a class
+            # at the top of the module is sure to run
+            if owner is not None and owner in source.tree.body:
                 identifiers.add(f"{module}.{owner.name}.{function.name}")
     return identifiers, undiscovered
 
