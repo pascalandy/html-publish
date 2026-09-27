@@ -30,9 +30,9 @@ rule:
   writes <artifacts root>/<run id>/artifacts/manifest.json plus one record per
   test. This check requires that the run
   - comes from the checked-out commit,
-  - tested the source files the checkout holds now: the fingerprint of tracked
-    and non-ignored untracked files, taken before and after the suite, matches
-    both times, so a dirty checkout passes until a file changes,
+  - tested the source files the checkout holds now: the fingerprints of tracked
+    and non-ignored untracked files taken before the suite, after it, and from
+    the checkout all match, so a dirty checkout passes until a file changes,
   - covers every E2E test in tests/e2e/, none of them a module-level function
     that unittest never runs,
   - reports no failed test and gives every skip a reason,
@@ -127,7 +127,10 @@ def check_source(run: Path, root: Path, recorded: object) -> list[str]:
     try:
         current = source_fingerprint(root)
     except (OSError, subprocess.CalledProcessError) as error:
-        return [f"{root}: [e2e-artifacts] cannot fingerprint the checkout: {error}"]
+        return [
+            f"{root}: [e2e-artifacts] cannot fingerprint the checkout: {str(error).rstrip('.')}; "
+            "fix: pass a Git checkout as --root and put git on PATH"
+        ]
     if current != start:
         return [
             f"{run}: [e2e-artifacts] run tested other source files than the checkout holds; {RERUN}"
