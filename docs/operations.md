@@ -75,13 +75,13 @@ html-publish-install \
 
 The [reviewed dotfiles installer](https://github.com/pascalandy/dotfiles/blob/e868e5246d60960fd68ecebb461a49621a86e036/dot_local/bin/executable_html-publish-install) rejects the wrong machine, user, operating system, dirty checkout, or mismatched revision. It invokes `uv run --frozen python -m html_publish.deploy install --source` inside that checkout. It does not install skills or enable user linger
 
-The deployment module builds a wheel on `om1`, creates a content-addressed virtual environment, writes the publisher configuration and user unit, starts the service, installs the Tailscale route, and runs health checks. Repeating the command for the same wheel reports `unchanged`. A changed wheel creates and activates a new application release. `just deploy-om1` remains a repository convenience command without the dotfiles entrypoint's machine and revision checks
+The deployment module builds a wheel on `om1` and exports the locked runtime requirements from `uv.lock`. It installs both in a content-addressed virtual environment. The release ID hashes the wheel and requirements bytes. The module writes the publisher configuration and user unit, starts the service, installs the Tailscale route, and runs health checks. Repeating the command with the same wheel and requirements reports `unchanged`. A changed wheel or a lockfile-only change to the exported requirements creates and activates a new application release. `just deploy-om1` remains a repository convenience command without the dotfiles entrypoint's machine and revision checks
 
 The installer checks configuration, route ownership, unit state, and pointer shape before creating deployment state or preparing a wheel. A conflicting configuration or route stops the install before activation. It checks those inputs again after preparing the release. Existing routes on ports 443, 8443, and 5173 remain untouched
 
 On activation failure, recovery restores this attempt's unit and configuration bytes and modes, exact application symlinks, and enabled state. This also applies to same-wheel reinstalls. Recovery refuses to overwrite a file, pointer, or route that no longer matches this attempt's writes. It removes only a newly created, still-matching `/html-publish` handler. It never restores a complete Tailscale Serve snapshot
 
-The error reports both the original failure and any recovery failures. If file or pointer recovery fails, the installer skips restarting the recovered service and reports that omission. Inspect the reported state before retrying. Application releases, the archive, and publication runtime remain in place. An incomplete application release is retained for inspection and blocks reuse of that wheel until the operator resolves it
+The error reports both the original failure and any recovery failures. If file or pointer recovery fails, the installer skips restarting the recovered service and reports that omission. Inspect the reported state before retrying. Application releases, the archive, and publication runtime remain in place. An incomplete application release is retained for inspection and blocks reuse of that wheel and requirements until the operator resolves it
 
 Run one installer at a time. Recovery is scoped to a caught failure in the current process. It is not a durable transaction across SIGKILL, crashes, or power loss. The installer accepts enabled, disabled, or absent units and refuses other unit-file states before changing them. Child commands have a 120-second deadline, followed by bounded process-group termination and direct-child reaping
 
@@ -316,7 +316,7 @@ To select a known installed release, run the deployment module with its release 
 
 ```sh
 /home/pascal/.local/share/html-publish/current/.venv/bin/html-publish-deploy rollback \
-	--release 'sha256-<wheel-digest>'
+	--release 'sha256-<wheel-and-locked-requirements-digest>'
 ```
 
 Rollback changes the application release pointer and restarts the service. It does not restore publication content or earlier unit and configuration files. A failed rollback restores the exact original application pointers if they still match this attempt's writes. Recovery restart failures remain visible in the error

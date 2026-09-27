@@ -19,6 +19,11 @@ uv tool install --from /path/to/html_publish-0.1.0-py3-none-any.whl html-publish
 uv tool install git+https://github.com/pascalandy/html-publish@<reviewed-tag>
 ```
 
+Keep one installation per host. On a host that runs the publisher, the deployed release is also
+the client. On `om1`, upgrade both with `html-publish-install`, as the operations guide
+describes. Do not add a `uv tool` copy there. That copy upgrades on its own, and the older
+publisher then rejects its arguments.
+
 Confirm the installation and its version-matched guides:
 
 ```sh

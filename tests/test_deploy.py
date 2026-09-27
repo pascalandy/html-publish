@@ -43,6 +43,7 @@ class FakeRunner:
     def __init__(self) -> None:
         self.calls: list[tuple[str, ...]] = []
         self.wheel_bytes = b"release-a"
+        self.requirements = "markdown-it-py==4.2.0 \\\n    --hash=sha256:aa\n"
         self.serve: dict[str, object] = {}
         self.service_active = True
         self.restart_failures = 0
@@ -55,6 +56,10 @@ class FakeRunner:
             output = Path(command[command.index("--out-dir") + 1])
             output.mkdir(parents=True, exist_ok=True)
             (output / "html_publish-0.1.0-py3-none-any.whl").write_bytes(self.wheel_bytes)
+        elif command[:2] == ("uv", "export"):
+            Path(command[command.index("--output-file") + 1]).write_text(
+                self.requirements, encoding="utf-8"
+            )
         elif command[:2] == ("uv", "venv"):
             (Path(command[-1]) / "bin").mkdir(parents=True)
             (Path(command[-1]) / "bin" / "python").write_text("fake", encoding="utf-8")
@@ -182,6 +187,21 @@ class DeploymentTest(unittest.TestCase):
         self.assertEqual((self.layout.archive / "archive-sentinel").read_text(), "history")
         self.assertEqual((self.layout.runtime / "runtime-sentinel").read_text(), "active")
         self.assertEqual(self.layout.config.read_bytes(), preserved_config)
+
+    def test_changed_locked_requirements_create_a_new_release(self) -> None:
+        install(self.layout, self.source, self.runner, successful_probe)
+        first_release = self.layout.current.resolve()
+        self.runner.requirements = "markdown-it-py==4.2.0 \\\n    --hash=sha256:bb\n"
+
+        result = install(self.layout, self.source, self.runner, successful_probe)
+
+        self.assertEqual(result["outcome"], "updated")
+        self.assertNotEqual(self.layout.current.resolve(), first_release)
+        self.assertEqual(self.layout.previous.resolve(), first_release)
+        self.assertEqual(
+            (self.layout.current / "requirements.txt").read_text(encoding="utf-8"),
+            self.runner.requirements,
+        )
 
     def test_route_collision_refuses_to_change_tailscale(self) -> None:
         self.runner.serve = {
@@ -452,6 +472,29 @@ class DeploymentTest(unittest.TestCase):
             install(self.layout, self.source, self.runner, successful_probe)
         self.assertEqual(executable.read_text(), "fake")
         self.assertFalse(self.layout.current.is_symlink())
+
+    def test_installed_release_runs_outside_the_source_checkout(self) -> None:
+        run = cast(Callable[..., CommandResult], deploy_module.__dict__["_run"])
+
+        def real_release(argv: Sequence[str]) -> CommandResult:
+            if argv[0] in {"systemctl", "tailscale"}:
+                return self.runner(argv)
+            return run(argv)
+
+        result = install(
+            self.layout, Path(__file__).resolve().parents[1], real_release, successful_probe
+        )
+        version = subprocess.run(
+            [str(self.layout.current / ".venv/bin/html-publish"), "--version"],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result["outcome"], "updated")
+        self.assertEqual(version.returncode, 0, version.stderr)
+        self.assertRegex(version.stdout, r"^html-publish \d")
 
     def test_route_changed_after_creation_is_not_removed_by_recovery(self) -> None:
         def concurrent_route(_: str) -> tuple[bool, str]:
