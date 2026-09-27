@@ -8,7 +8,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -110,11 +110,13 @@ class RuleScriptTest(unittest.TestCase):
             path.write_text(textwrap.dedent(content), encoding="utf-8")
         return root
 
-    def run_script(self, root: Path, name: str, *args: str) -> subprocess.CompletedProcess[str]:
+    def run_script(
+        self, root: Path, name: str, *args: str, env: Mapping[str, str] = FIXTURE_ENVIRONMENT
+    ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, f"scripts/{name}.py", *args],
             cwd=root,
-            env=FIXTURE_ENVIRONMENT,
+            env=env,
             capture_output=True,
             text=True,
             timeout=60,
@@ -150,13 +152,15 @@ class RuleScriptTest(unittest.TestCase):
         self.git(root, "commit", "-qm", "fixture")
         return root, Path(self.enterContext(tempfile.TemporaryDirectory(prefix="hp-runs-")))
 
-    def record(self, root: Path, runs: Path, run_id: str) -> subprocess.CompletedProcess[str]:
+    def record(
+        self, root: Path, runs: Path, run_id: str, env: Mapping[str, str] = FIXTURE_ENVIRONMENT
+    ) -> subprocess.CompletedProcess[str]:
         """Run the fixture's E2E suite through the recorder, as just check does."""
         return subprocess.run(
             [sys.executable, "-m", "tests.e2e"],
             cwd=root,
             env={
-                **FIXTURE_ENVIRONMENT,
+                **env,
                 "HTML_PUBLISH_E2E_ROOT": str(runs),
                 "HTML_PUBLISH_E2E_RUN_ID": run_id,
             },
@@ -166,10 +170,22 @@ class RuleScriptTest(unittest.TestCase):
         )
 
     def audit(
-        self, root: Path, runs: Path, run_id: str, *args: str
+        self,
+        root: Path,
+        runs: Path,
+        run_id: str,
+        *args: str,
+        env: Mapping[str, str] = FIXTURE_ENVIRONMENT,
     ) -> subprocess.CompletedProcess[str]:
         return self.run_script(
-            root, "check_e2e_artifacts", "--run-id", run_id, "--artifacts-root", str(runs), *args
+            root,
+            "check_e2e_artifacts",
+            "--run-id",
+            run_id,
+            "--artifacts-root",
+            str(runs),
+            *args,
+            env=env,
         )
 
     def test_each_rule_accepts_the_clean_tree(self) -> None:
@@ -549,7 +565,10 @@ class RuleScriptTest(unittest.TestCase):
         (root / "dist" / "pinned.txt").write_text(
             "tracked under an ignored path\n", encoding="utf-8"
         )
-        self.git(root, "add", "--force", "dist/pinned.txt")
+        for directory in ("old", "moved"):
+            (root / "docs" / directory).mkdir(parents=True)
+            (root / "docs" / directory / "page.md").write_text("tracked\n", encoding="utf-8")
+        self.git(root, "add", "--force", "dist/pinned.txt", "docs")
         self.git(root, "commit", "-qm", "pin a file under an ignored path")
         store = root / "html_publish" / "store.py"
         store.write_text(
@@ -557,6 +576,15 @@ class RuleScriptTest(unittest.TestCase):
         )
         (root / "notes.md").write_text("draft\n", encoding="utf-8")
         (root / "latest").symlink_to("html_publish")
+        shutil.rmtree(root / "docs" / "old")
+        (root / "docs" / "old").write_text("a file where a directory was\n", encoding="utf-8")
+        outside = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="hp-outside-")))
+        (outside / "page.md").write_text("outside the checkout\n", encoding="utf-8")
+        shutil.rmtree(root / "docs" / "moved")
+        (root / "docs" / "moved").symlink_to(outside)
+        (root / "nested").mkdir()
+        self.git(root / "nested", "init", "-q")
+        (root / "nested" / "lib.py").write_text("VALUE = 1\n", encoding="utf-8")
 
         recorded = self.record(root, runs, "e2e-dirty")
         self.assertEqual(recorded.returncode, 0, recorded.stderr)
@@ -572,8 +600,29 @@ class RuleScriptTest(unittest.TestCase):
         (root / "html_publish" / "__pycache__" / "extra.cpython-311.pyc").write_bytes(b"cache")
         for path in (store, root / "tests" / "e2e" / "test_cli.py", root / "notes.md"):
             os.utime(path, (1, 1))
+        (outside / "page.md").write_text("changed outside the checkout\n", encoding="utf-8")
         generated = self.audit(root, runs, "e2e-dirty")
         self.assertEqual((generated.returncode, generated.stdout), (0, passed), generated.stderr)
+
+        foreign = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="hp-foreign-")))
+        self.git(foreign, "init", "-q")
+        (foreign / "other.txt").write_text("another repository\n", encoding="utf-8")
+        self.git(foreign, "add", "other.txt")
+        self.git(foreign, "commit", "-qm", "foreign")
+        hook = {
+            **FIXTURE_ENVIRONMENT,
+            "GIT_DIR": str(foreign / ".git"),
+            "GIT_WORK_TREE": str(foreign),
+        }
+        in_hook = self.audit(root, runs, "e2e-dirty", env=hook)
+        self.assertEqual((in_hook.returncode, in_hook.stdout), (0, passed), in_hook.stderr)
+        self.assertEqual(self.record(root, runs, "e2e-hook", env=hook).returncode, 0)
+        hooked = self.audit(root, runs, "e2e-hook")
+        self.assertEqual(
+            (hooked.returncode, hooked.stdout),
+            (0, f"ok: 1 e2e tests left verified records in {runs / 'e2e-hook' / 'artifacts'}\n"),
+            hooked.stderr,
+        )
 
         def copied() -> Path:
             parent = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="hp-copy-")))
@@ -628,6 +677,12 @@ class RuleScriptTest(unittest.TestCase):
                 lambda copy: (copy / "html_publish" / "store.py").chmod(0o755),
             ),
             ("retarget a symlink", retarget_symlink),
+            (
+                "edit a file in a nested repository",
+                lambda copy: (copy / "nested" / "lib.py").write_text(
+                    "VALUE = 2\n", encoding="utf-8"
+                ),
+            ),
         ]
         for label, mutate in mutations:
             with self.subTest(label):

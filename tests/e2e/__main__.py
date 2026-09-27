@@ -33,7 +33,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TextIO
 
-from tests.e2e._fingerprint import source_fingerprint
+from tests.e2e._fingerprint import git_environment, source_fingerprint
 
 ROOT = Path(__file__).resolve().parents[2]
 SPAWN_EVENTS = frozenset({"subprocess.Popen", "os.system"})
@@ -225,7 +225,11 @@ class RecordingResult(unittest.TextTestResult):
 def git_state() -> dict[str, object]:
     def git(*args: str) -> str:
         return subprocess.run(
-            ["git", "-C", str(ROOT), *args], capture_output=True, text=True, check=True
+            ["git", "-C", str(ROOT), *args],
+            env=git_environment(),
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout.strip()
 
     try:
