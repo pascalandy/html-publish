@@ -186,6 +186,16 @@ class RuleScriptTest(unittest.TestCase):
                 "never runs; fix: make it a method of a unittest.TestCase subclass\n",
             ),
             (
+                "check_test_layout",
+                appended(
+                    "tests/e2e/test_cli.py",
+                    "\n\nif True:\n\n    def test_in_a_block() -> None:\n        assert False\n",
+                ),
+                "error: tests/e2e/test_cli.py:18: [test-layout] "
+                "tests/e2e/test_cli.py::test_in_a_block is a module-level function that unittest "
+                "never runs; fix: make it a method of a unittest.TestCase subclass\n",
+            ),
+            (
                 "check_e2e_boundary",
                 {"tests/e2e/test_cli.py": "from html_publish import store\n"},
                 "error: tests/e2e/test_cli.py:1: [e2e-boundary] imports html_publish; "
