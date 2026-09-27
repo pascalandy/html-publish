@@ -1,3 +1,25 @@
+"""Publisher behavior when a process dies, a durable write fails, or Git misbehaves.
+
+Faults come from tests/isolated/_fault.py, Git shims on PATH, and patched store calls.
+
+Failure modes:
+F1: store: a publisher killed before the archive ref advances leaves state its retry cannot recover
+F2: store: a first publication killed before the ref advances leaves a half-created page
+F3: store: a retry after a kill past the ref advance creates a second archive commit
+F4: store: a retry after a crash refuses to reuse a validated release already on disk
+F5: store: a kill after selection hides that the page is active but unverified
+F6: store: a directory fsync failure after selection is reported as activation_failure
+F7: store: a failed public symlink replacement is reported as export_failure
+F8: store: an export write failure deletes the partial stage before reporting its byte count
+F9: store: a failed release rename deletes the complete stage needed for inspection and retry
+F10: artifact: capture publishes a source whose metadata changed while it was copied
+F11: git: a Git child that outlives the command deadline is not reaped
+F12: git: a missing executable is reported as an archive failure instead of git_unavailable
+F13: store: an external ref move is overwritten and the losing commit becomes selected
+F14: git: a version older than 2.36 is accepted and the command proceeds
+F15: cli: Git version preflight time is refunded, so the command exceeds its total budget
+"""
+
 from __future__ import annotations
 
 import contextlib
@@ -134,6 +156,8 @@ class RecoveryTest(unittest.TestCase):
         return arguments
 
     def test_kill_before_ref_advancement_recovers_by_retry(self) -> None:
+        """Proves F1."""
+
         source = self.root / "report.html"
         source.write_bytes(b"<!doctype html><h1>A</h1>\n")
         published = self.run_cli(
@@ -173,6 +197,8 @@ class RecoveryTest(unittest.TestCase):
         )
 
     def test_kill_on_first_publication_recovers_by_retry(self) -> None:
+        """Proves F2."""
+
         source = self.root / "report.html"
         source.write_bytes(b"<!doctype html><h1>first</h1>\n")
         killed = self.run_fault("before_ref", *self.publish_arguments(source))
@@ -190,6 +216,8 @@ class RecoveryTest(unittest.TestCase):
         self.assertEqual(self.git("rev-list", "--count", "refs/heads/published"), "1")
 
     def test_kill_after_ref_advancement_reuses_the_saved_archive(self) -> None:
+        """Proves F3."""
+
         source = self.root / "report.html"
         source.write_bytes(b"<!doctype html><h1>A</h1>\n")
         published = self.run_cli(
@@ -229,6 +257,8 @@ class RecoveryTest(unittest.TestCase):
         self.assertEqual(self.git("rev-list", "--count", "refs/heads/published"), "2")
 
     def test_kill_after_export_completion_reuses_the_validated_export(self) -> None:
+        """Proves F4."""
+
         source = self.root / "report.html"
         source.write_bytes(b"<!doctype html><h1>A</h1>\n")
         published = self.run_cli(
@@ -263,6 +293,8 @@ class RecoveryTest(unittest.TestCase):
         )
 
     def test_kill_after_selection_leaves_active_but_unverified_content(self) -> None:
+        """Proves F5."""
+
         source = self.root / "report.html"
         source.write_bytes(b"<!doctype html><h1>A</h1>\n")
         published = self.run_cli(
@@ -308,6 +340,8 @@ class RecoveryTest(unittest.TestCase):
         self.assertEqual(self.payload(changed)["error"]["code"], "revision_conflict")
 
     def test_fsync_failure_after_selection_reports_persistence_failure(self) -> None:
+        """Proves F6."""
+
         source = self.root / "report.html"
         source.write_bytes(b"<!doctype html><h1>A</h1>\n")
         published = self.run_cli(
@@ -353,6 +387,8 @@ class RecoveryTest(unittest.TestCase):
         self.assertEqual(payload["verification"]["result"], "not_checked")
 
     def test_replace_failure_reports_activation_failure(self) -> None:
+        """Proves F7."""
+
         source = self.root / "report.html"
         source.write_bytes(b"<!doctype html><h1>A</h1>\n")
         published = self.run_cli(
@@ -393,6 +429,8 @@ class RecoveryTest(unittest.TestCase):
         self.assertEqual(payload["effects"], {"archive_advanced": True, "activated": False})
 
     def test_export_write_failure_retains_private_bytes_and_reuses_saved_commit(self) -> None:
+        """Proves F8."""
+
         source = self.root / "report.html"
         body_a = b"<!doctype html><h1>A</h1>\n"
         body_b = b"<!doctype html><h1>B</h1>\n"
@@ -472,6 +510,8 @@ class RecoveryTest(unittest.TestCase):
             self.assertEqual(response.read(), body_b)
 
     def test_rename_failure_reports_export_failure_with_stage_usage(self) -> None:
+        """Proves F9."""
+
         source = self.root / "report.html"
         source.write_bytes(b"<!doctype html><h1>A</h1>\n")
         published = self.run_cli(
@@ -517,6 +557,8 @@ class RecoveryTest(unittest.TestCase):
         self.assertEqual(len(list((self.runtime / "staging").iterdir())), 1)
 
     def test_source_change_during_capture_fails_without_persistent_state(self) -> None:
+        """Proves F10."""
+
         source = self.root / "report.html"
         source.write_bytes(b"<!doctype html><h1>A</h1>\n")
         original_fstat = os.fstat
@@ -553,6 +595,8 @@ class RecoveryTest(unittest.TestCase):
         self.assertFalse(self.runtime.exists())
 
     def test_git_child_timeout_is_reaped(self) -> None:
+        """Proves F11."""
+
         stub = self.root / "stub-bin"
         stub.mkdir()
         (stub / "git").write_text("#!/bin/sh\nsleep 5\n", encoding="utf-8")
@@ -572,6 +616,8 @@ class RecoveryTest(unittest.TestCase):
         self.assertLess(elapsed, 2.0)
 
     def test_a_missing_git_executable_is_reported_as_unavailable(self) -> None:
+        """Proves F12."""
+
         result = self.run_cli("status", env={"PATH": "/nonexistent-html-publish-bin"})
 
         self.assertEqual(result.returncode, 1)
@@ -580,6 +626,8 @@ class RecoveryTest(unittest.TestCase):
         self.assertEqual(payload["error"]["phase"], "version")
 
     def test_conditional_ref_failure_leaves_the_proposed_commit_unreferenced(self) -> None:
+        """Proves F13."""
+
         source = self.root / "report.html"
         source.write_bytes(b"<!doctype html><h1>A</h1>\n")
         published = self.run_cli(
@@ -670,6 +718,8 @@ class RecoveryTest(unittest.TestCase):
         self.assertEqual(self.git("rev-list", "--count", "refs/heads/published"), "2")
 
     def test_git_older_than_the_supported_minimum_is_rejected(self) -> None:
+        """Proves F14."""
+
         stub = self.root / "stub-bin"
         stub.mkdir()
         (stub / "git").write_text("#!/bin/sh\necho 'git version 2.35.0'\n", encoding="utf-8")
@@ -684,6 +734,8 @@ class RecoveryTest(unittest.TestCase):
         self.assertIn("2.36", payload["error"]["message"])
 
     def test_git_preflight_uses_the_total_command_deadline(self) -> None:
+        """Proves F15."""
+
         real_git = shutil.which("git")
         assert real_git is not None
         stub = self.root / "stub-bin"
