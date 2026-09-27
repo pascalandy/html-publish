@@ -27,6 +27,8 @@ html-publish skills get core
 just check
 ```
 
+`just check --fast` skips the E2E checks. Run `lefthook install` once per clone to run the fast checks before each commit and the full verdict before each push. [Testing](docs/testing.md) explains the test rules the checks enforce
+
 ## Set up a target
 
 ```sh
