@@ -8,8 +8,11 @@ $HTML_PUBLISH_E2E_RUN_ID or is generated.
 
   manifest.json          commit, rerun commands, each test's outcome, and the
                          sha256 of every record file
-  tests/<test id>.jsonl  one line per process the test started: argv, cwd, exit
-                         code, and stdout and stderr digests with a readable head
+  tests/<test id>.jsonl  one line per process the test started: argv, cwd, and
+                         exit code; subprocess.run calls also get stdout and
+                         stderr digests with a readable head. A Popen process's
+                         exit code is read when its test ends, and a process
+                         still running then records null
 
 scripts/check_e2e_artifacts.py verifies a run against its files and the test tree.
 """
@@ -67,6 +70,7 @@ class Recorder:
         self.artifacts = artifacts
         self.tests: dict[str, dict[str, Any]] = {}
         self.processes: dict[str, list[dict[str, Any]]] = {}
+        self.popens: dict[str, list[tuple[dict[str, Any], subprocess.Popen[Any]]]] = {}
         self.current: str | None = None
         self.started: float = 0.0
 
@@ -100,6 +104,21 @@ class Recorder:
 
         setattr(subprocess, "run", run)  # noqa: B010
 
+    def track_popen(self) -> None:
+        """Keep each Popen a test starts, so its exit code can be read when the test ends."""
+        recorder = self
+
+        class RecordingPopen(subprocess.Popen[Any]):
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                owner = recorder.current
+                index = len(recorder.processes[owner]) if owner is not None else 0
+                super().__init__(*args, **kwargs)
+                if owner is not None and len(recorder.processes[owner]) > index:
+                    entry = recorder.processes[owner][index]
+                    recorder.popens.setdefault(owner, []).append((entry, self))
+
+        setattr(subprocess, "Popen", RecordingPopen)  # noqa: B010
+
     def begin(self, test_id: str) -> None:
         self.current = test_id
         self.started = time.monotonic()
@@ -115,6 +134,9 @@ class Recorder:
 
     def end(self, test_id: str) -> None:
         self.tests[test_id]["seconds"] = round(time.monotonic() - self.started, 3)
+        for entry, process in self.popens.pop(test_id, []):
+            if "returncode" not in entry:
+                entry["returncode"] = process.poll()
         self.current = None
 
     def write(self, started_at: str) -> Path:
@@ -237,6 +259,7 @@ def main(stream: TextIO = sys.stderr) -> int:
     recorder = Recorder(run_id, artifacts)
     sys.addaudithook(recorder.audit)
     recorder.wrap_run()
+    recorder.track_popen()
     suite = unittest.defaultTestLoader.discover(
         str(ROOT / "tests" / "e2e"), pattern="test_*.py", top_level_dir=str(ROOT)
     )
