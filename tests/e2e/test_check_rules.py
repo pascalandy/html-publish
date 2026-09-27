@@ -494,6 +494,13 @@ class RuleScriptTest(unittest.TestCase):
 
                 def test_free_function_never_runs() -> None:
                     assert False
+
+
+                if sys.platform == "no-such-platform":
+
+                    class ElsewhereTest(unittest.TestCase):
+                        def test_only_elsewhere(self) -> None:
+                            self.fail("this class exists only on another platform")
                 """
             ),
             encoding="utf-8",
@@ -516,6 +523,7 @@ class RuleScriptTest(unittest.TestCase):
         )
         self.assertNotIn("test_popen_drives_the_product", quiet.stderr)
         self.assertNotIn("test_never_runs", quiet.stderr)
+        self.assertNotIn("ElsewhereTest", quiet.stderr)
         quiet_run = artifacts_root / "e2e-quiet" / "artifacts"
         quiet_tests = json.loads((quiet_run / "manifest.json").read_text(encoding="utf-8"))["tests"]
         self.assertEqual(
