@@ -746,6 +746,35 @@ class PublisherCliTest(unittest.TestCase):
         self.assertTrue(revised_payload["snapshot"].endswith("/article.md"))
         self.assertEqual(revised_payload["effects"], {"archive_advanced": True, "activated": False})
         self.assertEqual(urllib.request.urlopen(f"{self.base_url}guide/").status, 200)
+        second_record = revised_payload["requested_record_revision"]
+        self.assertNotEqual(second_record, first_payload["requested_record_revision"])
+        self.assertEqual(
+            (revised_payload["accepted_revision"], revised_payload["accepted_record_revision"]),
+            (first_payload["requested_revision"], second_record),
+        )
+        revised_receipt = json.loads((receipt_dir / "receipt.json").read_text())
+        self.assertEqual(
+            (revised_receipt["accepted_revision"], revised_receipt["accepted_record_revision"]),
+            (first_payload["requested_revision"], second_record),
+        )
+
+        source.write_text("---\nprivate: third\n---\n# Guide\n")
+        followed = artifact(
+            "publish", str(source), "--receipt", str(receipt_dir), "--format", "markdown"
+        )
+        self.assertEqual(followed.returncode, 0, followed.stdout + followed.stderr)
+        followed_payload = self.payload(followed)
+        self.assertEqual(
+            (
+                followed_payload["original_expectation"],
+                followed_payload["original_record_expectation"],
+            ),
+            (first_payload["requested_revision"], second_record),
+        )
+        self.assertEqual(
+            followed_payload["accepted_record_revision"],
+            followed_payload["requested_record_revision"],
+        )
 
     def test_legacy_restore_conflict_preserves_current_markdown_record_for_review(self) -> None:
         html_source = self.root / "original.html"
