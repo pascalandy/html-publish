@@ -46,12 +46,12 @@ The tests called private probe helpers through 37 mock uses. The dated
 
 The owner named for `test_markdown_record_only_result_advances_the_receipt_pair` did not own its
 contract. The `test_cli.py` legacy receipt test drove the frontmatter-only update but asserted
-neither the accepted record revision nor the saved receipt. The review of this stack reported that
-keeping the previous accepted record revision in the record-only result branch failed the deleted
-test at `a9f3136` while every retained test passed. At `9084d02`, the retained E2E test still
-passed with that defect. [Issue #71](https://github.com/pascalandy/html-publish/issues/71) extends
-that test to assert the accepted pair in the result and the receipt, then publish again through the
-same receipt. That defect now fails it
+neither the accepted record revision nor the saved receipt. The review recorded in
+[issue #71](https://github.com/pascalandy/html-publish/issues/71) kept the previous accepted record
+revision in the record-only result branch. At `a9f3136`, that defect failed the deleted test while
+every retained test passed. At `9084d02`, the retained E2E test still passed with it. Issue #71
+extends that test to assert the accepted pair in the result and the receipt, then publish again
+through the same receipt. That defect now fails it
 
 ## Kept
 
