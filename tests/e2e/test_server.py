@@ -12,7 +12,7 @@ import unittest
 import urllib.parse
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 STARTUP_SECONDS = 15
 
 

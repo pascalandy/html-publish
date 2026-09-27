@@ -108,7 +108,7 @@ It stops the owned server process, verifies that the bounded health request fail
 
 `features/README.md` indexes the mapped features. A proof that drives one convenient entry point is incomplete when the map lists others.
 
-For the repeatable installed-wheel acceptance flow, run `uv run python -m unittest -v tests.test_installed`.
+For the repeatable installed-wheel acceptance flow, run `uv run python -m unittest -v tests.e2e.test_installed`.
 It builds and installs an isolated wheel, runs doctor, exercises create/update/retry/conflict,
 assets/history/restore and offline observation, and cleans up. The per-run `artifacts/` directory
 retains `launch.txt`, `installed-workflow.jsonl`, logs, and the wheel. Use

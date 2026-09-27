@@ -482,7 +482,7 @@ class DeploymentTest(unittest.TestCase):
             return run(argv)
 
         result = install(
-            self.layout, Path(__file__).resolve().parents[1], real_release, successful_probe
+            self.layout, Path(__file__).resolve().parents[2], real_release, successful_probe
         )
         version = subprocess.run(
             [str(self.layout.current / ".venv/bin/html-publish"), "--version"],

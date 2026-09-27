@@ -11,7 +11,7 @@ from typing import Any, cast
 
 from html_publish import __version__
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def run_cli(*arguments: str) -> subprocess.CompletedProcess[str]:

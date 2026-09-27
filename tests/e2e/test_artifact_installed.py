@@ -14,7 +14,7 @@ from typing import cast
 
 from html_publish.configuration import load_client_config
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 INSTANCE = ROOT / ".agents/skills/verify-html-publish/scripts/instance.sh"
 
 

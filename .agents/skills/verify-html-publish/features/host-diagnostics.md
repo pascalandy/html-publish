@@ -23,7 +23,7 @@ Preconditions:
 
 - **Check one page.** Run `HP status --name release-notes --host-check`. Exit 0 with `verification.result` `passed`, revision `$R1`, DNS results, and `host_checks.route` `ok`.
 - **Check the base route.** Run `HP status --host-check`. Exit 0 with an HTTP status and route `ok`.
-- **Use the corruption owner.** Run `uv run python -m unittest -v tests.test_cli.PublisherCliTest.test_host_check_reports_dns_route_and_drift_without_repair`. The corruption branch exits 1 with `export_corruption`, failed local verification, and route `not_checked`; the stopped-server branch reports route `drift`.
+- **Use the corruption owner.** Run `uv run python -m unittest -v tests.e2e.test_cli.PublisherCliTest.test_host_check_reports_dns_route_and_drift_without_repair`. The corruption branch exits 1 with `export_corruption`, failed local verification, and route `not_checked`; the stopped-server branch reports route `drift`.
 - **Confirm no repair.** The same test asserts the selected bytes and revision remain unchanged after diagnostics.
 - **Proof.** Save named and base-route reports under `$ARTIFACTS/host-diagnostics-<run_id>.txt`; cite the focused test for injected corruption and drift.
 

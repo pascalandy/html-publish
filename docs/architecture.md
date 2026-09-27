@@ -225,7 +225,7 @@ probes removed paths from the previous active site tree, skipping paths used as 
 failed publication leaves the observed state and partial effects; recovery uses `status`, `verify`,
 `history`, and an identical retry, never automatic rollback. Restore reads both trees from the
 chosen archive commit without invoking the renderer. The full process-kill matrix is proven in
-`tests/test_recovery.py`.
+`tests/isolated/test_publisher_faults.py`.
 
 ## Synthesis decision
 

@@ -7,7 +7,7 @@ import time
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 HELPER = ROOT / ".agents/skills/verify-html-publish/scripts/instance.sh"
 
 

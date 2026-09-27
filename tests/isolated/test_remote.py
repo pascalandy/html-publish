@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 from typing import Any, cast
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 TARGET = "https://review.example/pages/"
 HOST_EXECUTABLE = "/usr/local/bin/html-publish"
 HOST_CONFIG = "/etc/html-publish/publisher.json"
