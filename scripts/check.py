@@ -56,6 +56,9 @@ def script(name: str) -> Command:
     return (PYTHON, f"scripts/{name}.py")
 
 
+# Timeouts stay inside the CI job's 20 minutes so the runner, not the job, reports a hang and
+# kills its process group. The isolated and E2E rows take about 50 s and 2 min locally, and
+# about 2.5 times that on the macOS runner
 CHECKS = [
     Check("format", ((PYTHON, "-m", "ruff", "format", "--check", "."),)),
     Check("lint", ((PYTHON, "-m", "ruff", "check", "."),)),
@@ -65,13 +68,13 @@ CHECKS = [
     Check("test-smells", (script("check_test_smells"),)),
     Check("test-only-code", (script("check_test_only_code"),)),
     # --pythonpath pins import resolution to this interpreter's environment
-    Check("typecheck", ((PYTHON, "-m", "pyright", "--pythonpath", PYTHON),), timeout=600),
+    Check("typecheck", ((PYTHON, "-m", "pyright", "--pythonpath", PYTHON),), timeout=180),
     Check(
         "isolated",
         ((PYTHON, "-m", "unittest", "discover", "-s", "tests/isolated", "-t", "."),),
-        timeout=900,
+        timeout=240,
     ),
-    Check("e2e", ((PYTHON, "-m", "tests.e2e"),), fast=False, timeout=1800),
+    Check("e2e", ((PYTHON, "-m", "tests.e2e"),), fast=False, timeout=600),
     Check("e2e-artifacts", (script("check_e2e_artifacts"),), fast=False),
 ]
 
