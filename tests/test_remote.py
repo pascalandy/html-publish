@@ -993,6 +993,34 @@ class RemoteCliTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertEqual(json.loads(result.stdout)["error"]["code"], "remote_protocol_failure")
 
+    def test_valid_failed_mutation_preserves_activation_and_failed_verification(self) -> None:
+        payload = report("publish", request_id="attempt-1", expected="rev-a", outcome="published")
+        payload["outcome"] = "error"
+        payload["verification"].update(
+            {
+                "result": "failed",
+                "checked_at": None,
+                "files_checked": 0,
+                "bytes_checked": 0,
+                "scope": [],
+                "detail": "Bytes did not match",
+            }
+        )
+        payload["error"] = {
+            "code": "delivery_failure",
+            "phase": "verify",
+            "message": "Bytes did not match",
+            "next_action": {"kind": "inspect", "required_inputs": []},
+        }
+        result = self.run_remote(
+            *self.artifact_args(),
+            environment=self.environment
+            | {"FIXTURE_STDOUT": json.dumps(payload), "FIXTURE_INVOKE_EXIT": "1"},
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(json.loads(result.stdout), payload)
+        self.assertEqual(self.records()[-1]["stage"], "cleanup")
+
     def test_deadline_reaps_children_in_every_phase_and_preserves_effects(self) -> None:
         success = report("publish", request_id="attempt-1", expected="rev-a", outcome="published")
         success["effects"] = {"archive_advanced": True, "activated": True}

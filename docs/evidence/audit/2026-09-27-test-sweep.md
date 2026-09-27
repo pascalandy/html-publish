@@ -37,13 +37,18 @@ The tests called private probe helpers through 37 mock uses. The dated
 | `test_receipt.py::test_record_aware_legacy_restore_upgrades_receipt_and_keeps_record_identity` | Version 1 receipt restore upgrading to version 3 with the record identity | Same `test_cli.py` legacy receipt test |
 | `test_receipt.py::test_result_saved_before_receipt_replace_recovers_without_publish` | Fake-publisher replay of a replace failure | `test_artifact_installed.py`, which injects the same failure and asserts zero publisher calls on retry |
 | `test_receipt.py::test_stale_saved_result_cannot_overwrite_newer_completion` | Passed for an unrelated reason: recovery reads only the completion and pending attempts, never the planted stale file | None; the test proved nothing |
-| `test_remote.py::test_valid_failed_mutation_preserves_activation_and_failed_verification` | Forwarded a valid failed report unchanged | `test_reports_installed.py` delivery failure, plus the kept remote contract tests |
 | `test_skills.py::test_registered_guides_exist_and_match_the_executable_version` | Read the source registry instead of the product | `test_installed.py` guide inventory through the wheel |
 | `test_skills.py::test_list_reports_ordered_guide_metadata_and_exact_byte_lengths` | Expected byte counts came from the registry under test | `test_installed.py`, which compares byte counts with the installed guide files |
 | `test_skills.py::test_get_core_prints_plain_guide_text` | Same title and version check | `test_installed.py` `skills get core` |
 | `test_skills.py::test_unknown_guide_is_a_usage_error` | Same plain and JSON usage errors | `test_installed.py` missing-guide checks |
 
 ## Kept
+
+An independent review (GPT-6 Sol, xhigh reasoning) then disputed the deletion of
+`test_remote.py::test_valid_failed_mutation_preserves_activation_and_failed_verification`. When
+`remote.py` was changed to reject a failed publication that had already activated, that test was
+the only one of the 24 remote tests to fail, and no E2E test drives the remote client. It was
+restored, so 11 tests are deleted
 
 The lanes kept the other 224 tests. 114 were already E2E, 36 came with an injected-bug proof, and
 74 were marked for a move behind the executable because no E2E test catches their bug yet
