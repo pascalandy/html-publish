@@ -52,10 +52,12 @@ To wrap a private helper for fault injection, read it as a plain attribute and a
 
 `just check` runs `python -m tests.e2e`, which records every E2E test under `/tmp/html-publish-verify/<run id>/artifacts/`
 
-- `manifest.json` names the commit, the rerun command for the suite and for each test, each test's outcome, and the sha256 of every record
+- `manifest.json` names the commit, the source fingerprint taken before and after the suite, the rerun command for the suite and for each test, each test's outcome, and the sha256 of every record
 - `tests/<test id>.jsonl` holds one line per process the test started: argv, working directory, and exit code. Processes started with `subprocess.run` also record stdout and stderr digests with a readable head
 
 `scripts/check_e2e_artifacts.py` then requires that the run matches the checkout, covers every E2E test, reports no failure, and still matches its digests. Each passing test must start `html-publish`, the `html_publish` package, or a repository script. CI uploads the same directory
+
+The commit alone does not identify what ran, because a run can test uncommitted edits. The source fingerprint hashes every tracked file and every untracked file Git does not ignore: its path, type, executable bit, and content, or a symlink's target. A run counts only when the fingerprint taken before the suite, the one taken after it, and the one the audit takes from the checkout all match. A dirty checkout passes until a file changes. An edit made after the run fails the audit, even when the commit and the test names stay the same. Ignored output such as `__pycache__/` and timestamps do not count. The fingerprint identifies source files, not the environment the suite ran in. A manifest older than schema version 2, or one without a fingerprint, fails the audit; rerun `just check --only e2e`
 
 Run one test with `uv run python -m unittest tests.e2e.test_cli.PublisherCliTest.<test name>`. That run writes no artifact; only `python -m tests.e2e`, which `just check` calls, does
 
