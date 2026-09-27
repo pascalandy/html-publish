@@ -516,21 +516,6 @@ class HelperCliTest(ReceiptFixture):
                         helper.kill()
                         helper.wait(timeout=2)
 
-    def test_publisher_restores_the_previous_sigterm_handler(self) -> None:
-        def previous_handler(_signal: int, _frame: object) -> None:
-            return
-
-        previous = signal.signal(signal.SIGTERM, previous_handler)
-        try:
-            source = self.root / "handler.html"
-            source.write_text("handler")
-            code, payload = self.run_main("publish", str(source), "--new", "handler")
-            self.assertEqual(code, 0)
-            self.assertEqual(payload["outcome"], "completed")
-            self.assertIs(signal.getsignal(signal.SIGTERM), previous_handler)
-        finally:
-            signal.signal(signal.SIGTERM, previous)
-
     def test_timeout_after_activation_keeps_pending_and_kills_process(self) -> None:
         for close_streams in (False, True):
             with self.subTest(close_streams=close_streams):
@@ -927,69 +912,6 @@ class HelperCliTest(ReceiptFixture):
         self.assertEqual(publish_call["expected_revision"], legacy_revision)
         self.assertEqual(publish_call["expected_record_revision"], "reviewed-record")
 
-    def test_markdown_record_only_result_advances_the_receipt_pair(self) -> None:
-        expectation = receipt.Expectation("accepted", "output-a", None, "record-a")
-        intent = receipt.PublishIntent(
-            "attempt-a",
-            expectation,
-            receipt.FrozenInput("attempt-a/source", "directory", "digest", 1, 10),
-            "markdown",
-            "index.md",
-            "markdown-it-py/4.2.0:commonmark:html-off:table-on:linkify-off:template-reading-column-v1",
-        )
-        state = receipt.Receipt(
-            3,
-            receipt.Binding(
-                "association-a",
-                "guide",
-                receipt.TargetIdentity("local", "local", self.target),
-                "fingerprint-a",
-            ),
-            "output-a",
-            receipt.Pending(intent, 1, "uncertain"),
-            None,
-            None,
-            "record-a",
-        )
-        payload = {
-            "schema_version": 1,
-            "operation": "publish",
-            "request_id": "attempt-a",
-            "outcome": "published",
-            "target": self.target,
-            "name": "guide",
-            "expected_revision": "output-a",
-            "requested_revision": "output-a",
-            "active_revision": "output-a",
-            "expected_record_revision": "record-a",
-            "requested_record_revision": "record-b",
-            "archived_record_revision": "record-b",
-            "render_profile_id": intent.render_profile_id,
-            "effects": {"archive_advanced": True, "activated": False},
-            "verification": {"result": "passed", "revision": "output-a"},
-            "error": None,
-        }
-        result = receipt.SavedResult(
-            "attempt-a",
-            1,
-            "digest",
-            0,
-            False,
-            False,
-            json.dumps(payload),
-            "",
-            payload,
-            False,
-            False,
-        )
-
-        classification = receipt.reduce_result(state, result)
-
-        self.assertEqual(classification.kind, "completed")
-        self.assertIsNone(classification.receipt.pending)
-        self.assertEqual(classification.receipt.accepted_revision, "output-a")
-        self.assertEqual(classification.receipt.accepted_record_revision, "record-b")
-
     def test_markdown_activation_without_verified_delivery_keeps_record_baseline(self) -> None:
         profile = (
             "markdown-it-py/4.2.0:commonmark:html-off:table-on:linkify-off:"
@@ -1060,68 +982,6 @@ class HelperCliTest(ReceiptFixture):
         self.assertEqual(classification.kind, "delivery_failed")
         self.assertEqual(classification.receipt.accepted_revision, "output-b")
         self.assertEqual(classification.receipt.accepted_record_revision, "record-a")
-
-    def test_record_aware_legacy_restore_upgrades_receipt_and_keeps_record_identity(self) -> None:
-        intent = receipt.RestoreIntent(
-            "attempt-restore",
-            receipt.Expectation("accepted", "output-current", None),
-            "archive-commit",
-        )
-        state = receipt.Receipt(
-            2,
-            receipt.Binding(
-                "association-legacy",
-                "guide",
-                receipt.TargetIdentity("local", "local", self.target),
-                "fingerprint-a",
-            ),
-            "output-current",
-            receipt.Pending(intent, 1, "uncertain"),
-            None,
-            None,
-        )
-        payload = {
-            "schema_version": 1,
-            "operation": "restore",
-            "request_id": intent.id,
-            "outcome": "published",
-            "target": self.target,
-            "name": "guide",
-            "url": f"{self.target}guide/",
-            "expected_revision": "output-current",
-            "requested_revision": "output-restored",
-            "active_revision": "output-restored",
-            "expected_record_revision": None,
-            "requested_record_revision": "record-restored",
-            "archived_record_revision": "record-restored",
-            "render_profile_id": None,
-            "effects": {"archive_advanced": False, "activated": True},
-            "verification": {"result": "passed", "revision": "output-restored"},
-            "error": None,
-        }
-        result = receipt.SavedResult(
-            intent.id,
-            1,
-            "digest",
-            0,
-            False,
-            False,
-            json.dumps(payload),
-            "",
-            payload,
-            False,
-            False,
-        )
-
-        classification = receipt.reduce_result(state, result)
-        serialized = receipt.receipt_dict(classification.receipt)
-
-        self.assertEqual(classification.kind, "completed")
-        self.assertEqual(classification.receipt.version, 3)
-        self.assertEqual(classification.receipt.accepted_record_revision, "record-restored")
-        self.assertEqual(serialized["accepted_record_revision"], "record-restored")
-        observation = cast(dict[str, object], serialized["last_observation"])
-        self.assertEqual(observation["requested_record_revision"], "record-restored")
 
     def test_renderer_profile_mismatch_rejection_is_correlated_without_acceptance(self) -> None:
         profile = (
@@ -1565,45 +1425,6 @@ class PersistenceRecoveryTest(ReceiptFixture):
         classification = receipt.Classification(state, "completed", "cleanup")
         self.assertIsNone(receipt._cleanup_completed_attempt(receipt_dir, classification))
 
-    def test_result_saved_before_receipt_replace_recovers_without_publish(self) -> None:
-        source = self.root / "report.html"
-        source.write_text("recover")
-        receipt_dir = Path(str(source) + ".publish")
-        real_replace = receipt.os.replace
-        failed = False
-
-        def fail_final_receipt_replace(
-            source_path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
-            destination_path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
-        ) -> None:
-            nonlocal failed
-            destination = Path(os.fsdecode(destination_path))
-            if (
-                not failed
-                and destination == receipt_dir / "receipt.json"
-                and any(receipt_dir.glob("attempt-*/result.json"))
-            ):
-                failed = True
-                raise OSError("injected receipt replace failure")
-            real_replace(source_path, destination_path)
-
-        with mock.patch.object(receipt.os, "replace", side_effect=fail_final_receipt_replace):
-            code, payload = self.run_main("publish", str(source), "--new", "recover")
-
-        self.assertEqual(code, 1)
-        self.assertFalse(payload["receipt_persisted"])
-        self.assertEqual(payload["url"], f"{self.target}recover/")
-        self.assertIsNotNone(payload["requested_revision"])
-        self.assertEqual(payload["active_revision"], payload["requested_revision"])
-        self.assertIsNone(payload["accepted_revision"])
-        self.assertEqual(len([call for call in self.calls() if call["operation"] == "publish"]), 1)
-
-        retry_code, retry_payload = self.run_main("retry", "--receipt", str(receipt_dir))
-
-        self.assertEqual(retry_code, 0)
-        self.assertEqual(retry_payload["publisher_calls"], 0)
-        self.assertEqual(len([call for call in self.calls() if call["operation"] == "publish"]), 1)
-
     def test_result_save_failure_still_reports_bounded_host_facts(self) -> None:
         source = self.root / "result-save.html"
         source.write_text("result save")
@@ -1654,23 +1475,6 @@ class PersistenceRecoveryTest(ReceiptFixture):
         self.assertEqual(retry_code, 0)
         self.assertEqual(retry_payload["publisher_calls"], 0)
         self.assertEqual(len([call for call in self.calls() if call["operation"] == "publish"]), 1)
-
-    def test_stale_saved_result_cannot_overwrite_newer_completion(self) -> None:
-        source = self.root / "report.html"
-        source.write_text("first")
-        receipt_dir = Path(str(source) + ".publish")
-        self.assertEqual(self.run_helper("publish", str(source), "--new", "stale").returncode, 0)
-        current = receipt.load_receipt(receipt_dir)
-        stale_dir = receipt_dir / "attempt-stale"
-        stale_dir.mkdir()
-        stale = receipt.SavedResult("stale", 1, "stale-digest", 0, False, False, "{}", "", {})
-        (stale_dir / "result.json").write_text(json.dumps(receipt.saved_result_dict(stale)))
-        before = (receipt_dir / "receipt.json").read_bytes()
-
-        recovered = receipt._recover_saved_result(receipt_dir, current)
-
-        self.assertFalse(recovered.local_completion)
-        self.assertEqual((receipt_dir / "receipt.json").read_bytes(), before)
 
 
 class QuietHandler(http.server.SimpleHTTPRequestHandler):

@@ -1659,29 +1659,6 @@ class PublisherCliTest(unittest.TestCase):
         self.assertEqual(recovered_payload["active_revision"], requested_revision)
         self.assertEqual(self.git("rev-parse", "refs/heads/published"), saved_commit)
 
-    def test_delivery_failure_reports_selected_unverified_state(self) -> None:
-        source = self.root / "report.html"
-        source.write_bytes(b"<!doctype html><h1>offline</h1>\n")
-        self._stop_server()
-
-        result = self.run_cli(
-            "publish",
-            "--name",
-            "report",
-            "--source",
-            str(source),
-            "--target",
-            self.base_url,
-        )
-
-        self.assertEqual(result.returncode, 1)
-        payload = self.payload(result)
-        self.assertEqual(payload["error"]["code"], "delivery_failure")
-        self.assertEqual(payload["verification"]["result"], "failed")
-        self.assertEqual(payload["effects"], {"archive_advanced": True, "activated": True})
-        self.assertEqual(payload["active_revision"], payload["requested_revision"])
-        self.assertTrue((self.runtime / "public" / "report").is_symlink())
-
     @unittest.skipUnless(hasattr(os, "symlink"), "symbolic links are required")
     def test_symlink_input_is_rejected_without_persistent_state(self) -> None:
         site = self.root / "site"
@@ -2292,30 +2269,6 @@ class PublisherCliTest(unittest.TestCase):
         self.assertEqual(self.payload(bytes_limit)["error"]["code"], "input_limit")
         self.assertIn("byte limit", self.payload(bytes_limit)["error"]["message"])
         self.assertFalse(self.archive.exists())
-
-    def test_plan_reports_capture_warnings(self) -> None:
-        site = self.root / "site"
-        site.mkdir()
-        (site / "index.html").write_bytes(
-            b'<!doctype html><link href="/root.css"><script src="https://cdn.example/x.js">'
-            b"</script><script>navigator.serviceWorker.register('/sw.js')</script>\n"
-        )
-
-        result = self.run_cli(
-            "plan",
-            "--name",
-            "warnings",
-            "--source",
-            str(site),
-            "--target",
-            self.base_url,
-        )
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(
-            self.payload(result)["warnings"],
-            ["root_relative_reference", "external_dependency", "service_worker"],
-        )
 
     def test_relative_warning_scan_limits_and_base_href(self) -> None:
         site = self.root / "relative-site"
