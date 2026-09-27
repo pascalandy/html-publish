@@ -47,10 +47,12 @@ CLEAN_TREE = {
 
         class CliTest(unittest.TestCase):
             def test_child_prints(self) -> None:
-                result = subprocess.run(
-                    [sys.executable, "-m", "html_publish"], capture_output=True, text=True
-                )
+                result = subprocess.run(product(), capture_output=True, text=True)
                 self.assertEqual(result.stdout, "hi\\n")
+
+
+        def product() -> list[str]:
+            return [sys.executable, "-m", "html_publish"]
         """,
     "tests/isolated/test_store.py": '''\
         """Store faults.
@@ -78,6 +80,11 @@ def edited(relative: str, old: str, new: str) -> dict[str, str | None]:
     if old not in content:
         raise ValueError(f"{old!r} is not in the clean {relative}")
     return {relative: content.replace(old, new)}
+
+
+def appended(relative: str, text: str) -> dict[str, str | None]:
+    """The clean fixture file with `text` added at the end."""
+    return {relative: textwrap.dedent(CLEAN_TREE[relative]) + text}
 
 
 class RuleScriptTest(unittest.TestCase):
@@ -160,6 +167,25 @@ class RuleScriptTest(unittest.TestCase):
                 "skips; fix: move it into a test_*.py module\n",
             ),
             (
+                "check_test_layout",
+                appended(
+                    "tests/e2e/test_cli.py", "\n\ndef test_unrun() -> None:\n    assert False\n"
+                ),
+                "error: tests/e2e/test_cli.py:16: [test-layout] tests/e2e/test_cli.py::test_unrun "
+                "is a module-level function that unittest never runs; fix: make it a method of a "
+                "unittest.TestCase subclass\n",
+            ),
+            (
+                "check_test_layout",
+                appended(
+                    "tests/isolated/test_store.py",
+                    "\n\ndef test_unrun() -> None:\n    assert False\n",
+                ),
+                "error: tests/isolated/test_store.py:18: [test-layout] "
+                "tests/isolated/test_store.py::test_unrun is a module-level function that unittest "
+                "never runs; fix: make it a method of a unittest.TestCase subclass\n",
+            ),
+            (
                 "check_e2e_boundary",
                 {"tests/e2e/test_cli.py": "from html_publish import store\n"},
                 "error: tests/e2e/test_cli.py:1: [e2e-boundary] imports html_publish; "
@@ -226,7 +252,7 @@ class RuleScriptTest(unittest.TestCase):
                     'self.assertEqual(result.stdout, "hi\\n")',
                     "self.assertEqual(result.stdout, result.stdout)",
                 ),
-                "error: tests/e2e/test_cli.py:11: [self-comparison] "
+                "error: tests/e2e/test_cli.py:9: [self-comparison] "
                 "tests/e2e/test_cli.py::CliTest::test_child_prints compares a value with itself; "
                 "fix: compare with a literal expected value\n",
             ),
@@ -454,6 +480,10 @@ class RuleScriptTest(unittest.TestCase):
 
                     def test_never_runs(self) -> None:
                         self.fail("setUpClass skipped this class")
+
+
+                def test_free_function_never_runs() -> None:
+                    assert False
                 """
             ),
             encoding="utf-8",
@@ -468,10 +498,26 @@ class RuleScriptTest(unittest.TestCase):
                 "test to tests/isolated/ with a failure list\n",
                 quiet.stderr,
             )
+        self.assertIn(
+            "error: tests/e2e/test_quiet.py:28: [e2e-artifacts] "
+            "tests/e2e/test_quiet.py::test_free_function_never_runs is a module-level function "
+            "that unittest never runs; fix: make it a method of a unittest.TestCase subclass\n",
+            quiet.stderr,
+        )
         self.assertNotIn("test_popen_drives_the_product", quiet.stderr)
         self.assertNotIn("test_never_runs", quiet.stderr)
         quiet_run = artifacts_root / "e2e-quiet" / "artifacts"
         quiet_tests = json.loads((quiet_run / "manifest.json").read_text(encoding="utf-8"))["tests"]
+        self.assertEqual(
+            sorted(item["id"] for item in quiet_tests),
+            [
+                "setUpClass (tests.e2e.test_quiet.SkippedClassTest)",
+                "tests.e2e.test_cli.CliTest.test_child_prints",
+                "tests.e2e.test_quiet.QuietTest.test_nothing_runs",
+                "tests.e2e.test_quiet.QuietTest.test_only_git_runs",
+                "tests.e2e.test_quiet.QuietTest.test_popen_drives_the_product",
+            ],
+        )
         popen = next(item for item in quiet_tests if item["id"].endswith("drives_the_product"))
         [started] = (quiet_run / popen["record"]).read_text(encoding="utf-8").splitlines()
         self.assertEqual(json.loads(started)["returncode"], 0)

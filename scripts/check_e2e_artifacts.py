@@ -19,7 +19,7 @@ from typing import Any, cast
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from _common import ScriptError, run_script
-from _test_tree import add_root_argument, test_functions, test_sources
+from _test_tree import add_root_argument, test_functions, test_sources, undiscovered_tests
 
 EPILOG = """\
 rule:
@@ -27,7 +27,8 @@ rule:
   writes <artifacts root>/<run id>/artifacts/manifest.json plus one record per
   test. This check requires that the run
   - comes from the checked-out commit,
-  - covers every E2E test in tests/e2e/,
+  - covers every E2E test in tests/e2e/, none of them a module-level function
+    that unittest never runs,
   - reports no failed test and gives every skip a reason,
   - shows every test that passed starting html-publish, the html_publish
     package, or a repository script, since an E2E test drives the product,
@@ -79,17 +80,20 @@ def find_run(artifacts_root: Path, run_id: str | None) -> Path:
     return manifests[-1].parent
 
 
-def expected_tests(root: Path) -> set[str]:
-    """unittest IDs of every test method in tests/e2e/test_*.py."""
+def expected_tests(root: Path) -> tuple[set[str], list[str]]:
+    """unittest IDs of every test method in tests/e2e/test_*.py, and errors for the test
+    functions unittest never runs, which a run cannot record."""
     identifiers: set[str] = set()
+    undiscovered: list[str] = []
     for source in test_sources(root):
         if source.bucket != "e2e" or not source.is_test_module:
             continue
+        undiscovered += undiscovered_tests(source, "e2e-artifacts")
         module = source.label.removesuffix(".py").replace("/", ".")
         for owner, function in test_functions(source.tree):
             if owner is not None:
                 identifiers.add(f"{module}.{owner.name}.{function.name}")
-    return identifiers
+    return identifiers, undiscovered
 
 
 def head_commit(root: Path) -> str | None:
@@ -209,7 +213,9 @@ def check(root: Path, artifacts_root: Path, run_id: str | None) -> str:
         )
     errors += check_files(run, cast(dict[str, str], manifest["files"]))
     tests = cast(list[dict[str, Any]], manifest["tests"])
-    errors += check_tests(run, tests, expected_tests(root), executables(root))
+    expected, undiscovered = expected_tests(root)
+    errors += undiscovered
+    errors += check_tests(run, tests, expected, executables(root))
     if errors:
         raise ScriptError(*errors)
     return f"ok: {len(tests)} e2e tests left verified records in {run}"
