@@ -22,7 +22,7 @@ sys.path.insert(1, str(Path(__file__).resolve().parent.parent))
 from _common import ScriptError, run_script
 from _test_tree import add_root_argument, test_functions, test_sources, undiscovered_tests
 
-from tests.e2e._fingerprint import source_fingerprint
+from tests.e2e._fingerprint import git_environment, source_fingerprint
 
 EPILOG = """\
 rule:
@@ -108,7 +108,11 @@ def expected_tests(root: Path) -> tuple[set[str], list[str]]:
 
 def head_commit(root: Path) -> str | None:
     result = subprocess.run(
-        ["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True, check=False
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        env=git_environment(),
+        capture_output=True,
+        text=True,
+        check=False,
     )
     return result.stdout.strip() if result.returncode == 0 else None
 
