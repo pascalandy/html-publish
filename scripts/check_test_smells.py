@@ -27,9 +27,11 @@ from _test_tree import (
 EPILOG = """\
 rules:
   no-assertion      a test must assert something, directly or through a helper
+                    defined in the same module
   self-comparison   an equality assertion must not compare a value with itself
   private-access    tests must not import or call private (_name) product helpers;
-                    reading one to wrap or patch it for fault injection is fine
+                    to wrap one for fault injection, read it as a plain attribute
+                    with a targeted pyright ignore, never through getattr or __dict__
   private-pragma    tests must not silence pyright's reportPrivateUsage
   See docs/testing.md.
 
@@ -53,6 +55,14 @@ EQUALITY_ASSERTIONS = frozenset(
     }
 )
 PRIVATE_PRAGMA_RE = re.compile(r"reportPrivateUsage\s*=\s*false")
+
+PUBLIC_FIX = (
+    "assert through the public boundary; wrapping or patching a helper for fault injection is fine"
+)
+HIDDEN_FIX = (
+    "to wrap it for fault injection, read it as a plain attribute with "
+    "# pyright: ignore[reportPrivateUsage]; getattr and __dict__ hide the read from pyright"
+)
 
 log = logging.getLogger("check-test-smells")
 
@@ -90,11 +100,10 @@ def called_names(function: Function) -> set[str]:
     }
 
 
-def asserting_helpers(sources: list[SourceFile]) -> set[str]:
-    """Names of test-side functions that assert, directly or through other such functions."""
+def asserting_helpers(source: SourceFile) -> set[str]:
+    """Names of this module's functions that assert, directly or through each other."""
     functions = [
         node
-        for source in sources
         for node in ast.walk(source.tree)
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
     ]
@@ -157,7 +166,7 @@ def dotted_name(node: ast.expr) -> str | None:
     return None
 
 
-def private_access(root: Path, source: SourceFile) -> Iterator[tuple[int, str]]:
+def private_access(root: Path, source: SourceFile) -> Iterator[tuple[int, str, str]]:
     """Private product names a test imports or calls."""
     aliases: set[str] = set()
     for node in ast.walk(source.tree):
@@ -171,7 +180,7 @@ def private_access(root: Path, source: SourceFile) -> Iterator[tuple[int, str]]:
                 if is_module(root, dotted):
                     aliases.add(alias.asname or alias.name)
                 elif is_private(alias.name):
-                    yield node.lineno, f"imports private {dotted}"
+                    yield node.lineno, f"imports private {dotted}", PUBLIC_FIX
     for node in ast.walk(source.tree):
         if (
             isinstance(node, ast.Call)
@@ -180,7 +189,7 @@ def private_access(root: Path, source: SourceFile) -> Iterator[tuple[int, str]]:
             and (base := dotted_name(node.func.value)) is not None
             and base.split(".", 1)[0] in aliases
         ):
-            yield node.lineno, f"calls private {base}.{node.func.attr}"
+            yield node.lineno, f"calls private {base}.{node.func.attr}", PUBLIC_FIX
         elif (
             isinstance(node, ast.Subscript)
             and isinstance(node.value, ast.Attribute)
@@ -191,7 +200,11 @@ def private_access(root: Path, source: SourceFile) -> Iterator[tuple[int, str]]:
             and (base := dotted_name(node.value.value)) is not None
             and base.split(".", 1)[0] in aliases
         ):
-            yield node.lineno, f"reads private {base}.{node.slice.value} through __dict__"
+            yield (
+                node.lineno,
+                f"reads private {base}.{node.slice.value} through __dict__",
+                HIDDEN_FIX,
+            )
         elif (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
@@ -203,12 +216,15 @@ def private_access(root: Path, source: SourceFile) -> Iterator[tuple[int, str]]:
             and (base := dotted_name(node.args[0])) is not None
             and base.split(".", 1)[0] in aliases
         ):
-            yield node.lineno, f"reads private {base}.{node.args[1].value} through getattr"
+            yield (
+                node.lineno,
+                f"reads private {base}.{node.args[1].value} through getattr",
+                HIDDEN_FIX,
+            )
 
 
 def check(root: Path) -> str:
     sources = test_sources(root)
-    asserting = asserting_helpers(sources)
     errors: list[str] = []
     tests = 0
     for source in sources:
@@ -218,13 +234,11 @@ def check(root: Path) -> str:
                 f"{source.label}:{line_number}: [private-pragma] silences reportPrivateUsage; "
                 "fix: test through the public boundary instead"
             )
-        for line_number, what in private_access(root, source):
-            errors.append(
-                f"{source.label}:{line_number}: [private-access] {what}; fix: assert through the "
-                "public boundary; wrapping or patching a helper for fault injection is fine"
-            )
+        for line_number, what, fix in private_access(root, source):
+            errors.append(f"{source.label}:{line_number}: [private-access] {what}; fix: {fix}")
         if not source.is_test_module:
             continue
+        asserting = asserting_helpers(source)
         for owner, function in test_functions(source.tree):
             tests += 1
             test_id = source.test_id(owner, function)

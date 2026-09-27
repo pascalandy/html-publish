@@ -47,10 +47,20 @@ class SourceFile:
         return "::".join(parts)
 
 
+def project_root(value: str) -> Path:
+    """Parse --root; a directory without tests/ and html_publish/ is bad usage, not a clean tree."""
+    root = Path(value).resolve()
+    missing = [name for name in ("tests", "html_publish") if not (root / name).is_dir()]
+    if missing:
+        names = " or ".join(f"{name}/" for name in missing)
+        raise argparse.ArgumentTypeError(f"{root} has no {names}; pass the repository root")
+    return root
+
+
 def add_root_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--root",
-        type=Path,
+        type=project_root,
         default=ROOT,
         help="repository root to check (default: this checkout)",
     )

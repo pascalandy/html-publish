@@ -5,11 +5,14 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import itertools
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from typing import Any, cast
 
@@ -26,8 +29,9 @@ rule:
   - comes from the checked-out commit,
   - covers every E2E test in tests/e2e/,
   - reports no failed test and gives every skip a reason,
-  - shows every test that ran starting at least one process, since an E2E test
-    drives a shipped executable,
+  - shows every test that passed starting html-publish, the html_publish
+    package, or a repository script, since an E2E test drives the product,
+  - counts a skip raised in setUpClass or setUpModule for the tests it covers,
   - lists a rerun command per test, and
   - still matches the sha256 of every record file.
   See docs/testing.md.
@@ -40,6 +44,19 @@ exit codes: 0 ok, 1 artifact errors found, 2 bad usage, 130 interrupted"""
 
 DEFAULT_ARTIFACTS_ROOT = "/tmp/html-publish-verify"
 REQUIRED_KEYS = ("schema_version", "run_id", "commit", "rerun", "tests", "files")
+PRODUCT_MODULES = ("html_publish", "tests.e2e")
+FIXTURE_HOLDER_RE = re.compile(r"^(?:setUpClass|setUpModule) \((?P<scope>[\w.]+)\)$")
+SHELLS = frozenset({"bash", "sh"})
+
+
+def executables(root: Path) -> frozenset[str]:
+    """Command names from [project.scripts], such as html-publish and html-publish-remote."""
+    pyproject = root / "pyproject.toml"
+    if not pyproject.is_file():
+        return frozenset()
+    scripts = tomllib.loads(pyproject.read_text(encoding="utf-8")).get("project", {}).get("scripts")
+    return frozenset(str(name) for name in dict(scripts or {}))
+
 
 log = logging.getLogger("check-e2e-artifacts")
 
@@ -99,11 +116,50 @@ def check_files(run: Path, files: dict[str, str]) -> list[str]:
     return errors
 
 
-def check_tests(tests: list[dict[str, Any]], expected: set[str]) -> list[str]:
+def invokes_product(argv: list[str], commands: frozenset[str]) -> bool:
+    """Whether a recorded command runs a product executable, package, or repository script."""
+    if not argv:
+        return False
+    if any(Path(argument).name in commands for argument in argv):
+        return True
+    for flag, value in itertools.pairwise(argv):
+        if flag == "-m" and value.startswith(PRODUCT_MODULES):
+            return True
+    if len(argv) > 1 and (argv[1].startswith("scripts/") or "/scripts/" in argv[1]):
+        return True
+    return (
+        Path(argv[0]).name in SHELLS
+        and "-c" in argv
+        and any(word in commands for word in argv[-1].split())
+    )
+
+
+def product_processes(run: Path, test: dict[str, Any], commands: frozenset[str]) -> int:
+    record = run / str(test.get("record"))
+    if not record.is_file():
+        return 0
+    return sum(
+        invokes_product(cast(list[str], json.loads(line).get("argv", [])), commands)
+        for line in record.read_text(encoding="utf-8").splitlines()
+    )
+
+
+def check_tests(
+    run: Path, tests: list[dict[str, Any]], expected: set[str], commands: frozenset[str]
+) -> list[str]:
     errors: list[str] = []
     recorded = {str(test.get("id")) for test in tests}
+    skipped_scopes = tuple(
+        f"{match['scope']}."
+        for test in tests
+        if test.get("outcome") == "skipped"
+        and (match := FIXTURE_HOLDER_RE.match(str(test.get("id"))))
+    )
     for missing in sorted(expected - recorded):
-        errors.append(f"{missing}: [e2e-artifacts] did not run; fix: rerun just check --only e2e")
+        if not missing.startswith(skipped_scopes) or not skipped_scopes:
+            errors.append(
+                f"{missing}: [e2e-artifacts] did not run; fix: rerun just check --only e2e"
+            )
     for test in tests:
         test_id = str(test.get("id"))
         outcome = test.get("outcome")
@@ -116,10 +172,11 @@ def check_tests(tests: list[dict[str, Any]], expected: set[str]) -> list[str]:
                 errors.append(f"{test_id}: [e2e-artifacts] skipped without a reason")
         elif outcome != "passed":
             errors.append(f"{test_id}: [e2e-artifacts] has no outcome")
-        elif int(test.get("processes") or 0) == 0:
+        elif product_processes(run, test, commands) == 0:
             errors.append(
-                f"{test_id}: [e2e-artifacts] started no process; fix: drive a shipped executable, "
-                "or move the test to tests/isolated/ with a failure list"
+                f"{test_id}: [e2e-artifacts] started no product process; fix: drive "
+                "html-publish or a repository script, or move the test to tests/isolated/ "
+                "with a failure list"
             )
         if not test.get("rerun"):
             errors.append(f"{test_id}: [e2e-artifacts] has no rerun command")
@@ -152,7 +209,7 @@ def check(root: Path, artifacts_root: Path, run_id: str | None) -> str:
         )
     errors += check_files(run, cast(dict[str, str], manifest["files"]))
     tests = cast(list[dict[str, Any]], manifest["tests"])
-    errors += check_tests(tests, expected_tests(root))
+    errors += check_tests(run, tests, expected_tests(root), executables(root))
     if errors:
         raise ScriptError(*errors)
     return f"ok: {len(tests)} e2e tests left verified records in {run}"

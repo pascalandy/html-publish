@@ -26,6 +26,7 @@ RULE_SCRIPTS = (
 CLEAN_TREE = {
     "pyproject.toml": '[project.scripts]\nhtml-publish = "html_publish.cli:main"\n',
     "html_publish/__init__.py": "",
+    "html_publish/__main__.py": 'print("hi")\n',
     "html_publish/store.py": "def publish() -> None: ...\n\n\ndef _fsync() -> None: ...\n",
     "html_publish/cli.py": (
         "from html_publish.store import publish\n\n\ndef main() -> None:\n    publish()\n"
@@ -42,7 +43,7 @@ CLEAN_TREE = {
         class CliTest(unittest.TestCase):
             def test_child_prints(self) -> None:
                 result = subprocess.run(
-                    [sys.executable, "-c", "print('hi')"], capture_output=True, text=True
+                    [sys.executable, "-m", "html_publish"], capture_output=True, text=True
                 )
                 self.assertEqual(result.stdout, "hi\\n")
         """,
@@ -116,6 +117,25 @@ class RuleScriptTest(unittest.TestCase):
             with self.subTest(name=name):
                 result = self.run_script(root, name)
                 self.assertEqual((result.returncode, result.stdout), (0, summary), result.stderr)
+
+    def test_a_root_without_the_project_is_bad_usage(self) -> None:
+        empty = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="hp-empty-")))
+        for name in (
+            "check_test_layout",
+            "check_e2e_boundary",
+            "check_isolated_failure_modes",
+            "check_test_smells",
+            "check_test_only_code",
+            "check_e2e_artifacts",
+        ):
+            with self.subTest(name=name):
+                result = self.run_script(ROOT, name, "--root", str(empty))
+                self.assertEqual(result.returncode, 2, result.stdout)
+                self.assertIn(
+                    f"error: argument --root: {empty.resolve()} has no tests/ or html_publish/; "
+                    "pass the repository root\n",
+                    result.stderr,
+                )
 
     def test_each_rule_rejects_its_planted_bad_test(self) -> None:
         cases: list[tuple[str, dict[str, str | None], str]] = [
@@ -210,6 +230,34 @@ class RuleScriptTest(unittest.TestCase):
                 "error: tests/isolated/test_store.py:15: [private-access] calls private "
                 "store._fsync; fix: assert through the public boundary; wrapping or patching a "
                 "helper for fault injection is fine\n",
+            ),
+            (
+                "check_test_smells",
+                {
+                    **edited(
+                        "tests/e2e/test_cli.py",
+                        'self.assertEqual(result.stdout, "hi\\n")',
+                        "helper(result)",
+                    ),
+                    "tests/e2e/test_other.py": (
+                        "def helper(value: object) -> None:\n    assert value\n"
+                    ),
+                },
+                "error: tests/e2e/test_cli.py:7: [no-assertion] "
+                "tests/e2e/test_cli.py::CliTest::test_child_prints asserts nothing; "
+                "fix: assert the observable result, or delete the test\n",
+            ),
+            (
+                "check_test_smells",
+                edited(
+                    "tests/isolated/test_store.py",
+                    "self.assertIsNone(store.publish())",
+                    'self.assertIsNotNone(getattr(store, "_fsync"))',
+                ),
+                "error: tests/isolated/test_store.py:15: [private-access] reads private "
+                "store._fsync through getattr; fix: to wrap it for fault injection, read it as a "
+                "plain attribute with # pyright: ignore[reportPrivateUsage]; getattr and __dict__ "
+                "hide the read from pyright\n",
             ),
             (
                 "check_test_smells",
@@ -361,19 +409,54 @@ class RuleScriptTest(unittest.TestCase):
         )
 
         (root / "tests" / "e2e" / "test_quiet.py").write_text(
-            "import unittest\n\n\nclass QuietTest(unittest.TestCase):\n"
-            "    def test_nothing_runs(self) -> None:\n        self.assertTrue(True)\n",
+            textwrap.dedent(
+                """\
+                import subprocess
+                import sys
+                import unittest
+
+
+                class QuietTest(unittest.TestCase):
+                    def test_nothing_runs(self) -> None:
+                        self.assertTrue(True)
+
+                    def test_only_git_runs(self) -> None:
+                        self.assertEqual(subprocess.run(["git", "--version"]).returncode, 0)
+
+                    def test_popen_drives_the_product(self) -> None:
+                        command = [sys.executable, "-m", "html_publish"]
+                        process = subprocess.Popen(command, stdout=subprocess.DEVNULL)
+                        self.assertEqual(process.wait(), 0)
+
+
+                class SkippedClassTest(unittest.TestCase):
+                    @classmethod
+                    def setUpClass(cls) -> None:
+                        raise unittest.SkipTest("needs systemd")
+
+                    def test_never_runs(self) -> None:
+                        self.fail("setUpClass skipped this class")
+                """
+            ),
             encoding="utf-8",
         )
         self.assertEqual(record("e2e-quiet").returncode, 0)
         quiet = audit("e2e-quiet")
         self.assertEqual(quiet.returncode, 1)
-        self.assertIn(
-            "error: tests.e2e.test_quiet.QuietTest.test_nothing_runs: [e2e-artifacts] started no "
-            "process; fix: drive a shipped executable, or move the test to tests/isolated/ with a "
-            "failure list\n",
-            quiet.stderr,
-        )
+        for name in ("test_nothing_runs", "test_only_git_runs"):
+            self.assertIn(
+                f"error: tests.e2e.test_quiet.QuietTest.{name}: [e2e-artifacts] started no "
+                "product process; fix: drive html-publish or a repository script, or move the "
+                "test to tests/isolated/ with a failure list\n",
+                quiet.stderr,
+            )
+        self.assertNotIn("test_popen_drives_the_product", quiet.stderr)
+        self.assertNotIn("test_never_runs", quiet.stderr)
+        quiet_run = artifacts_root / "e2e-quiet" / "artifacts"
+        quiet_tests = json.loads((quiet_run / "manifest.json").read_text(encoding="utf-8"))["tests"]
+        popen = next(item for item in quiet_tests if item["id"].endswith("drives_the_product"))
+        [started] = (quiet_run / popen["record"]).read_text(encoding="utf-8").splitlines()
+        self.assertEqual(json.loads(started)["returncode"], 0)
 
 
 if __name__ == "__main__":
