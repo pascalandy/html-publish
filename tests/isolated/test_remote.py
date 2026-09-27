@@ -27,6 +27,7 @@ F20: remote: a malformed observation in a degraded status listing is passed thro
 F21: remote: a transport descendant survives the deadline
 F22: remote: an SSH descendant survives caller cancellation
 F23: remote: help stops explaining how to continue an uncertain operation
+F24: remote: a valid failed publication that already activated becomes a protocol failure
 """
 
 from __future__ import annotations
@@ -1065,6 +1066,8 @@ class RemoteCliTest(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout)["error"]["code"], "remote_protocol_failure")
 
     def test_valid_failed_mutation_preserves_activation_and_failed_verification(self) -> None:
+        """Proves F24."""
+
         payload = report("publish", request_id="attempt-1", expected="rev-a", outcome="published")
         payload["outcome"] = "error"
         payload["verification"].update(
