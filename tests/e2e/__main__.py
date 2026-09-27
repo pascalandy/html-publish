@@ -6,8 +6,9 @@ Each run writes $HTML_PUBLISH_E2E_ROOT/<run id>/artifacts/. The root defaults to
 /tmp/html-publish-verify, which CI uploads, and the run ID comes from
 $HTML_PUBLISH_E2E_RUN_ID or is generated.
 
-  manifest.json          commit, rerun commands, each test's outcome, and the
-                         sha256 of every record file
+  manifest.json          commit, the source fingerprint taken before and after
+                         the suite, rerun commands, each test's outcome, and
+                         the sha256 of every record file
   tests/<test id>.jsonl  one line per process the test started: argv, cwd, and
                          exit code; subprocess.run calls also get stdout and
                          stderr digests with a readable head. A Popen process's
@@ -32,10 +33,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TextIO
 
+from tests.e2e._fingerprint import source_fingerprint
+
 ROOT = Path(__file__).resolve().parents[2]
 SPAWN_EVENTS = frozenset({"subprocess.Popen", "os.system"})
 HEAD_CHARACTERS = 2000
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def now() -> str:
@@ -139,7 +142,7 @@ class Recorder:
                 entry["returncode"] = process.poll()
         self.current = None
 
-    def write(self, started_at: str) -> Path:
+    def write(self, started_at: str, source: dict[str, str | None]) -> Path:
         records = self.artifacts / "tests"
         records.mkdir(parents=True, exist_ok=True)
         files: dict[str, str] = {}
@@ -165,6 +168,7 @@ class Recorder:
             "started_at": started_at,
             "finished_at": now(),
             **git_state(),
+            "source_fingerprint": source,
             "python": platform.python_version(),
             "platform": platform.platform(),
             "rerun": "just check --only e2e",
@@ -230,6 +234,13 @@ def git_state() -> dict[str, object]:
         return {"commit": None, "dirty": None}
 
 
+def fingerprint() -> str | None:
+    try:
+        return source_fingerprint(ROOT)
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
 class RecordingRunner(unittest.TextTestRunner):
     def __init__(self, recorder: Recorder, stream: TextIO) -> None:
         super().__init__(stream=stream, verbosity=2)
@@ -255,6 +266,7 @@ def main(stream: TextIO = sys.stderr) -> int:
         return 2
     artifacts.mkdir(parents=True)
     started_at = now()
+    source_at_start = fingerprint()
 
     recorder = Recorder(run_id, artifacts)
     sys.addaudithook(recorder.audit)
@@ -264,7 +276,7 @@ def main(stream: TextIO = sys.stderr) -> int:
         str(ROOT / "tests" / "e2e"), pattern="test_*.py", top_level_dir=str(ROOT)
     )
     result = RecordingRunner(recorder, stream).run(suite)
-    manifest = recorder.write(started_at)
+    manifest = recorder.write(started_at, {"start": source_at_start, "end": fingerprint()})
     print(f"E2E_ARTIFACTS={manifest.parent}", file=stream)
     return 0 if result.wasSuccessful() else 1
 

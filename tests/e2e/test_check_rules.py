@@ -8,6 +8,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -22,6 +23,8 @@ RULE_SCRIPTS = (
     "check_test_only_code.py",
     "check_e2e_artifacts.py",
 )
+E2E_SUPPORT = ("__main__.py", "_fingerprint.py")
+VERBOSE_HINT = "rerun with --verbose for details\n"
 # A Git hook exports GIT_DIR and related variables. A fixture command that inherited them would
 # act on the repository running the hook, not on the throwaway one, so none of them pass through
 FIXTURE_ENVIRONMENT = {
@@ -29,6 +32,7 @@ FIXTURE_ENVIRONMENT = {
 }
 
 CLEAN_TREE = {
+    ".gitignore": "__pycache__/\n*.pyc\ndist/\n",
     "pyproject.toml": '[project.scripts]\nhtml-publish = "html_publish.cli:main"\n',
     "html_publish/__init__.py": "",
     "html_publish/__main__.py": 'print("hi")\n',
@@ -95,7 +99,8 @@ class RuleScriptTest(unittest.TestCase):
         for name in RULE_SCRIPTS:
             shutil.copy2(ROOT / "scripts" / name, root / "scripts" / name)
         (root / "tests" / "e2e").mkdir(parents=True)
-        shutil.copy2(ROOT / "tests" / "e2e" / "__main__.py", root / "tests" / "e2e" / "__main__.py")
+        for name in E2E_SUPPORT:
+            shutil.copy2(ROOT / "tests" / "e2e" / name, root / "tests" / "e2e" / name)
         for relative, content in {**CLEAN_TREE, **(changes or {})}.items():
             path = root / relative
             if content is None:
@@ -115,11 +120,63 @@ class RuleScriptTest(unittest.TestCase):
             timeout=60,
         )
 
+    def git(self, root: Path, *args: str) -> str:
+        return subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+                *args,
+            ],
+            cwd=root,
+            env=FIXTURE_ENVIRONMENT,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        ).stdout.strip()
+
+    def committed_fixture(self) -> tuple[Path, Path]:
+        """The clean fixture committed to a new repository, and an empty directory for runs."""
+        root = self.fixture()
+        self.git(root, "init", "-q")
+        self.git(root, "add", "-A")
+        self.git(root, "commit", "-qm", "fixture")
+        return root, Path(self.enterContext(tempfile.TemporaryDirectory(prefix="hp-runs-")))
+
+    def record(self, root: Path, runs: Path, run_id: str) -> subprocess.CompletedProcess[str]:
+        """Run the fixture's E2E suite through the recorder, as just check does."""
+        return subprocess.run(
+            [sys.executable, "-m", "tests.e2e"],
+            cwd=root,
+            env={
+                **FIXTURE_ENVIRONMENT,
+                "HTML_PUBLISH_E2E_ROOT": str(runs),
+                "HTML_PUBLISH_E2E_RUN_ID": run_id,
+            },
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+    def audit(
+        self, root: Path, runs: Path, run_id: str, *args: str
+    ) -> subprocess.CompletedProcess[str]:
+        return self.run_script(
+            root, "check_e2e_artifacts", "--run-id", run_id, "--artifacts-root", str(runs), *args
+        )
+
     def test_each_rule_accepts_the_clean_tree(self) -> None:
         root = self.fixture()
         for name, summary in (
             ("check_test_layout", "ok: 1 e2e and 1 isolated test modules\n"),
-            ("check_e2e_boundary", "ok: 3 e2e files stay behind the executable boundary\n"),
+            ("check_e2e_boundary", "ok: 4 e2e files stay behind the executable boundary\n"),
             (
                 "check_isolated_failure_modes",
                 "ok: 1 isolated tests cite the failures listed in 1 modules\n",
@@ -370,69 +427,15 @@ class RuleScriptTest(unittest.TestCase):
         )
 
     def test_e2e_artifacts_prove_each_run_and_catch_tampering(self) -> None:
-        root = self.fixture()
-        artifacts_root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="hp-runs-")))
-        for command in (
-            ["git", "init", "-q"],
-            ["git", "add", "-A"],
-            [
-                "git",
-                "-c",
-                "user.name=test",
-                "-c",
-                "user.email=test@example.com",
-                "-c",
-                "commit.gpgsign=false",
-                "-c",
-                "core.hooksPath=/dev/null",
-                "commit",
-                "-qm",
-                "fixture",
-            ],
-        ):
-            subprocess.run(
-                command,
-                cwd=root,
-                env=FIXTURE_ENVIRONMENT,
-                check=True,
-                capture_output=True,
-                timeout=30,
-            )
-        environment = {**FIXTURE_ENVIRONMENT, "HTML_PUBLISH_E2E_ROOT": str(artifacts_root)}
-
-        def record(run_id: str) -> subprocess.CompletedProcess[str]:
-            return subprocess.run(
-                [sys.executable, "-m", "tests.e2e"],
-                cwd=root,
-                env={**environment, "HTML_PUBLISH_E2E_RUN_ID": run_id},
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
-
-        def audit(run_id: str) -> subprocess.CompletedProcess[str]:
-            return self.run_script(
-                root,
-                "check_e2e_artifacts",
-                "--run-id",
-                run_id,
-                "--artifacts-root",
-                str(artifacts_root),
-            )
-
-        recorded = record("e2e-good")
+        root, artifacts_root = self.committed_fixture()
+        recorded = self.record(root, artifacts_root, "e2e-good")
         self.assertEqual(recorded.returncode, 0, recorded.stderr)
         run = artifacts_root / "e2e-good" / "artifacts"
         manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
-        head = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=root,
-            env=FIXTURE_ENVIRONMENT,
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.strip()
-        self.assertEqual(manifest["commit"], head)
+        self.assertEqual(
+            (manifest["schema_version"], manifest["commit"], manifest["dirty"]),
+            (2, self.git(root, "rev-parse", "HEAD"), False),
+        )
         [test] = manifest["tests"]
         self.assertEqual(
             (test["id"], test["outcome"], test["processes"], test["rerun"]),
@@ -446,7 +449,7 @@ class RuleScriptTest(unittest.TestCase):
         [line] = (run / test["record"]).read_text(encoding="utf-8").splitlines()
         process = json.loads(line)
         self.assertEqual((process["returncode"], process["stdout"]["head"]), (0, "hi\n"))
-        passed = audit("e2e-good")
+        passed = self.audit(root, artifacts_root, "e2e-good")
         self.assertEqual(
             (passed.returncode, passed.stdout),
             (0, f"ok: 1 e2e tests left verified records in {run}\n"),
@@ -454,7 +457,7 @@ class RuleScriptTest(unittest.TestCase):
         )
 
         (run / test["record"]).write_text("{}\n", encoding="utf-8")
-        tampered = audit("e2e-good")
+        tampered = self.audit(root, artifacts_root, "e2e-good")
         self.assertEqual(tampered.returncode, 1)
         self.assertIn(
             f"error: {run / test['record']}: [e2e-artifacts] sha256 differs from the manifest; "
@@ -505,8 +508,8 @@ class RuleScriptTest(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        self.assertEqual(record("e2e-quiet").returncode, 0)
-        quiet = audit("e2e-quiet")
+        self.assertEqual(self.record(root, artifacts_root, "e2e-quiet").returncode, 0)
+        quiet = self.audit(root, artifacts_root, "e2e-quiet")
         self.assertEqual(quiet.returncode, 1)
         for name in ("test_nothing_runs", "test_only_git_runs"):
             self.assertIn(
@@ -539,6 +542,181 @@ class RuleScriptTest(unittest.TestCase):
         popen = next(item for item in quiet_tests if item["id"].endswith("drives_the_product"))
         [started] = (quiet_run / popen["record"]).read_text(encoding="utf-8").splitlines()
         self.assertEqual(json.loads(started)["returncode"], 0)
+
+    def test_e2e_artifacts_bind_each_run_to_the_source_files_it_tested(self) -> None:
+        root, runs = self.committed_fixture()
+        (root / "dist").mkdir()
+        (root / "dist" / "pinned.txt").write_text(
+            "tracked under an ignored path\n", encoding="utf-8"
+        )
+        self.git(root, "add", "--force", "dist/pinned.txt")
+        self.git(root, "commit", "-qm", "pin a file under an ignored path")
+        store = root / "html_publish" / "store.py"
+        store.write_text(
+            store.read_text(encoding="utf-8") + "# work in progress\n", encoding="utf-8"
+        )
+        (root / "notes.md").write_text("draft\n", encoding="utf-8")
+        (root / "latest").symlink_to("html_publish")
+
+        recorded = self.record(root, runs, "e2e-dirty")
+        self.assertEqual(recorded.returncode, 0, recorded.stderr)
+        run = runs / "e2e-dirty" / "artifacts"
+        manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual((manifest["schema_version"], manifest["dirty"]), (2, True))
+        passed = f"ok: 1 e2e tests left verified records in {run}\n"
+        dirty = self.audit(root, runs, "e2e-dirty")
+        self.assertEqual((dirty.returncode, dirty.stdout), (0, passed), dirty.stderr)
+
+        (root / "dist" / "html_publish-0.1.0-py3-none-any.whl").write_bytes(b"wheel")
+        (root / "html_publish" / "__pycache__").mkdir(exist_ok=True)
+        (root / "html_publish" / "__pycache__" / "extra.cpython-311.pyc").write_bytes(b"cache")
+        for path in (store, root / "tests" / "e2e" / "test_cli.py", root / "notes.md"):
+            os.utime(path, (1, 1))
+        generated = self.audit(root, runs, "e2e-dirty")
+        self.assertEqual((generated.returncode, generated.stdout), (0, passed), generated.stderr)
+
+        def copied() -> Path:
+            parent = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="hp-copy-")))
+            return shutil.copytree(root, parent / "checkout", symlinks=True)
+
+        def audit_copy(copy: Path) -> subprocess.CompletedProcess[str]:
+            return self.audit(root, runs, "e2e-dirty", "--root", str(copy))
+
+        moved = audit_copy(copied())
+        self.assertEqual((moved.returncode, moved.stdout), (0, passed), moved.stderr)
+
+        def edit_test_body(copy: Path) -> None:
+            test_module = copy / "tests" / "e2e" / "test_cli.py"
+            body = test_module.read_text(encoding="utf-8")
+            test_module.write_text(body.replace('"hi\\n")', '"hi\\n", "edited")'), encoding="utf-8")
+
+        def retarget_symlink(copy: Path) -> None:
+            (copy / "latest").unlink()
+            (copy / "latest").symlink_to("tests")
+
+        mutations: list[tuple[str, Callable[[Path], object]]] = [
+            (
+                "edit tracked product code",
+                lambda copy: (copy / "html_publish" / "__main__.py").write_text(
+                    'print("bye")\n', encoding="utf-8"
+                ),
+            ),
+            ("edit a test body", edit_test_body),
+            (
+                "edit an untracked file",
+                lambda copy: (copy / "notes.md").write_text("final\n", encoding="utf-8"),
+            ),
+            (
+                "edit a tracked file under an ignored path",
+                lambda copy: (copy / "dist" / "pinned.txt").write_text(
+                    "edited\n", encoding="utf-8"
+                ),
+            ),
+            (
+                "add a file",
+                lambda copy: (copy / "html_publish" / "extra.py").write_text("", encoding="utf-8"),
+            ),
+            ("delete a file", lambda copy: (copy / "html_publish" / "cli.py").unlink()),
+            (
+                "rename a file",
+                lambda copy: (copy / "html_publish" / "cli.py").rename(
+                    copy / "html_publish" / "command.py"
+                ),
+            ),
+            (
+                "make a file executable",
+                lambda copy: (copy / "html_publish" / "store.py").chmod(0o755),
+            ),
+            ("retarget a symlink", retarget_symlink),
+        ]
+        for label, mutate in mutations:
+            with self.subTest(label):
+                copy = copied()
+                mutate(copy)
+                result = audit_copy(copy)
+                self.assertEqual(
+                    (result.returncode, result.stderr),
+                    (
+                        1,
+                        f"error: {run}: [e2e-artifacts] run tested other source files than the "
+                        f"checkout holds; fix: rerun just check --only e2e\n{VERBOSE_HINT}",
+                    ),
+                )
+
+        committed = copied()
+        self.git(committed, "commit", "-q", "--allow-empty", "-m", "next")
+        later = audit_copy(committed)
+        self.assertEqual(
+            (later.returncode, later.stderr),
+            (
+                1,
+                f"error: {run}: [e2e-artifacts] run is from commit {manifest['commit']}, "
+                f"checkout is at {self.git(committed, 'rev-parse', 'HEAD')}; "
+                f"fix: rerun just check --only e2e\n{VERBOSE_HINT}",
+            ),
+        )
+
+        unfingerprinted = {
+            key: value for key, value in manifest.items() if key != "source_fingerprint"
+        }
+        for run_id, old_manifest, problem in (
+            (
+                "e2e-version-1",
+                {**unfingerprinted, "schema_version": 1},
+                "/manifest.json has schema_version 1, expected 2",
+            ),
+            ("e2e-no-fingerprint", unfingerprinted, "/manifest.json lacks source_fingerprint"),
+            (
+                "e2e-null-fingerprint",
+                {**manifest, "source_fingerprint": {"start": None, "end": None}},
+                ": [e2e-artifacts] records no source fingerprint",
+            ),
+        ):
+            with self.subTest(run_id):
+                old_run = shutil.copytree(run.parent, runs / run_id) / "artifacts"
+                (old_run / "manifest.json").write_text(json.dumps(old_manifest), encoding="utf-8")
+                result = self.audit(root, runs, run_id)
+                self.assertEqual(
+                    (result.returncode, result.stderr),
+                    (
+                        1,
+                        f"error: {old_run}{problem}; "
+                        f"fix: rerun just check --only e2e\n{VERBOSE_HINT}",
+                    ),
+                )
+
+        (root / "tests" / "e2e" / "test_writer.py").write_text(
+            textwrap.dedent(
+                """\
+                import subprocess
+                import sys
+                import unittest
+                from pathlib import Path
+
+
+                class WriterTest(unittest.TestCase):
+                    def test_edits_the_checkout_mid_run(self) -> None:
+                        Path("notes.md").write_text("edited while the suite ran\\n")
+                        command = [sys.executable, "-m", "html_publish"]
+                        result = subprocess.run(command, capture_output=True, text=True)
+                        self.assertEqual(result.stdout, "hi\\n")
+                """
+            ),
+            encoding="utf-8",
+        )
+        self.assertEqual(self.record(root, runs, "e2e-moving").returncode, 0)
+        (root / "notes.md").write_text("draft\n", encoding="utf-8")
+        moving_run = runs / "e2e-moving" / "artifacts"
+        moving = self.audit(root, runs, "e2e-moving")
+        self.assertEqual(
+            (moving.returncode, moving.stderr),
+            (
+                1,
+                f"error: {moving_run}: [e2e-artifacts] source files changed while the suite ran; "
+                "fix: rerun just check --only e2e and leave the checkout unchanged until it ends\n"
+                + VERBOSE_HINT,
+            ),
+        )
 
 
 if __name__ == "__main__":

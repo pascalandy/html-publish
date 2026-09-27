@@ -17,9 +17,12 @@ from pathlib import Path
 from typing import Any, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(1, str(Path(__file__).resolve().parent.parent))
 
 from _common import ScriptError, run_script
 from _test_tree import add_root_argument, test_functions, test_sources, undiscovered_tests
+
+from tests.e2e._fingerprint import source_fingerprint
 
 EPILOG = """\
 rule:
@@ -27,6 +30,9 @@ rule:
   writes <artifacts root>/<run id>/artifacts/manifest.json plus one record per
   test. This check requires that the run
   - comes from the checked-out commit,
+  - tested the source files the checkout holds now: the fingerprint of tracked
+    and non-ignored untracked files, taken before and after the suite, matches
+    both times, so a dirty checkout passes until a file changes,
   - covers every E2E test in tests/e2e/, none of them a module-level function
     that unittest never runs,
   - reports no failed test and gives every skip a reason,
@@ -44,7 +50,9 @@ examples:
 exit codes: 0 ok, 1 artifact errors found, 2 bad usage, 130 interrupted"""
 
 DEFAULT_ARTIFACTS_ROOT = "/tmp/html-publish-verify"
-REQUIRED_KEYS = ("schema_version", "run_id", "commit", "rerun", "tests", "files")
+SCHEMA_VERSION = 2
+REQUIRED_KEYS = ("run_id", "commit", "source_fingerprint", "rerun", "tests", "files")
+RERUN = "fix: rerun just check --only e2e"
 PRODUCT_MODULES = ("html_publish", "tests.e2e")
 FIXTURE_HOLDER_RE = re.compile(r"^(?:setUpClass|setUpModule) \((?P<scope>[\w.]+)\)$")
 SHELLS = frozenset({"bash", "sh"})
@@ -103,6 +111,28 @@ def head_commit(root: Path) -> str | None:
         ["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True, check=False
     )
     return result.stdout.strip() if result.returncode == 0 else None
+
+
+def check_source(run: Path, root: Path, recorded: object) -> list[str]:
+    """Whether the run tested, from start to finish, the source files `root` holds now."""
+    fingerprint = cast(dict[str, object], recorded) if isinstance(recorded, dict) else {}
+    start, end = fingerprint.get("start"), fingerprint.get("end")
+    if not isinstance(start, str) or not isinstance(end, str):
+        return [f"{run}: [e2e-artifacts] records no source fingerprint; {RERUN}"]
+    if start != end:
+        return [
+            f"{run}: [e2e-artifacts] source files changed while the suite ran; "
+            f"{RERUN} and leave the checkout unchanged until it ends"
+        ]
+    try:
+        current = source_fingerprint(root)
+    except (OSError, subprocess.CalledProcessError) as error:
+        return [f"{root}: [e2e-artifacts] cannot fingerprint the checkout: {error}"]
+    if current != start:
+        return [
+            f"{run}: [e2e-artifacts] run tested other source files than the checkout holds; {RERUN}"
+        ]
+    return []
 
 
 def check_files(run: Path, files: dict[str, str]) -> list[str]:
@@ -198,21 +228,23 @@ def check(root: Path, artifacts_root: Path, run_id: str | None) -> str:
         )
     except json.JSONDecodeError as error:
         raise ScriptError(f"{run}/manifest.json is not JSON: {error}") from error
+    version = manifest.get("schema_version")
+    if version != SCHEMA_VERSION:
+        raise ScriptError(
+            f"{run}/manifest.json has schema_version {version}, expected {SCHEMA_VERSION}; {RERUN}"
+        )
     missing = [key for key in REQUIRED_KEYS if key not in manifest]
     if missing:
-        raise ScriptError(f"{run}/manifest.json lacks {', '.join(missing)}")
-    if manifest["schema_version"] != 1:
-        raise ScriptError(
-            f"{run}/manifest.json has schema_version {manifest['schema_version']}, expected 1"
-        )
+        raise ScriptError(f"{run}/manifest.json lacks {', '.join(missing)}; {RERUN}")
 
     errors: list[str] = []
     commit = head_commit(root)
     if manifest["commit"] != commit:
         errors.append(
             f"{run}: [e2e-artifacts] run is from commit {manifest['commit']}, "
-            f"checkout is at {commit}; fix: rerun just check --only e2e"
+            f"checkout is at {commit}; {RERUN}"
         )
+    errors += check_source(run, root, manifest["source_fingerprint"])
     errors += check_files(run, cast(dict[str, str], manifest["files"]))
     tests = cast(list[dict[str, Any]], manifest["tests"])
     expected, undiscovered = expected_tests(root)
