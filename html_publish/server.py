@@ -17,6 +17,8 @@ from pathlib import Path
 from types import FrameType
 from typing import BinaryIO
 
+from html_publish import __version__, command_line
+
 _CONDITIONAL_HEADERS = (
     "If-Match",
     "If-Modified-Since",
@@ -150,7 +152,10 @@ class PublicationRequestHandler(http.server.SimpleHTTPRequestHandler):
 
 
 def _port(value: str) -> int:
-    port = int(value)
+    try:
+        port = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("port must be an integer from 0 to 65535") from error
     if not 0 <= port <= 65535:
         raise argparse.ArgumentTypeError("port must be between 0 and 65535")
     return port
@@ -182,11 +187,44 @@ def _directory(value: str) -> Path:
     return directory
 
 
-def _parse_args(argv: Sequence[str] | None) -> ServerConfig:
-    parser = argparse.ArgumentParser(description="Serve html-publish releases over HTTP")
-    parser.add_argument("--directory", required=True, type=_directory)
-    parser.add_argument("--bind", default="127.0.0.1")
-    parser.add_argument("--port", default=8000, type=_port)
+class Parser(command_line.Parser):
+    exit_codes = (0, 1, 2, 130, 143)
+
+
+def _parser() -> Parser:
+    parser = Parser(
+        prog="html-publish-server",
+        description="Serve selected html-publish releases read-only over HTTP",
+        epilog="Examples:\n  "
+        + "\n  ".join(
+            (
+                "html-publish-server --directory ~/.local/share/html-publish/runtime/public",
+                "html-publish-server --directory ./runtime/public --bind 127.0.0.1 --port 4177",
+            )
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False,
+    )
+    parser.add_argument(
+        "--directory",
+        required=True,
+        type=_directory,
+        help="publisher runtime/public directory to serve",
+    )
+    parser.add_argument("--bind", default="127.0.0.1", help="listen address (default: %(default)s)")
+    parser.add_argument(
+        "--port", default=8000, type=_port, help="listen port, 0 to 65535 (default: %(default)s)"
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"html-publish-server {__version__}",
+        help="show installed version",
+    )
+    return parser
+
+
+def _parse_args(parser: Parser, argv: Sequence[str]) -> ServerConfig:
     arguments = parser.parse_args(argv)
 
     directory = arguments.directory
@@ -221,7 +259,22 @@ def serve(config: ServerConfig) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    return serve(_parse_args(argv))
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    return command_line.run("html-publish-server", arguments, lambda: _main(arguments))
+
+
+def _main(arguments: list[str]) -> int:
+    parser = _parser()
+    try:
+        help_parser = command_line.requested_help(parser, arguments)
+        if help_parser is not None:
+            print(help_parser.format_help(), end="")
+            return 0
+        config = _parse_args(parser, arguments)
+    except command_line.UsageError as error:
+        sys.stderr.write(command_line.usage_text(error, parser, arguments))
+        return 2
+    return serve(config)
 
 
 if __name__ == "__main__":

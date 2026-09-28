@@ -19,7 +19,7 @@ from types import FrameType
 from typing import Literal, NoReturn, cast
 from urllib.parse import urlparse
 
-from html_publish import __version__
+from html_publish import __version__, command_line
 from html_publish.artifact import capture, capture_source
 from html_publish.cli import ReportMode, bound_report_text, emit_json, report_dict, usage_report
 from html_publish.configuration import ClientConfig, read_document, selected_path
@@ -55,10 +55,6 @@ REMOTE_PATH_PATTERN = re.compile(r"/[A-Za-z0-9._/-]+\Z")
 ExitCode = Literal[0, 1, 2]
 
 
-class UsageFailure(Exception):
-    pass
-
-
 class CommandExpired(Exception):
     def __init__(self, started: bool = False) -> None:
         super().__init__("The command deadline expired")
@@ -69,9 +65,8 @@ class ProtocolFailure(Exception):
     pass
 
 
-class Parser(argparse.ArgumentParser):
-    def error(self, message: str) -> NoReturn:
-        raise UsageFailure(message)
+class Parser(command_line.Parser):
+    exit_codes = (0, 1, 2, 130, 143)
 
 
 @dataclass(frozen=True)
@@ -182,21 +177,32 @@ def _remote_path(value: str) -> PurePosixPath:
 
 
 def _connect_timeout(value: str) -> int:
-    parsed = int(value)
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            "connect timeout must be an integer between 1 and 300 seconds"
+        ) from error
     if parsed < 1 or parsed > 300:
         raise argparse.ArgumentTypeError("connect timeout must be between 1 and 300 seconds")
     return parsed
 
 
 def _positive_seconds(value: str) -> float:
-    parsed = float(value)
+    try:
+        parsed = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("command seconds must be a positive number") from error
     if not math.isfinite(parsed) or parsed <= 0:
         raise argparse.ArgumentTypeError("command seconds must be positive")
     return parsed
 
 
 def _positive_limit(value: str) -> int:
-    parsed = int(value)
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("limit must be an integer between 1 and 100") from error
     if parsed < 1 or parsed > 100:
         raise argparse.ArgumentTypeError("limit must be between 1 and 100")
     return parsed
@@ -234,6 +240,7 @@ def _globals(parser: argparse.ArgumentParser, version: str, *, child: bool = Fal
         help="private host directory for plan and publish uploads (required without client config)",
     )
     parser.add_argument(
+        "-c",
         "--config",
         type=Path,
         default=default(None),
@@ -257,7 +264,21 @@ def _globals(parser: argparse.ArgumentParser, version: str, *, child: bool = Fal
         "--json",
         action="store_true",
         default=default(True),
-        help="write one JSON object to stdout (default for remote operations)",
+        help="write one JSON object to stdout (always on: remote results are JSON)",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        default=default(False),
+        help="print one line per transport step on stderr",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        default=default(False),
+        help="also print timings, ssh and scp commands, and tracebacks on stderr "
+        "(or set HTML_PUBLISH_REMOTE_DEBUG=1)",
     )
     parser.add_argument(
         "--version", action="version", version=version, help="show installed version"
@@ -274,6 +295,19 @@ def _parser(json_version: bool = False) -> Parser:
         prog="html-publish-remote",
         description="Run the six publisher operations through SSH. "
         "Publication results are JSON by default.",
+        epilog="Examples:\n  "
+        + "\n  ".join(
+            (
+                "html-publish-remote --config client.json status --name release-notes",
+                "html-publish-remote --config client.json publish --name release-notes "
+                "--source ./page.html --expected-revision REVISION",
+                "html-publish-remote --host user@host --remote-executable /usr/bin/html-publish "
+                "--remote-config /srv/publisher.json --target https://host.example/pages/ "
+                "--incoming-root /srv/incoming verify --name release-notes",
+                "html-publish-remote help publish",
+            )
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         allow_abbrev=False,
     )
     _globals(parser, version)
@@ -290,6 +324,9 @@ def _parser(json_version: bool = False) -> Parser:
             examples=(
                 f"html-publish-remote --config client.json {operation} "
                 "--name release-notes --source ./page.html",
+                f"html-publish-remote --config client.json {operation} --name guide "
+                "--source ./docs --format markdown --expected-revision REVISION "
+                "--expected-record-revision RECORD",
             ),
             effects=("uploads a private source copy", "reads host state")
             if operation == "plan"
@@ -384,7 +421,10 @@ def _parser(json_version: bool = False) -> Parser:
         commands,
         "verify",
         "check selected files and host HTTP delivery",
-        examples=("html-publish-remote --config client.json verify --name release-notes",),
+        examples=(
+            "html-publish-remote --config client.json verify --name release-notes",
+            "html-publish-remote --config client.json verify --name release-notes --report summary",
+        ),
         effects=("reads saved bytes and host delivery", "does not activate"),
     )
     verify.add_argument("--name", required=True, type=_name, help="publication name")
@@ -430,6 +470,8 @@ def _parser(json_version: bool = False) -> Parser:
         examples=(
             "html-publish-remote --config client.json restore --name release-notes "
             "--archive-commit COMMIT --expected-revision REVISION",
+            "html-publish-remote --config client.json restore --name release-notes "
+            "--archive-commit COMMIT --expected-revision REVISION --request-id attempt-002",
         ),
         effects=(
             "may append archive history",
@@ -455,10 +497,18 @@ def _parser(json_version: bool = False) -> Parser:
         commands,
         "schema",
         "print parser-derived command discovery as JSON",
-        examples=("html-publish-remote schema",),
+        examples=(
+            "html-publish-remote schema",
+            "html-publish-remote schema | jq '.commands[].name'",
+        ),
         effects=("reads command definitions only",),
     )
     _globals(schema, version, child=True)
+    command_line.add_help_command(
+        commands,
+        "html-publish-remote",
+        ("html-publish-remote help publish", "html-publish-remote help status"),
+    )
     return parser
 
 
@@ -503,8 +553,9 @@ def _parse(arguments: list[str]) -> tuple[RemoteSettings, Request]:
                 "Selected client config lacks remote destination fields: " + ", ".join(missing),
                 "fix_config",
             )
-        raise UsageFailure(
-            "Remote destination requires " + ", ".join(missing) + " or an explicit client config"
+        raise command_line.UsageError(
+            "Remote destination requires " + ", ".join(missing) + " or an explicit client config",
+            add=["--config", "<client-config>"],
         )
     settings = RemoteSettings(
         cast(str, effective["host"]),
@@ -572,7 +623,9 @@ def _parse(arguments: list[str]) -> tuple[RemoteSettings, Request]:
         or expected_record_revision is not None
         or expected_render_profile_id is not None
     ):
-        raise UsageFailure("Markdown options require --format markdown")
+        raise command_line.UsageError(
+            "Markdown options require --format markdown", add=["--format", "markdown"]
+        )
     return settings, ArtifactRequest(
         operation,
         name,
@@ -1554,13 +1607,27 @@ def _run_artifact(
 
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
+    return command_line.run("html-publish-remote", arguments, lambda: _main(arguments))
+
+
+def _main(arguments: list[str]) -> int:
+    parser = _parser("--json" in arguments)
     try:
-        parser = _parser("--json" in arguments)
+        help_parser = command_line.requested_help(parser, arguments)
+        if help_parser is not None:
+            print(help_parser.format_help(), end="")
+            return 0
         parsed = parser.parse_args(arguments)
+        command_line.configure_logging(
+            "html-publish-remote",
+            verbose=parsed.verbose,
+            debug=parsed.debug or command_line.debug_requested("html-publish-remote", arguments),
+        )
         if parsed.operation == "schema":
             return emit_json(command_schema(parser, "html-publish-remote"), 0)
         settings, request = _parse(arguments)
-    except UsageFailure as error:
+    except command_line.UsageError as error:
+        sys.stderr.write(command_line.usage_text(error, parser, arguments))
         failure = Failure("invalid_usage", "usage", str(error), "fix_arguments")
         return emit_json(_usage_payload(arguments, failure), 2)
     except PublishError as error:

@@ -101,7 +101,8 @@ class InstalledWorkflowTest(unittest.TestCase):
                         ["config", "doctor", "host", "skills"]
                         if executable == values["CLI"]
                         else []
-                    ),
+                    )
+                    + ["help"],
                 )
                 plan = next(command for command in commands if command["name"] == "plan")
                 plan_expected = next(
@@ -192,12 +193,12 @@ class InstalledWorkflowTest(unittest.TestCase):
                     schema,
                 )
                 invalid = discovery(executable, "--json", "status", "--nam", "notes", exit_code=2)
-                self.assertEqual(invalid.stderr, "")
+                self.assertIn("did you mean '--name'?\n", invalid.stderr)
                 self.assertEqual(json.loads(invalid.stdout)["error"]["code"], "invalid_usage")
                 bad_budget = discovery(
                     executable, "--json", "status", "--command-seconds", "0", exit_code=2
                 )
-                self.assertEqual(bad_budget.stderr, "")
+                self.assertIn("argument --command-seconds: ", bad_budget.stderr)
                 self.assertEqual(json.loads(bad_budget.stdout)["error"]["code"], "invalid_usage")
                 plain = discovery(executable, "status", "--nam", "notes", exit_code=2)
                 if executable == values["CLI"]:

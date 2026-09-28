@@ -8,6 +8,7 @@ its guards, and writes its PID to a ready file; the test signals the process onl
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import shutil
@@ -20,6 +21,7 @@ import unittest
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 ROOT = Path(__file__).resolve().parents[2]
 PYTHON = sys.executable
@@ -307,6 +309,238 @@ class ScriptContractTest(unittest.TestCase):
         return process, int(ready.read_text())
 
 
+@dataclass(frozen=True)
+class Installed:
+    """An installed executable, run from the checkout as `python -m <module>`."""
+
+    prog: str
+    module: str
+    exit_codes: tuple[int, ...]
+    schema: bool
+    commands: tuple[tuple[str, ...], ...] = ()
+
+    @property
+    def argv(self) -> tuple[str, ...]:
+        return (PYTHON, "-m", self.module)
+
+
+INSTALLED = (
+    Installed("html-publish", "html_publish", (0, 1, 2, 130, 143), schema=True),
+    Installed("html-publish-remote", "html_publish.remote", (0, 1, 2, 130, 143), schema=True),
+    Installed("html-publish-server", "html_publish.server", (0, 1, 2, 130, 143), schema=False),
+    Installed(
+        "html-publish-deploy",
+        "html_publish.deploy",
+        (0, 1, 2, 130, 143),
+        schema=False,
+        commands=(("install",), ("health",), ("rollback",), ("help",)),
+    ),
+)
+
+
+class InstalledContractTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="hp-installed-")))
+        self.env = {
+            **ENVIRONMENT,
+            **{
+                variable: str(self.root / variable.lower())
+                for variable in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME")
+            },
+        }
+        self.config = self.root / "publisher.json"
+        self.config.write_text(
+            json.dumps(
+                {
+                    "archive": str(self.root / "archive.git"),
+                    "runtime": str(self.root / "runtime"),
+                    "base_url": "http://127.0.0.1:9/",
+                    "allow_http": True,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def run_installed(
+        self, executable: Installed, *arguments: str
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [*executable.argv, *arguments],
+            cwd=self.root,
+            env=self.env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+    def command_paths(self, executable: Installed) -> list[tuple[str, ...]]:
+        """Every command path, from `schema` where the executable has one."""
+        if not executable.schema:
+            return list(executable.commands)
+        schema = json_object(self.run_installed(executable, "schema").stdout)
+        paths: list[tuple[str, ...]] = []
+
+        def walk(commands: object, prefix: tuple[str, ...]) -> None:
+            for command in cast(list[dict[str, object]], commands):
+                path = (*prefix, str(command["name"]))
+                paths.append(path)
+                examples = cast(list[str], command["examples"])
+                self.assertTrue(2 <= len(examples) <= 5, (executable.prog, path, examples))
+                walk(command.get("commands", []), path)
+
+        walk(schema["commands"], ())
+        return paths
+
+    def test_help_is_the_same_text_however_it_is_asked_for(self) -> None:
+        for executable in INSTALLED:
+            root_help = self.run_installed(executable, "--help")
+            with self.subTest(prog=executable.prog):
+                self.assertEqual((root_help.returncode, root_help.stderr), (0, ""))
+                self.assertTrue(root_help.stdout.startswith(f"usage: {executable.prog} "))
+                examples = examples_in(root_help.stdout)
+                self.assertTrue(2 <= len(examples) <= 5, examples)
+                self.assert_exit_codes(executable, root_help.stdout)
+            for path in self.command_paths(executable):
+                with self.subTest(prog=executable.prog, path=path):
+                    reference = self.run_installed(executable, *path, "--help")
+                    self.assertEqual((reference.returncode, reference.stderr), (0, ""))
+                    self.assertTrue(2 <= len(examples_in(reference.stdout)) <= 5)
+                    self.assert_exit_codes(executable, reference.stdout)
+                    for arguments in (
+                        ("help", *path),
+                        (*path, "-h"),
+                        (*path, "--bogus", "--help"),
+                        ("--version", *path, "--help"),
+                    ):
+                        result = self.run_installed(executable, *arguments)
+                        self.assertEqual(
+                            (result.returncode, result.stdout, result.stderr),
+                            (0, reference.stdout, ""),
+                            arguments,
+                        )
+
+    def test_help_wins_over_a_bad_command_or_value(self) -> None:
+        cases = {
+            "html-publish": (("publsh", "--help"), ("status", "--limit", "0", "--help")),
+            "html-publish-remote": (("publsh", "--help"), ("status", "--limit", "0", "--help")),
+            "html-publish-server": (("--port", "99999", "--help"),),
+            "html-publish-deploy": (("instal", "--help"), ("rollback", "--release", "--help")),
+        }
+        for executable in INSTALLED:
+            for arguments in cases[executable.prog]:
+                with self.subTest(prog=executable.prog, arguments=arguments):
+                    result = self.run_installed(executable, *arguments)
+                    self.assertEqual((result.returncode, result.stderr), (0, ""))
+                    self.assertTrue(result.stdout.startswith("usage: "), result.stdout)
+
+    def test_usage_errors_name_the_fix_and_the_help_command(self) -> None:
+        cases = {
+            "html-publish": (
+                ("verify",),
+                "the following arguments are required: --name",
+                "next: html-publish verify --name '<name>'",
+                "run 'html-publish verify --help' for details",
+            ),
+            "html-publish-remote": (
+                ("verify",),
+                "the following arguments are required: --name",
+                "next: html-publish-remote verify --name '<name>'",
+                "run 'html-publish-remote verify --help' for details",
+            ),
+            "html-publish-server": (
+                (),
+                "the following arguments are required: --directory",
+                "next: html-publish-server --directory '<directory>'",
+                "run 'html-publish-server --help' for details",
+            ),
+            "html-publish-deploy": (
+                (),
+                "the following arguments are required: operation",
+                "next: html-publish-deploy '<command>'",
+                "run 'html-publish-deploy --help' for details",
+            ),
+        }
+        for executable in INSTALLED:
+            arguments, failure, fix, hint = cases[executable.prog]
+            with self.subTest(prog=executable.prog):
+                result = self.run_installed(executable, *arguments)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                lines = result.stderr.splitlines()
+                self.assertTrue(lines[0].startswith(f"usage: {executable.prog}"), result.stderr)
+                self.assertIn(f"{executable.prog}: {failure}", lines)
+                self.assertEqual(lines[-2:], [fix, hint])
+                if executable.prog == "html-publish-remote":
+                    error = cast(dict[str, object], json_object(result.stdout)["error"])
+                    self.assertEqual(error["code"], "invalid_usage")
+                else:
+                    self.assertEqual(result.stdout, "")
+        for executable, mistyped, meant in (
+            (INSTALLED[0], ("--json", "publsh", "--name", "notes"), "publish"),
+            (INSTALLED[1], ("statsu", "--name", "notes"), "status"),
+            (INSTALLED[3], ("rollbak",), "rollback"),
+        ):
+            with self.subTest(prog=executable.prog, mistyped=mistyped):
+                result = self.run_installed(executable, *mistyped)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(f"did you mean {meant!r}?\n", result.stderr)
+                next_line = result.stderr.splitlines()[-2]
+                self.assertTrue(next_line.startswith(f"next: {executable.prog} "), next_line)
+                self.assertIn(meant, next_line.split())
+        mistyped_flag = self.run_installed(INSTALLED[0], "status", "--nam", "notes")
+        self.assertEqual(
+            mistyped_flag.stderr.splitlines()[-3:],
+            [
+                "did you mean '--name'?",
+                "next: html-publish status --name notes",
+                "run 'html-publish status --help' for details",
+            ],
+        )
+
+    def test_option_spellings_and_positions_parse_the_same(self) -> None:
+        config = str(self.config)
+        receipt = str(self.root / "missing.publish")
+        equivalent: list[tuple[Installed, tuple[str, ...], tuple[str, ...]]] = [
+            (INSTALLED[0], ("--config", config, "status"), (f"--config={config}", "status")),
+            (INSTALLED[0], ("-v", "-c", config, "status"), ("-vc", config, "status")),
+            (INSTALLED[0], ("--json", "-c", config, "status"), ("status", "--json", "-c", config)),
+            (
+                INSTALLED[0],
+                ("--json", "artifact", "status", "--receipt", receipt, "--local-only"),
+                ("artifact", "status", "--local-only", "--receipt", receipt, "--json"),
+            ),
+            (
+                INSTALLED[1],
+                ("--connect-timeout", "0", "status"),
+                ("status", "--connect-timeout=0"),
+            ),
+            (INSTALLED[2], ("--port", "99999"), ("--port=99999",)),
+            (
+                INSTALLED[3],
+                ("--state-root", str(self.root / "state"), "rollback"),
+                ("rollback", f"--state-root={self.root / 'state'}"),
+            ),
+        ]
+        for executable, first, second in equivalent:
+            with self.subTest(prog=executable.prog, first=first, second=second):
+                one = self.run_installed(executable, *first)
+                other = self.run_installed(executable, *second)
+                self.assertEqual(
+                    (one.returncode, one.stdout), (other.returncode, other.stdout), one.stderr
+                )
+        for executable in INSTALLED:
+            with self.subTest(prog=executable.prog, check="-- ends options"):
+                ended = self.run_installed(executable, "--", "--help")
+                self.assertEqual(ended.returncode, 2, ended.stdout)
+                self.assertNotIn("usage: ", ended.stdout)
+
+    def assert_exit_codes(self, executable: Installed, help_text: str) -> None:
+        listed = re.search(r"^Exit codes:\n((?:  .*\n)+)", help_text, re.MULTILINE)
+        self.assertIsNotNone(listed, help_text)
+        assert listed is not None
+        codes = tuple(int(line.split()[0]) for line in listed.group(1).splitlines())
+        self.assertEqual(codes, executable.exit_codes)
+
+
 def stop(process: subprocess.Popen[str]) -> None:
     if process.poll() is None:
         process.kill()
@@ -320,9 +554,16 @@ def kill_group(group: int) -> None:
 
 
 def examples_in(help_text: str) -> list[str]:
-    """The indented lines of the help section headed `examples:`."""
-    match = re.search(r"^examples:\n((?:  .*\n)+)", help_text, re.MULTILINE)
+    """The indented lines of the help section headed `examples:` or `Examples:`."""
+    match = re.search(r"^[Ee]xamples:\n((?:  .*\n)+)", help_text, re.MULTILINE)
     return [line.strip() for line in match.group(1).splitlines()] if match else []
+
+
+def json_object(text: str) -> dict[str, object]:
+    value: object = json.loads(text)
+    if not isinstance(value, dict):
+        raise AssertionError(f"not one JSON object: {text!r}")
+    return cast(dict[str, object], value)
 
 
 if __name__ == "__main__":

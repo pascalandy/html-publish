@@ -21,7 +21,9 @@ from types import FrameType
 from typing import NoReturn, Protocol, cast
 from urllib.parse import urlparse
 
+from html_publish import __version__, command_line
 from html_publish.configuration import config_root, data_root
+from html_publish.discovery import register_command
 from html_publish.model import PublishError
 
 DEFAULT_BASE_URL = "https://om1.donkey-arcturus.ts.net:8444/html-publish/"
@@ -818,20 +820,114 @@ def rollback(
     }
 
 
-def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="python -m html_publish.deploy",
-        description="Install, check, or roll back the controlled om1 deployment",
+class Parser(command_line.Parser):
+    exit_codes = (0, 1, 2, 130, 143)
+
+
+def _globals(parser: argparse.ArgumentParser, *, child: bool = False) -> None:
+    """Options every deploy command accepts, before or after the command name."""
+
+    def default() -> object:
+        return argparse.SUPPRESS if child else None
+
+    parser.add_argument(
+        "--state-root",
+        type=Path,
+        default=default(),
+        help="deployment state directory (default: $XDG_DATA_HOME/html-publish)",
     )
-    parser.add_argument("--state-root", type=Path)
-    parser.add_argument("--config", type=Path)
-    parser.add_argument("--unit", type=Path)
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=default(),
+        help="publisher config this deployment owns "
+        "(default: $XDG_CONFIG_HOME/html-publish/publisher.json)",
+    )
+    parser.add_argument(
+        "--unit",
+        type=Path,
+        default=default(),
+        help="systemd user unit path (default: $XDG_CONFIG_HOME/systemd/user/html-publish.service)",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"html-publish-deploy {__version__}",
+        help="show installed version",
+    )
+
+
+def _parser() -> Parser:
+    parser = Parser(
+        prog="html-publish-deploy",
+        description="Install, check, or roll back the controlled om1 deployment",
+        epilog="Examples:\n  "
+        + "\n  ".join(
+            (
+                "html-publish-deploy install --source .",
+                "html-publish-deploy health",
+                "html-publish-deploy rollback --release RELEASE",
+                "html-publish-deploy help install",
+            )
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False,
+    )
+    _globals(parser)
     commands = parser.add_subparsers(dest="operation", required=True)
-    install_parser = commands.add_parser("install", help="build and activate a source checkout")
-    install_parser.add_argument("--source", type=Path, default=Path.cwd())
-    commands.add_parser("health", help="check the release, service, route, and HTTP endpoints")
-    rollback_parser = commands.add_parser("rollback", help="activate a prior installed release")
+    install_parser = register_command(
+        commands,
+        "install",
+        "build and activate a source checkout",
+        examples=(
+            "html-publish-deploy install --source .",
+            "html-publish-deploy install --source ~/projects/html-publish "
+            "--state-root ~/.local/share/html-publish",
+        ),
+        effects=(
+            "builds a wheel and installs an immutable release",
+            "writes the publisher config, user unit, and Tailscale route when absent",
+            "restarts the service, then checks health and recovers on failure",
+        ),
+    )
+    install_parser.add_argument(
+        "--source",
+        type=Path,
+        default=Path.cwd(),
+        help="source checkout to build (default: the current directory)",
+    )
+    _globals(install_parser, child=True)
+    health_parser = register_command(
+        commands,
+        "health",
+        "check the release, service, route, and HTTP endpoints",
+        examples=(
+            "html-publish-deploy health",
+            "html-publish-deploy health | jq '.checks[] | select(.ok | not)'",
+        ),
+        effects=("reads service, route, and HTTP state", "changes nothing"),
+    )
+    _globals(health_parser, child=True)
+    rollback_parser = register_command(
+        commands,
+        "rollback",
+        "activate a prior installed release",
+        examples=(
+            "html-publish-deploy rollback",
+            "html-publish-deploy rollback --release RELEASE",
+        ),
+        effects=(
+            "swaps the current and previous release pointers",
+            "restarts the service, then checks health and recovers on failure",
+        ),
+    )
     rollback_parser.add_argument("--release", help="release ID; defaults to previous")
+    _globals(rollback_parser, child=True)
+    command_line.add_help_command(
+        commands,
+        "html-publish-deploy",
+        ("html-publish-deploy help install", "html-publish-deploy help rollback"),
+    )
     return parser
 
 
@@ -841,7 +937,21 @@ def main(
     runner: Runner = run_command,
     probe: Probe = probe_health,
 ) -> int:
-    arguments = _parser().parse_args(argv)
+    command = list(sys.argv[1:] if argv is None else argv)
+    return command_line.run("html-publish-deploy", command, lambda: _main(command, runner, probe))
+
+
+def _main(command: list[str], runner: Runner, probe: Probe) -> int:
+    parser = _parser()
+    try:
+        help_parser = command_line.requested_help(parser, command)
+        if help_parser is not None:
+            print(help_parser.format_help(), end="")
+            return 0
+        arguments = parser.parse_args(command)
+    except command_line.UsageError as error:
+        sys.stderr.write(command_line.usage_text(error, parser, command))
+        return 2
     try:
         layout = Layout(
             arguments.state_root or data_root() / "html-publish",

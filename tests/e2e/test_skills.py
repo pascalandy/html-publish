@@ -51,7 +51,9 @@ class SkillsCliTest(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertEqual(result.stderr, "")
+        self.assertIn(
+            "html-publish-remote: argument operation: invalid choice: 'skills'", result.stderr
+        )
         payload = cast(dict[str, Any], json.loads(result.stdout))
         self.assertEqual(payload["outcome"], "error")
         self.assertEqual(payload["operation"], "usage")

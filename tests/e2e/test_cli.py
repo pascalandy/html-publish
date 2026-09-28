@@ -1922,7 +1922,11 @@ class PublisherCliTest(unittest.TestCase):
         self.assertEqual(payload["schema_version"], 1)
         self.assertEqual(payload["outcome"], "error")
         self.assertEqual(payload["error"]["code"], "invalid_usage")
-        self.assertEqual(result.stderr, "")
+        self.assertTrue(result.stderr.startswith("usage: html-publish publish "), result.stderr)
+        self.assertTrue(
+            result.stderr.endswith("run 'html-publish publish --help' for details\n"),
+            result.stderr,
+        )
 
         summary = self.run_cli("publish", "--name", "missing-fields", "--report", "summary")
         self.assertEqual(summary.returncode, 2)
@@ -1937,7 +1941,7 @@ class PublisherCliTest(unittest.TestCase):
                 self.assertEqual(payload["operation"], "publish")
                 self.assertEqual(payload["error"]["code"], "invalid_usage")
                 self.assertIn("verification", payload)
-                self.assertEqual(result.stderr, "")
+                self.assertTrue(result.stderr.startswith("usage: html-publish publish "))
         for config in ("doctor", "config", "status"):
             with self.subTest(config=config):
                 result = self.run_cli("--config", config, "publish", "--name", "report")

@@ -81,7 +81,10 @@ class InstalledConfigurationTest(unittest.TestCase):
                         + "\n"
                     )
                 self.assertEqual(result.returncode, exit_code, result.stdout + result.stderr)
-                self.assertEqual(result.stderr, "")
+                if exit_code == 2:
+                    self.assertTrue(result.stderr.startswith("usage: "), result.stderr)
+                else:
+                    self.assertEqual(result.stderr, "")
                 return cast(dict[str, object], json.loads(result.stdout))
 
             cli = values["CLI"]
