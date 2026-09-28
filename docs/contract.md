@@ -39,26 +39,100 @@ an unknown guide name is a usage error. Guide bytes ship inside the same wheel a
 so a guide always matches the version that reads it. The remote executable does not forward the
 skills group.
 
-`--config`, `--json`, `--version`, and the publisher's `--command-seconds` may precede
-or follow a publisher operation. Remote connection and time-budget options may
-precede or follow a remote operation. Long option names require exact spelling;
-abbreviations are invalid usage. `--help` writes human-readable help, even with
-`--json`. `--version` stops argument parsing when encountered, so it does not
-require an operation's other arguments. It writes plain text unless `--json` is
-present, in which case it writes one version object to stdout. `schema` writes one
+`-c`/`--config`, `--json`, `-v`/`--verbose`, `--debug`, `--version`, and the publisher's
+`--command-seconds` may precede or follow a publisher operation. Remote connection and
+time-budget options may precede or follow a remote operation. Long option names require exact
+spelling; abbreviations are invalid usage. `--help` writes human-readable help, even with
+`--json`, and wins over `--version`. `--version` otherwise stops argument parsing when
+encountered, so it does not require an operation's other arguments. It writes plain text unless
+`--json` is present, in which case it writes one version object to stdout. `schema` writes one
 JSON discovery object generated from the active argument parsers. Discovery has its own
 `schema_version` and identifies the executable version, command options, examples,
 and effects. It does not load configuration or contact a host.
 
 Publisher result objects for the six operations retain JSON v1 meanings. A handled
 usage error writes one JSON v1 error object to stdout when `--json` is set, with
-exit 2; plain usage errors write diagnostics to stderr. Remote operation results
+exit 2, and writes the plain usage diagnostic to stderr in either mode. Remote operation results
 remain JSON by default. No discovery command performs a publication mutation.
+
+## Command-line conventions
+
+These rules apply to `html-publish`, `html-publish-remote`, `html-publish-server`, and
+`html-publish-deploy`. Each executable's `--help` owns its exact flags and defaults.
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Success, including a no-op such as `unchanged` |
+| 1 | Runtime failure |
+| 2 | Usage error: an unknown flag or command, or a missing, invalid, or out-of-range value, rejected at parse time |
+| 75 | Temporary failure; rerunning the same command is safe |
+| 130 | Interrupted by SIGINT |
+| 143 | Terminated by SIGTERM |
+
+Every help text lists the exit codes its executable can return. Exit 75 has these sources only:
+a root operation that times out waiting for the publication lock (`lock_timeout`), an artifact
+command that finds its receipt locked (`receipt_busy`), `artifact retry` after the publisher
+reports `lock_timeout`, the remote transport cases in S8, and `html-publish-deploy health` when
+every failing check is an HTTP probe that could not connect. `artifact publish` and
+`artifact restore` keep exit 1 after a publisher `lock_timeout` and set `next_action` to `retry`,
+because only `artifact retry` resends the frozen attempt. A signal ends a command with 130 or 143
+and no traceback. `html-publish host serve` and `html-publish-server` first stop serving and then
+die from the signal, so a service manager records a clean stop and a shell reports 130 or 143.
+
+Output:
+
+- stdout carries only the command's result. A successful command writes nothing to stderr unless
+  a warning needs action. Plain `publish` and `restore` print their URL on stdout and each warning
+  on stderr.
+- By default stderr carries errors, warnings that need action, and one `next:` line. `-v` or
+  `--verbose` adds one line per step. `--debug`, or `HTML_PUBLISH_DEBUG=1`,
+  `HTML_PUBLISH_REMOTE_DEBUG=1`, `HTML_PUBLISH_SERVER_DEBUG=1`, or `HTML_PUBLISH_DEPLOY_DEBUG=1`,
+  adds timings, subprocess argument vectors, and tracebacks. stdout and the exit code are the same
+  at every level. The server's access log appears only with `--verbose`.
+- A verbosity flag or debug variable never reaches another publisher process. The remote
+  executable does not forward either over SSH, and the artifact commands remove
+  `HTML_PUBLISH_DEBUG` from the publisher's environment, because publisher stderr counts against
+  `limits.output_bytes`.
+- No executable emits color, spinners, or progress bars.
+
+Help and errors:
+
+- `-h` or `--help` prints help on stdout and exits 0. It wins over every argument before `--`,
+  including `--version`, an unknown flag or command, and an invalid value. `help <command>`,
+  `<command> --help`, and `<command> -h` print the same text. Each help text shows two to five
+  examples. `--version` prints `<executable> <version>`.
+- A usage error prints the short usage, what failed, a suggestion for a mistyped command or flag,
+  one `next:` line with a corrected command, and `run '<executable> --help' for details` on
+  stderr, then exits 2. JSON mode still writes its JSON error object to stdout.
+- A plain runtime error prints `<executable>: <what failed>` and one `next:` line built from
+  `error.next_action`, with known values filled in and `<placeholders>` otherwise. In JSON mode
+  the error object carries `next_action`, and stderr stays empty. A traceback appears only with
+  `--debug`; an unexpected failure otherwise prints one line and exits 1.
+
+Parsing:
+
+- `--opt value` equals `--opt=value`, and `--` ends option parsing. Global options work before
+  and after a command and mean the same thing in every command.
+- `-c` is `--config`. The flag selects the file; otherwise the role's file under
+  `$XDG_CONFIG_HOME/html-publish/` applies. No environment, project, or system layer exists.
+- A boolean flag that defaults on gets a `--no-<flag>` form. The remote executable's `--json` is
+  the documented exception: remote results are always JSON, so the flag is a no-op.
+
+`plan`, and `host setup` or `host route setup` without `--apply`, are the previews for their
+mutations. `config init -n` or `--dry-run` reports outcome `planned` with
+`config_written: false` and writes nothing. `html-publish-deploy install -n` runs its preflight
+checks only and reports `release: null`; `rollback -n` names the release it would select and
+changes nothing.
+
+An interrupted root operation in JSON mode still writes one error object with code
+`interrupted`. `publish` and `restore` report unknown (`null`) effects, because the signal can
+land after archive advancement or selection; recover with `status` and an identical retry as in
+S7. Read-only operations report false effects.
 
 ## Explicit configuration and diagnostics
 
 `config init`, `config show`, and `config validate` require a publisher or client role.
-`doctor` also requires a role. An explicit `--config` selects one file. Otherwise these
+`doctor` also requires a role. An explicit `-c`/`--config` selects one file. Otherwise these
 read commands select `$XDG_CONFIG_HOME/html-publish/<role>.json`, or
 `~/.config/html-publish/<role>.json` when that environment variable is unset. A
 relative nonempty XDG directory is invalid. No command searches the current project
@@ -260,8 +334,8 @@ both requested identities already match the healthy active output and current so
   text at 64 KiB when requested.
 - Publish/restore outcomes are `published|unchanged|error`; plan is `planned|error`, status and
   history are `observed|error`, and verify is `verified|error`. Exit 0 means success, 1
-  operational failure, 2 invalid usage. Degraded status exits 1; saved-versus-active divergence
-  alone does not.
+  operational failure, 2 invalid usage, and 75 a `lock_timeout` that an identical rerun may
+  clear. Degraded status exits 1; saved-versus-active divergence alone does not.
 
 The artifact workflow requests summary for mutation dispatch and retains the 1 MiB default
 capture limit. Before any publisher call or new pending intent, it rejects a cap below 1 MiB
@@ -430,6 +504,15 @@ after uncertain invocation because the remote process may still read it. A clean
 a validated result adds a warning and staging path without changing known publication effects.
 Malformed or mismatched host reports fail the protocol check. Legitimate additive fields survive.
 Both local and remote execution use exit 0 for success, 1 for operational failure, and 2 for usage.
+The remote executable exits 75 when SSH exits 255 on the staging setup step, when the connection
+times out there, when the deadline expires before the remote command starts, and when a read-only
+operation loses its result with `transport_failure` and false effects. A failed `scp` stays exit
+1, because its exit codes do not separate transport from permission failures. A lost publish or
+restore result stays exit 1 with unknown effects. The client accepts host exit 75 only with
+outcome `error`, false effects, and code `lock_timeout`, and then exits 75. It accepts host exit
+130 or 143 only with outcome `error` and code `interrupted`, and then exits 1 with unknown effects
+and `next_action` `inspect`, because the host process, not the client, received the signal. When
+the client itself is interrupted, it still writes its JSON handoff and exits 130 or 143.
 
 The installed `html-publish artifact` group owns caller receipts. `artifact publish` creates a
 named association with `--new` or deliberately adopts one with `--adopt` and a reviewed revision;
@@ -445,6 +528,14 @@ The client configuration's command budget, or an explicit `--command-seconds` ov
 from artifact command entry through capture, receipt locking, inspection, and dispatch. The
 copy and lock limits remain ceilings inside that one budget. A retry never receives a fresh
 dispatch allowance after spending time on status inspection.
+An artifact command exits 75 with code `receipt_busy` when another writer holds its receipt lock;
+it raises that failure before saving any intent. `artifact retry` exits 75 when the publisher
+reports `lock_timeout` with false effects; `artifact publish` and `artifact restore` keep exit 1
+for the same result and point `next_action` at `retry`. The executor accepts publisher exit 75
+only with `lock_timeout`, and exit 130 or 143 only with code `interrupted`, which leaves an
+uncertain attempt that requires inspection. A signal that reaches an artifact command, while it
+waits for the receipt lock or while the publisher runs, stops the publisher's process group,
+writes one handoff with code `interrupted`, and exits 130 for SIGINT or 143 for SIGTERM.
 
 The versioned receipt contains name, configured host/base URL, **accepted revision**, pending
 intent, and last observation. A Markdown-aware receipt also contains the accepted record revision.
@@ -534,7 +625,8 @@ requirement to preserve Postplan-owned URLs: replacement produces new private UR
 ## S11. Installed Linux host
 
 `host serve` reads the selected, validated publisher configuration and serves its `runtime/public`
-directory. It defaults to IPv4 loopback and stops on SIGINT or SIGTERM. Serving does not create
+directory. It defaults to IPv4 loopback. On SIGINT or SIGTERM it stops serving, closes its socket,
+and dies from the signal. It writes an access log only with `--verbose`. Serving does not create
 publisher state or hold a publication lock.
 
 `host setup` previews an owned systemd user service. Preview reports its selected paths,
