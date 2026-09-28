@@ -310,7 +310,7 @@ An orphaned Git ref lock is reported in the `archive_failure` message and is nev
 
 The archive is the only copy of every saved page version. A daily job outside the publisher pushes its `published` branch to the private GitHub repository `pascalandy/html-publish-archive`. The dotfiles repository owns the job and installs it on `om1` only: the `pascalandy-html-publish-backup` user timer and service, and the `html-publish-backup` script. The publisher never pushes, and the archive keeps no remote configuration
 
-Status on 2026-09-28: the job is written and tested in the dotfiles repository, but it is not deployed on `om1`, and the GitHub repository does not exist yet. Until the first push succeeds, the archive has no remote copy. The remaining proof is a timer-driven push whose tip matches the archive, and a [restore drill](evidence/backup/2026-09-28-restore-drill.md) run with `--source git@github.com:pascalandy/html-publish-archive.git`
+Status on 2026-09-28: the job is written and tested in the dotfiles repository, but it is not deployed on `om1`. The private GitHub repository exists and has received no push. Until the first push succeeds, the archive has no remote copy. The remaining proof is a timer-driven push whose tip matches the archive, and a [restore drill](evidence/backup/2026-09-28-restore-drill.md) run with `--source git@github.com:pascalandy/html-publish-archive.git`
 
 The job runs this push. It ignores global and system Git configuration, disables hooks, and fails instead of prompting for SSH input:
 
