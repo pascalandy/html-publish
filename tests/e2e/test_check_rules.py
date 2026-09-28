@@ -24,7 +24,6 @@ RULE_SCRIPTS = (
     "check_e2e_artifacts.py",
 )
 E2E_SUPPORT = ("__main__.py", "_fingerprint.py")
-VERBOSE_HINT = "rerun with --verbose for details\n"
 # A Git hook exports GIT_DIR and related variables. A fixture command that inherited them would
 # act on the repository running the hook, not on the throwaway one, so none of them pass through
 FIXTURE_ENVIRONMENT = {
@@ -202,7 +201,10 @@ class RuleScriptTest(unittest.TestCase):
         ):
             with self.subTest(name=name):
                 result = self.run_script(root, name)
-                self.assertEqual((result.returncode, result.stdout), (0, summary), result.stderr)
+                self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+                verbose = self.run_script(root, name, "--verbose")
+                self.assertEqual((verbose.returncode, verbose.stdout), (0, ""), verbose.stderr)
+                self.assertTrue(verbose.stderr.endswith(summary), verbose.stderr)
 
     def test_a_root_without_the_project_is_bad_usage(self) -> None:
         empty = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="hp-empty-")))
@@ -396,7 +398,7 @@ class RuleScriptTest(unittest.TestCase):
                 result = self.run_script(self.fixture(changes), name)
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                 self.assertIn(expected, result.stderr)
-                self.assertTrue(result.stderr.endswith("rerun with --verbose for details\n"))
+                self.assertNotIn("rerun with", result.stderr)
 
     def test_the_runner_lists_checks_in_order_and_reports_every_failure(self) -> None:
         listed = self.run_script(ROOT, "check", "--list")
@@ -437,7 +439,6 @@ class RuleScriptTest(unittest.TestCase):
             failed.stderr.endswith(
                 "error: test-layout failed; rerun: just check --only test-layout\n"
                 "error: test-smells failed; rerun: just check --only test-smells\n"
-                "rerun with --verbose for details\n"
             ),
             failed.stderr,
         )
@@ -465,10 +466,10 @@ class RuleScriptTest(unittest.TestCase):
         [line] = (run / test["record"]).read_text(encoding="utf-8").splitlines()
         process = json.loads(line)
         self.assertEqual((process["returncode"], process["stdout"]["head"]), (0, "hi\n"))
-        passed = self.audit(root, artifacts_root, "e2e-good")
-        self.assertEqual(
-            (passed.returncode, passed.stdout),
-            (0, f"ok: 1 e2e tests left verified records in {run}\n"),
+        passed = self.audit(root, artifacts_root, "e2e-good", "--verbose")
+        self.assertEqual((passed.returncode, passed.stdout), (0, ""), passed.stderr)
+        self.assertTrue(
+            passed.stderr.endswith(f"ok: 1 e2e tests left verified records in {run}\n"),
             passed.stderr,
         )
 
@@ -591,9 +592,9 @@ class RuleScriptTest(unittest.TestCase):
         run = runs / "e2e-dirty" / "artifacts"
         manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual((manifest["schema_version"], manifest["dirty"]), (2, True))
-        passed = f"ok: 1 e2e tests left verified records in {run}\n"
+        passed = (0, "", "")
         dirty = self.audit(root, runs, "e2e-dirty")
-        self.assertEqual((dirty.returncode, dirty.stdout), (0, passed), dirty.stderr)
+        self.assertEqual((dirty.returncode, dirty.stdout, dirty.stderr), passed)
 
         (root / "dist" / "html_publish-0.1.0-py3-none-any.whl").write_bytes(b"wheel")
         (root / "html_publish" / "__pycache__").mkdir(exist_ok=True)
@@ -602,7 +603,7 @@ class RuleScriptTest(unittest.TestCase):
             os.utime(path, (1, 1))
         (outside / "page.md").write_text("changed outside the checkout\n", encoding="utf-8")
         generated = self.audit(root, runs, "e2e-dirty")
-        self.assertEqual((generated.returncode, generated.stdout), (0, passed), generated.stderr)
+        self.assertEqual((generated.returncode, generated.stdout, generated.stderr), passed)
 
         foreign = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="hp-foreign-")))
         self.git(foreign, "init", "-q")
@@ -615,12 +616,14 @@ class RuleScriptTest(unittest.TestCase):
             "GIT_WORK_TREE": str(foreign),
         }
         in_hook = self.audit(root, runs, "e2e-dirty", env=hook)
-        self.assertEqual((in_hook.returncode, in_hook.stdout), (0, passed), in_hook.stderr)
+        self.assertEqual((in_hook.returncode, in_hook.stdout, in_hook.stderr), passed)
         self.assertEqual(self.record(root, runs, "e2e-hook", env=hook).returncode, 0)
-        hooked = self.audit(root, runs, "e2e-hook")
-        self.assertEqual(
-            (hooked.returncode, hooked.stdout),
-            (0, f"ok: 1 e2e tests left verified records in {runs / 'e2e-hook' / 'artifacts'}\n"),
+        hooked = self.audit(root, runs, "e2e-hook", "--verbose")
+        self.assertEqual((hooked.returncode, hooked.stdout), (0, ""), hooked.stderr)
+        self.assertTrue(
+            hooked.stderr.endswith(
+                f"ok: 1 e2e tests left verified records in {runs / 'e2e-hook' / 'artifacts'}\n"
+            ),
             hooked.stderr,
         )
 
@@ -632,7 +635,7 @@ class RuleScriptTest(unittest.TestCase):
             return self.audit(root, runs, "e2e-dirty", "--root", str(copy))
 
         moved = audit_copy(copied())
-        self.assertEqual((moved.returncode, moved.stdout), (0, passed), moved.stderr)
+        self.assertEqual((moved.returncode, moved.stdout, moved.stderr), passed)
 
         def edit_test_body(copy: Path) -> None:
             test_module = copy / "tests" / "e2e" / "test_cli.py"
@@ -694,7 +697,7 @@ class RuleScriptTest(unittest.TestCase):
                     (
                         1,
                         f"error: {run}: [e2e-artifacts] run tested other source files than the "
-                        f"checkout holds; fix: rerun just check --only e2e\n{VERBOSE_HINT}",
+                        "checkout holds; fix: rerun just check --only e2e\n",
                     ),
                 )
 
@@ -707,7 +710,7 @@ class RuleScriptTest(unittest.TestCase):
                 1,
                 f"error: {run}: [e2e-artifacts] run is from commit {manifest['commit']}, "
                 f"checkout is at {self.git(committed, 'rev-parse', 'HEAD')}; "
-                f"fix: rerun just check --only e2e\n{VERBOSE_HINT}",
+                "fix: rerun just check --only e2e\n",
             ),
         )
 
@@ -735,8 +738,7 @@ class RuleScriptTest(unittest.TestCase):
                     (result.returncode, result.stderr),
                     (
                         1,
-                        f"error: {old_run}{problem}; "
-                        f"fix: rerun just check --only e2e\n{VERBOSE_HINT}",
+                        f"error: {old_run}{problem}; fix: rerun just check --only e2e\n",
                     ),
                 )
 
@@ -768,8 +770,7 @@ class RuleScriptTest(unittest.TestCase):
             (
                 1,
                 f"error: {moving_run}: [e2e-artifacts] source files changed while the suite ran; "
-                "fix: rerun just check --only e2e and leave the checkout unchanged until it ends\n"
-                + VERBOSE_HINT,
+                "fix: rerun just check --only e2e and leave the checkout unchanged until it ends\n",
             ),
         )
 

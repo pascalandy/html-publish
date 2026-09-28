@@ -19,7 +19,7 @@ from typing import Any, cast
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(1, str(Path(__file__).resolve().parent.parent))
 
-from _common import ScriptError, run_script
+from _common import Parser, ScriptError, run_script
 from _test_tree import add_root_argument, test_functions, test_sources, undiscovered_tests
 
 from tests.e2e._fingerprint import git_environment, source_fingerprint
@@ -45,9 +45,7 @@ rule:
 
 examples:
   just check --only e2e --only e2e-artifacts
-  uv run python scripts/check_e2e_artifacts.py --run-id e2e-20260927T120000Z-4242
-
-exit codes: 0 ok, 1 artifact errors found, 2 bad usage, 130 interrupted"""
+  uv run python scripts/check_e2e_artifacts.py --run-id e2e-20260927T120000Z-4242"""
 
 DEFAULT_ARTIFACTS_ROOT = "/tmp/html-publish-verify"
 SCHEMA_VERSION = 2
@@ -228,7 +226,7 @@ def check_tests(
 
 def check(root: Path, artifacts_root: Path, run_id: str | None) -> str:
     run = find_run(artifacts_root, run_id)
-    log.debug("check %s", run)
+    log.info("check %s", run)
     try:
         manifest = cast(
             dict[str, Any], json.loads((run / "manifest.json").read_text(encoding="utf-8"))
@@ -263,7 +261,7 @@ def check(root: Path, artifacts_root: Path, run_id: str | None) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
+    parser = Parser(
         prog="check_e2e_artifacts.py",
         description="Check that an E2E run left a complete, untampered artifact for every E2E test",
         epilog=EPILOG,
@@ -283,7 +281,10 @@ def main(argv: list[str] | None = None) -> int:
         f"(default: $HTML_PUBLISH_E2E_ROOT, else {DEFAULT_ARTIFACTS_ROOT})",
     )
     return run_script(
-        parser, lambda args: check(args.root.resolve(), args.artifacts_root, args.run_id), argv
+        parser,
+        lambda args: check(args.root.resolve(), args.artifacts_root, args.run_id),
+        argv,
+        failure="artifact errors found",
     )
 
 

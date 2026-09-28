@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _common import ScriptError, run_script
+from _common import Parser, ScriptError, run_script
 from _test_tree import (
     SourceFile,
     add_root_argument,
@@ -37,9 +37,7 @@ rules:
 
 examples:
   just check --only test-smells
-  uv run python scripts/check_test_smells.py --verbose
-
-exit codes: 0 ok, 1 smells found, 2 bad usage, 130 interrupted"""
+  uv run python scripts/check_test_smells.py --verbose"""
 
 EQUALITY_ASSERTIONS = frozenset(
     {
@@ -228,7 +226,7 @@ def check(root: Path) -> str:
     errors: list[str] = []
     tests = 0
     for source in sources:
-        log.debug("check %s", source.label)
+        log.info("check %s", source.label)
         for line_number in private_pragmas(source):
             errors.append(
                 f"{source.label}:{line_number}: [private-pragma] silences reportPrivateUsage; "
@@ -259,14 +257,14 @@ def check(root: Path) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
+    parser = Parser(
         prog="check_test_smells.py",
         description="Check tests for low-signal patterns that pass without protecting behavior",
         epilog=EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     add_root_argument(parser)
-    return run_script(parser, lambda args: check(args.root.resolve()), argv)
+    return run_script(parser, lambda args: check(args.root.resolve()), argv, failure="smells found")
 
 
 if __name__ == "__main__":

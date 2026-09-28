@@ -5,7 +5,7 @@ default: check
 
 # Run the CI verdict in order; --fast skips E2E, --list names each check, --only NAME reruns one
 check *args:
-  uv run python scripts/check.py {{args}}
+  @uv run python scripts/check.py {{args}}
 
 # Install or update the controlled om1 deployment from this checkout
 deploy-om1:
