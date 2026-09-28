@@ -8,6 +8,7 @@ import dataclasses
 import fcntl
 import hashlib
 import json
+import logging
 import os
 import re
 import selectors
@@ -22,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol, cast
 
+from html_publish import command_line
 from html_publish.configuration import (
     ClientConfig,
     TargetIdentity,
@@ -34,10 +36,13 @@ from html_publish.markdown import RENDER_PROFILE_ID
 from html_publish.model import PublishError
 
 MIN_MUTATION_OUTPUT_BYTES = 1024 * 1024
+TEMPORARY_FAILURES = frozenset({"receipt_busy", "lock_timeout"})
 MAX_REPORT_IDENTITY_BYTES = 64 * 1024
 NAME_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 
 PendingState = Literal["uncertain", "retryable", "conflict"]
+
+log = logging.getLogger(__name__)
 InputKind = Literal["file", "directory"]
 ExecutorKind = Literal["local", "remote"]
 
@@ -194,6 +199,7 @@ class ProcessResult:
     stderr: bytes
     group_stopped: bool | None = False
     cancelled: bool = False
+    signal_number: int | None = None
 
 
 @dataclass(frozen=True)
@@ -213,6 +219,7 @@ class DispatchResult:
     result_path: Path
     cleanup_pending: Path | None
     persistence_error: PersistenceFailure | None
+    signal_number: int | None = None
 
 
 def _object(value: object, label: str) -> Mapping[str, object]:
@@ -649,12 +656,16 @@ def receipt_lock(
             "fix_permissions",
         )
     deadline = time.monotonic() + seconds
+    waiting = False
     try:
         while True:
             try:
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except BlockingIOError as error:
+                if not waiting:
+                    waiting = True
+                    log.info("waiting for the receipt lock at %s, up to %.1f s", lock_path, seconds)
                 if budget is not None:
                     budget.remaining()
                 if time.monotonic() >= deadline:
@@ -1172,14 +1183,29 @@ def _stop_process_group(process: subprocess.Popen[bytes]) -> bool | None:
     return None
 
 
+def _publisher_environment() -> dict[str, str]:
+    """This environment without debug switches, which would add publisher stderr that counts
+    against limits.output_bytes and could turn a success into publisher_output_limit."""
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if not (key.startswith("HTML_PUBLISH") and key.endswith("_DEBUG"))
+    }
+
+
 def _run_process(command: Sequence[str], seconds: float, output_bytes: int) -> ProcessResult:
     cancelled = False
+    received: int | None = None
 
-    def cancel(_signal: int, _frame: object) -> None:
-        nonlocal cancelled
+    def cancel(signal_number: int, _frame: object) -> None:
+        nonlocal cancelled, received
         cancelled = True
+        received = received or signal_number
 
-    previous_handler = signal.signal(signal.SIGTERM, cancel)
+    previous_handlers = {
+        number: signal.signal(number, cancel) for number in (signal.SIGTERM, signal.SIGINT)
+    }
+    log.debug("run publisher: %s", " ".join(command))
     try:
         try:
             process = subprocess.Popen(
@@ -1187,6 +1213,7 @@ def _run_process(command: Sequence[str], seconds: float, output_bytes: int) -> P
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                env=_publisher_environment(),
                 start_new_session=True,
             )
         except OSError as error:
@@ -1197,6 +1224,7 @@ def _run_process(command: Sequence[str], seconds: float, output_bytes: int) -> P
                 b"",
                 str(error).encode("utf-8", "replace"),
                 cancelled=cancelled,
+                signal_number=received,
             )
         assert process.stdout is not None and process.stderr is not None
         streams = (process.stdout, process.stderr)
@@ -1257,6 +1285,7 @@ def _run_process(command: Sequence[str], seconds: float, output_bytes: int) -> P
                 selector.close()
                 for stream in streams:
                     stream.close()
+        log.debug("publisher exit %d", return_code)
         return ProcessResult(
             return_code,
             timed_out,
@@ -1265,10 +1294,12 @@ def _run_process(command: Sequence[str], seconds: float, output_bytes: int) -> P
             bytes(buffers[stderr_fd]),
             group_stopped,
             cancelled,
+            received,
         )
 
     finally:
-        signal.signal(signal.SIGTERM, previous_handler)
+        for number, handler in previous_handlers.items():
+            signal.signal(number, handler)
 
 
 def _saved_result(
@@ -1521,6 +1552,14 @@ def reduce_result(receipt: Receipt, result: SavedResult) -> Classification:
         return Classification(receipt, "uncertain", "Publisher error envelope is malformed")
 
     observation = observation_from(payload)
+    if result.exit_code not in {0, 1, 2} and not (
+        result.exit_code < 0
+        or (result.exit_code == 75 and observation.error_code == "lock_timeout")
+        or (result.exit_code in {130, 143} and observation.error_code == "interrupted")
+    ):
+        return Classification(
+            receipt, "uncertain", "The publisher exit code disagrees with its reported result"
+        )
     requested = observation.requested_revision
     requested_record = observation.requested_record_revision
     archived_record = observation.archived_record_revision
@@ -1699,6 +1738,8 @@ def _status_payload(
         else config.limits.command_seconds,
         config.limits.output_bytes,
     )
+    if process.signal_number is not None:
+        raise command_line.Interrupted(process.signal_number)
     if (
         process.timed_out
         or process.output_limited
@@ -1939,12 +1980,17 @@ def _dispatch(
     saved = _saved_result(pending, process)
     result_path = _result_path(receipt_dir, saved.attempt_id)
     classification = reduce_result(receipt, saved)
+    received = process.signal_number
     try:
         _save_result(receipt_dir, saved)
     except PersistenceFailure as error:
-        return DispatchResult(classification, receipt, pending, saved, result_path, None, error)
+        return DispatchResult(
+            classification, receipt, pending, saved, result_path, None, error, received
+        )
     if classification.kind == "rejected":
-        return DispatchResult(classification, receipt, pending, saved, result_path, None, None)
+        return DispatchResult(
+            classification, receipt, pending, saved, result_path, None, None, received
+        )
     try:
         _write_receipt(receipt_dir, classification.receipt)
     except PersistenceFailure as error:
@@ -1952,7 +1998,9 @@ def _dispatch(
             visible = load_receipt(receipt_dir)
         except ReceiptFailure:
             visible = receipt
-        return DispatchResult(classification, visible, pending, saved, result_path, None, error)
+        return DispatchResult(
+            classification, visible, pending, saved, result_path, None, error, received
+        )
     cleanup_pending = _cleanup_completed_attempt(receipt_dir, classification)
     return DispatchResult(
         classification,
@@ -1962,6 +2010,7 @@ def _dispatch(
         result_path,
         cleanup_pending,
         None,
+        received,
     )
 
 
@@ -1972,6 +2021,7 @@ def _finish_dispatch(
     dispatch: DispatchResult,
     publisher_calls: int,
 ) -> int:
+    interrupted = dispatch.signal_number
     if dispatch.persistence_error is not None:
         error = dispatch.persistence_error
         _emit(
@@ -1989,7 +2039,7 @@ def _finish_dispatch(
                 dispatch=dispatch,
             )
         )
-        return 1
+        return 128 + interrupted if interrupted else 1
 
     classification = dispatch.classification
     success = classification.kind == "completed"
@@ -2022,12 +2072,22 @@ def _finish_dispatch(
             receipt_persisted=True,
             publisher_calls=publisher_calls,
             error_code=None if success else error_code,
-            next_action=None if success else "retry_or_review",
+            next_action=None
+            if success
+            else "retry"
+            if error_code == "lock_timeout"
+            else "retry_or_review",
             source=source,
             dispatch=dispatch,
         )
     )
-    return 0 if success else 1
+    if success:
+        return 0
+    if interrupted:
+        return 128 + interrupted
+    if operation == "retry" and error_code == "lock_timeout" and classification.kind == "retryable":
+        return 75
+    return 1
 
 
 def _new_pending(
@@ -2462,6 +2522,12 @@ def _retry(arguments: argparse.Namespace, config_path: Path, started_at: float) 
         if pending.state == "uncertain":
             process, payload = _status_payload(receipt, config, budget)
             calls += 1
+            if payload is not None and observation_from(payload).error_code == "lock_timeout":
+                raise ReceiptFailure(
+                    "lock_timeout",
+                    "The publisher lock did not become available for the status inspection",
+                    "retry",
+                )
             if process.exit_code != 0 or payload is None:
                 raise ReceiptFailure(
                     "inspection_failed",
@@ -2559,7 +2625,7 @@ def run(parsed: argparse.Namespace, config_path: Path, started_at: float | None 
                 next_action=error.next_action,
             )
         )
-        return 1
+        return 75 if error.code in TEMPORARY_FAILURES else 1
     except OSError as error:
         _emit(
             _handoff(
@@ -2575,7 +2641,7 @@ def run(parsed: argparse.Namespace, config_path: Path, started_at: float | None 
             )
         )
         return 1
-    except KeyboardInterrupt:
+    except KeyboardInterrupt as error:
         _emit(
             _handoff(
                 operation,
@@ -2589,7 +2655,7 @@ def run(parsed: argparse.Namespace, config_path: Path, started_at: float | None 
                 next_action="inspect_receipt",
             )
         )
-        return 130
+        return error.exit_code if isinstance(error, command_line.Interrupted) else 130
 
 
 def usage_error(action: str, message: str) -> int:

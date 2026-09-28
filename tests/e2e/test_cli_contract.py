@@ -8,17 +8,24 @@ its guards, and writes its PID to a ready file; the test signals the process onl
 from __future__ import annotations
 
 import contextlib
+import fcntl
+import functools
+import http.server
 import json
 import os
 import re
+import selectors
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
-from collections.abc import Mapping, Sequence
+import urllib.request
+from collections.abc import Generator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -325,8 +332,8 @@ class Installed:
 
 
 INSTALLED = (
-    Installed("html-publish", "html_publish", (0, 1, 2, 130, 143), schema=True),
-    Installed("html-publish-remote", "html_publish.remote", (0, 1, 2, 130, 143), schema=True),
+    Installed("html-publish", "html_publish", (0, 1, 2, 75, 130, 143), schema=True),
+    Installed("html-publish-remote", "html_publish.remote", (0, 1, 2, 75, 130, 143), schema=True),
     Installed("html-publish-server", "html_publish.server", (0, 1, 2, 130, 143), schema=False),
     Installed(
         "html-publish-deploy",
@@ -539,6 +546,535 @@ class InstalledContractTest(unittest.TestCase):
         assert listed is not None
         codes = tuple(int(line.split()[0]) for line in listed.group(1).splitlines())
         self.assertEqual(codes, executable.exit_codes)
+
+
+class QuietHandler(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, format: str, *args: object) -> None:
+        pass
+
+
+SLEEPING_PUBLISHER = """\
+import os
+import signal
+import sys
+from pathlib import Path
+
+ready = Path(os.environ["HP_CONTRACT_READY"])
+ready.with_suffix(".tmp").write_text(str(os.getpid()))
+ready.with_suffix(".tmp").rename(ready)
+while True:
+    signal.pause()
+"""
+NOISY_PUBLISHER = """\
+import os
+import sys
+
+if any(key.startswith("HTML_PUBLISH") and key.endswith("_DEBUG") for key in os.environ):
+    sys.stderr.write("debug output from the publisher\\n" * 400)
+    sys.stderr.flush()
+os.execv(sys.executable, [sys.executable, "-m", "html_publish", *sys.argv[1:]])
+"""
+SSH_SHIM = """\
+import os
+import sys
+
+os.execvp("sh", ["sh", "-c", sys.argv[-1]])
+"""
+SCP_SHIM = """\
+import shutil
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[-2])
+destination = Path(sys.argv[-1].split(":", 1)[1]) / source.name
+if source.is_dir():
+    shutil.copytree(source, destination)
+else:
+    shutil.copy2(source, destination)
+"""
+
+
+class PublisherContractTest(unittest.TestCase):
+    """html-publish root operations, artifact commands, and host serve."""
+
+    def setUp(self) -> None:
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="hp-publisher-")))
+        self.env = {
+            **ENVIRONMENT,
+            **{
+                variable: str(self.root / variable.lower())
+                for variable in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME")
+            },
+        }
+        self.env.pop("HTML_PUBLISH_DEBUG", None)
+        self.runtime = self.root / "runtime"
+        handler = functools.partial(QuietHandler, directory=str(self.runtime / "public"))
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 2)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.base_url = f"http://127.0.0.1:{server.server_address[1]}/"
+        self.config = self.root / "publisher.json"
+        self.write_config()
+        self.page = self.root / "page.html"
+        self.page.write_text("<!doctype html><h1>page</h1>\n", encoding="utf-8")
+
+    def write_config(self, lock_seconds: float = 2) -> None:
+        self.config.write_text(
+            json.dumps(
+                {
+                    "archive": str(self.root / "archive.git"),
+                    "runtime": str(self.runtime),
+                    "base_url": self.base_url,
+                    "allow_http": True,
+                    "limits": {
+                        "command_seconds": 120,
+                        "lock_seconds": lock_seconds,
+                        "verification_seconds": 5,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def write_client(
+        self,
+        command: Sequence[str] = (PYTHON, "-m", "html_publish"),
+        *,
+        lock_seconds: float = 2,
+        output_bytes: int = 1024 * 1024,
+        name: str = "client.json",
+    ) -> Path:
+        client = self.root / name
+        client.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "target": {"id": "contract", "base_url": self.base_url},
+                    "execution": {
+                        "kind": "local",
+                        "command": list(command),
+                        "publisher_config": str(self.config),
+                    },
+                    "limits": {"lock_seconds": lock_seconds, "output_bytes": output_bytes},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return client
+
+    def cli(
+        self, *arguments: str, env: Mapping[str, str] | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [PYTHON, "-m", "html_publish", "--config", str(self.config), *arguments],
+            cwd=self.root,
+            env={**self.env, **(env or {})},
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+    def artifact(
+        self, client: Path, *arguments: str, env: Mapping[str, str] | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [PYTHON, "-m", "html_publish", "--config", str(client), "artifact", *arguments],
+            cwd=self.root,
+            env={**self.env, **(env or {})},
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+    def popen(
+        self, *arguments: str, env: Mapping[str, str] | None = None
+    ) -> subprocess.Popen[bytes]:
+        process = subprocess.Popen(
+            [PYTHON, "-m", "html_publish", *arguments],
+            cwd=self.root,
+            env={**self.env, **(env or {})},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.addCleanup(stop_bytes, process)
+        return process
+
+    def publish_arguments(self, name: str = "page", source: Path | None = None) -> list[str]:
+        return [
+            "publish",
+            "--name",
+            name,
+            "--source",
+            str(source or self.page),
+            "--target",
+            self.base_url,
+        ]
+
+    def test_publisher_exit_codes(self) -> None:
+        published = self.cli(*self.publish_arguments())
+        self.assertEqual(
+            (published.returncode, published.stdout, published.stderr),
+            (0, f"{self.base_url}page/\n", ""),
+        )
+        missing = self.cli("verify", "--name", "missing")
+        self.assertEqual((missing.returncode, missing.stdout), (1, ""))
+        failure, next_line = missing.stderr.splitlines()
+        self.assertTrue(failure.startswith("html-publish: "), missing.stderr)
+        self.assertTrue(next_line.startswith(f"next: html-publish --config {self.config} "))
+        self.write_config(lock_seconds=0.2)
+        update = self.root / "update.html"
+        update.write_text("<!doctype html><h1>update</h1>\n", encoding="utf-8")
+        with held(self.runtime / ".publish.lock"):
+            waited = self.cli("--json", *self.publish_arguments(source=update))
+            plain = self.cli(*self.publish_arguments(source=update))
+        self.assertEqual(waited.returncode, 75, waited.stderr)
+        payload = json_object(waited.stdout)
+        self.assertEqual(cast(dict[str, object], payload["error"])["code"], "lock_timeout")
+        self.assertEqual(payload["effects"], {"archive_advanced": False, "activated": False})
+        self.assertEqual((plain.returncode, plain.stdout), (75, ""))
+        self.assertEqual(
+            plain.stderr.splitlines(),
+            [
+                "html-publish: The publication lock did not become available in time",
+                "next: html-publish --config "
+                + f"{self.config} publish --name page --source {update} --target {self.base_url}",
+            ],
+        )
+
+    def test_signals_while_waiting_for_the_publication_lock(self) -> None:
+        self.assertEqual(self.cli(*self.publish_arguments()).returncode, 0)
+        self.write_config(lock_seconds=60)
+        for operation, effects in (
+            (self.publish_arguments(), {"archive_advanced": None, "activated": None}),
+            (["status", "--name", "page"], {"archive_advanced": False, "activated": False}),
+        ):
+            for signal_number, code in ((signal.SIGINT, 130), (signal.SIGTERM, 143)):
+                with self.subTest(operation=operation[0], signal=signal_number.name):
+                    with held(self.runtime / ".publish.lock"):
+                        process = self.popen(
+                            "--config", str(self.config), "-v", "--json", *operation
+                        )
+                        read_until(process, b"waiting for the publication lock")
+                        process.send_signal(signal_number)
+                        stdout, stderr = process.communicate(timeout=30)
+                    self.assertEqual(process.returncode, code, stderr)
+                    self.assertNotIn(b"Traceback", stderr)
+                    payload = json_object(stdout.decode())
+                    error = cast(dict[str, object], payload["error"])
+                    self.assertEqual((error["code"], payload["effects"]), ("interrupted", effects))
+
+    def test_plain_publish_prints_the_url_and_warnings_on_stderr(self) -> None:
+        self.page.write_text('<!doctype html><img src="missing.png">\n', encoding="utf-8")
+        result = self.cli(*self.publish_arguments())
+        self.assertEqual(
+            (result.returncode, result.stdout, result.stderr),
+            (
+                0,
+                f"{self.base_url}page/\n",
+                "html-publish: warning: missing_relative_asset: index.html references "
+                "missing.png\n",
+            ),
+        )
+
+    def test_verbosity_changes_only_stderr(self) -> None:
+        self.assertEqual(self.cli(*self.publish_arguments()).returncode, 0)
+        plan = ["plan", "--name", "page", "--source", str(self.page), "--target", self.base_url]
+        for arguments in (plan, ["history", "--name", "page"], ["schema"]):
+            with self.subTest(command=arguments[0]):
+                default = self.cli("--json", *arguments)
+                verbose = self.cli("--json", "-v", *arguments)
+                debug = self.cli("--json", "--debug", *arguments)
+                self.assertEqual((default.returncode, default.stderr), (0, ""))
+                for level in (verbose, debug):
+                    self.assertEqual(
+                        (level.returncode, level.stdout), (default.returncode, default.stdout)
+                    )
+                for line in verbose.stderr.splitlines():
+                    self.assertRegex(line, r"^html-publish: (?!\+\d)")
+                for line in debug.stderr.splitlines():
+                    self.assertTrue(line.startswith("html-publish: "), line)
+                if arguments[0] != "schema":
+                    self.assertRegex(debug.stderr, r"html-publish: \+\d+\.\d{3}s git ")
+        self.assertIn("html-publish: capture ", self.cli("-v", *plan).stderr)
+
+    def test_config_init_dry_run_writes_nothing(self) -> None:
+        target = self.root / "new" / "publisher.json"
+        init = [
+            "--json",
+            "config",
+            "init",
+            "--role",
+            "publisher",
+            "--config",
+            str(target),
+            "--base-url",
+            "https://review.example/pages/",
+        ]
+        planned = json_object(self.cli(*init, "-n").stdout)
+        self.assertEqual(
+            (planned["outcome"], planned["effects"]), ("planned", {"config_written": False})
+        )
+        self.assertFalse(target.parent.exists())
+        written = self.cli(*init)
+        self.assertEqual(json_object(written.stdout)["outcome"], "config_written")
+        repeated = json_object(self.cli(*init, "--dry-run").stdout)
+        self.assertEqual(repeated["outcome"], "unchanged")
+        different = self.cli(*init[:-1], "https://other.example/pages/", "-n")
+        self.assertEqual(different.returncode, 1)
+        error = cast(dict[str, object], json_object(different.stdout)["error"])
+        self.assertEqual(error["code"], "config_exists")
+
+    def test_host_serve_dies_from_the_signal(self) -> None:
+        for signal_number in (signal.SIGINT, signal.SIGTERM):
+            with self.subTest(signal=signal_number.name):
+                port = unused_port()
+                process = self.popen(
+                    "--config", str(self.config), "host", "serve", "--port", str(port)
+                )
+                wait_for_health(process, port)
+                process.send_signal(signal_number)
+                stdout, stderr = process.communicate(timeout=30)
+                self.assertEqual(process.returncode, -signal_number, stderr)
+                self.assertEqual((stdout, stderr), (b"", b""))
+
+    def test_artifact_exit_codes(self) -> None:
+        client = self.write_client(lock_seconds=0.2)
+        receipt = f"{self.page}.publish"
+        created = self.artifact(client, "publish", str(self.page), "--new", "page")
+        self.assertEqual((created.returncode, created.stderr), (0, ""), created.stdout)
+        with held(Path(receipt) / "lock"):
+            busy = self.artifact(client, "publish", str(self.page))
+        self.assertEqual(busy.returncode, 75, busy.stdout)
+        self.assertEqual(handoff_error(busy)["code"], "receipt_busy")
+        self.page.write_text("<!doctype html><h1>changed</h1>\n", encoding="utf-8")
+        self.write_config(lock_seconds=0.2)
+        with held(self.runtime / ".publish.lock"):
+            waited = self.artifact(client, "publish", str(self.page))
+            retried = self.artifact(client, "retry", "--receipt", receipt)
+        self.assertEqual(waited.returncode, 1, waited.stdout)
+        self.assertEqual(
+            (handoff_error(waited)["code"], handoff_error(waited)["next_action"]),
+            ("lock_timeout", "retry"),
+        )
+        self.assertEqual(json_object(waited.stdout)["pending_state"], "retryable")
+        self.assertEqual(retried.returncode, 75, retried.stdout)
+        self.assertEqual(handoff_error(retried)["code"], "lock_timeout")
+        finished = self.artifact(client, "retry", "--receipt", receipt)
+        self.assertEqual(finished.returncode, 0, finished.stdout)
+
+    def test_artifact_signals_while_waiting_and_while_the_publisher_runs(self) -> None:
+        client = self.write_client(lock_seconds=60)
+        receipt = Path(f"{self.page}.publish")
+        self.assertEqual(
+            self.artifact(client, "publish", str(self.page), "--new", "page").returncode, 0
+        )
+        sleeper = self.root / "sleeping_publisher.py"
+        sleeper.write_text(SLEEPING_PUBLISHER, encoding="utf-8")
+        for signal_number, code in ((signal.SIGINT, 130), (signal.SIGTERM, 143)):
+            with self.subTest(wait="receipt lock", signal=signal_number.name):
+                with held(receipt / "lock"):
+                    process = self.popen(
+                        "--config", str(client), "-v", "artifact", "publish", str(self.page)
+                    )
+                    read_until(process, b"waiting for the receipt lock")
+                    process.send_signal(signal_number)
+                    stdout, stderr = process.communicate(timeout=30)
+                self.assertEqual(process.returncode, code, stderr)
+                self.assertNotIn(b"Traceback", stderr)
+                self.assertEqual(handoff_error(stdout)["code"], "interrupted")
+            with self.subTest(wait="publisher", signal=signal_number.name):
+                sleeping = self.write_client(
+                    (PYTHON, str(sleeper)), lock_seconds=60, name="sleeping-client.json"
+                )
+                source = self.root / f"sleep-{signal_number.name}.html"
+                source.write_text("<!doctype html><h1>sleep</h1>\n", encoding="utf-8")
+                ready = self.root / f"publisher-{signal_number.name}.ready"
+                process = self.popen(
+                    "--config",
+                    str(sleeping),
+                    "artifact",
+                    "publish",
+                    str(source),
+                    "--new",
+                    f"sleep-{signal_number.name.lower()}",
+                    env={"HP_CONTRACT_READY": str(ready)},
+                )
+                publisher = wait_for_ready(process, ready)
+                process.send_signal(signal_number)
+                stdout, stderr = process.communicate(timeout=30)
+                self.assertEqual(process.returncode, code, stderr)
+                self.assertNotIn(b"Traceback", stderr)
+                result = json_object(stdout.decode())
+                self.assertEqual(handoff_error(stdout)["code"], "interrupted")
+                self.assertTrue(cast(dict[str, object], result["publisher"])["cancelled"])
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(publisher, 0)
+
+    def test_the_publisher_never_receives_debug_switches(self) -> None:
+        noisy = self.root / "noisy_publisher.py"
+        noisy.write_text(NOISY_PUBLISHER, encoding="utf-8")
+        client = self.write_client((PYTHON, str(noisy)))
+        self.assertEqual(
+            self.artifact(client, "publish", str(self.page), "--new", "page").returncode, 0
+        )
+        client = self.write_client((PYTHON, str(noisy)), output_bytes=4096)
+        status = self.artifact(
+            client,
+            "status",
+            "--receipt",
+            f"{self.page}.publish",
+            env={"HTML_PUBLISH_DEBUG": "1"},
+        )
+        self.assertEqual(status.returncode, 0, status.stdout + status.stderr)
+        self.assertEqual(json_object(status.stdout)["outcome"], "observed")
+
+    def test_remote_passes_host_lock_timeouts_and_reports_host_interruptions(self) -> None:
+        self.assertEqual(self.cli(*self.publish_arguments()).returncode, 0)
+        shims = self.root / "shims"
+        shims.mkdir()
+        for name, body in (("ssh", SSH_SHIM), ("scp", SCP_SHIM)):
+            (shims / name).write_text(f"#!{PYTHON}\n{body}", encoding="utf-8")
+            (shims / name).chmod(0o755)
+        host = self.root / "host-publish"
+        host.write_text(f'#!/bin/sh\nexec {PYTHON} -m html_publish "$@"\n', encoding="utf-8")
+        host.chmod(0o755)
+        incoming = self.root / "incoming"
+        incoming.mkdir()
+        remote = [
+            PYTHON,
+            "-m",
+            "html_publish.remote",
+            "--host",
+            "fixture",
+            "--remote-executable",
+            str(host),
+            "--remote-config",
+            str(self.config),
+            "--target",
+            self.base_url,
+            "--incoming-root",
+            str(incoming),
+        ]
+        env = {**self.env, "PATH": f"{shims}{os.pathsep}{self.env['PATH']}"}
+        self.write_config(lock_seconds=0.2)
+        with held(self.runtime / ".publish.lock"):
+            waited = subprocess.run(
+                [*remote, "status", "--name", "page"],
+                cwd=self.root,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        self.assertEqual(waited.returncode, 75, waited.stdout + waited.stderr)
+        self.assertEqual(handoff_error(waited)["code"], "lock_timeout")
+        update = self.root / "update.html"
+        update.write_text("<!doctype html><h1>update</h1>\n", encoding="utf-8")
+        ready = self.root / "host.ready"
+        (self.root / "hook").mkdir()
+        (self.root / "hook" / "sitecustomize.py").write_text(BLOCK_HOOK, encoding="utf-8")
+        process = subprocess.Popen(
+            [*remote, "publish", "--name", "page", "--source", str(update)],
+            cwd=self.root,
+            env={
+                **env,
+                "PYTHONPATH": str(self.root / "hook"),
+                "HP_CONTRACT_BLOCK": "html_publish/__main__.py",
+                "HP_CONTRACT_READY": str(ready),
+            },
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.addCleanup(stop_bytes, process)
+        os.kill(wait_for_ready(process, ready), signal.SIGTERM)
+        stdout, stderr = process.communicate(timeout=60)
+        self.assertEqual(process.returncode, 1, stderr)
+        payload = json_object(stdout.decode())
+        error = cast(dict[str, object], payload["error"])
+        self.assertEqual(error["code"], "interrupted")
+        self.assertEqual(cast(dict[str, object], error["next_action"])["kind"], "inspect")
+        self.assertEqual(payload["effects"], {"archive_advanced": None, "activated": None})
+
+
+@contextlib.contextmanager
+def held(path: Path) -> Generator[None]:
+    """Hold an exclusive flock on `path`, as a concurrent writer would."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as stream:
+        fcntl.flock(stream, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(stream, fcntl.LOCK_UN)
+
+
+def read_until(process: subprocess.Popen[bytes], marker: bytes) -> bytes:
+    """Read the process's stderr until `marker` appears; the words before it stay readable."""
+    assert process.stderr is not None
+    collected = b""
+    deadline = time.monotonic() + READY_SECONDS
+    with selectors.DefaultSelector() as selector:
+        selector.register(process.stderr, selectors.EVENT_READ)
+        while marker not in collected:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AssertionError(f"never saw {marker!r} on stderr: {collected!r}")
+            if selector.select(min(remaining, 0.2)):
+                chunk = os.read(process.stderr.fileno(), 65536)
+                if not chunk:
+                    raise AssertionError(f"stderr ended before {marker!r}: {collected!r}")
+                collected += chunk
+    return collected
+
+
+def wait_for_ready(process: subprocess.Popen[bytes], ready: Path) -> int:
+    """Wait until a blocked process names itself in `ready`; return its PID."""
+    deadline = time.monotonic() + READY_SECONDS
+    while not ready.exists():
+        if process.poll() is not None or time.monotonic() > deadline:
+            stdout, stderr = process.communicate(timeout=30)
+            raise AssertionError(f"never became ready: {process.returncode} {stdout!r} {stderr!r}")
+        time.sleep(0.02)
+    return int(ready.read_text())
+
+
+def wait_for_health(process: subprocess.Popen[bytes], port: int) -> None:
+    deadline = time.monotonic() + READY_SECONDS
+    while True:
+        try:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/_html-publish-health", timeout=1
+            ) as response:
+                if response.read() == b"ok\n":
+                    return
+        except OSError:
+            pass
+        if process.poll() is not None or time.monotonic() > deadline:
+            stdout, stderr = process.communicate(timeout=30)
+            raise AssertionError(
+                f"server never healthy: {process.returncode} {stdout!r} {stderr!r}"
+            )
+        time.sleep(0.05)
+
+
+def unused_port() -> int:
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        return int(listener.getsockname()[1])
+
+
+def handoff_error(result: subprocess.CompletedProcess[str] | bytes) -> dict[str, object]:
+    text = result.decode() if isinstance(result, bytes) else result.stdout
+    return cast(dict[str, object], json_object(text)["error"])
+
+
+def stop_bytes(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is None:
+        process.kill()
+        process.communicate(timeout=30)
 
 
 def stop(process: subprocess.Popen[str]) -> None:

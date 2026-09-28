@@ -4,6 +4,7 @@ import argparse
 import functools
 import http.server
 import io
+import logging
 import os
 import signal
 import socket
@@ -15,7 +16,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
-from typing import BinaryIO
+from typing import BinaryIO, NoReturn
 
 from html_publish import __version__, command_line
 
@@ -26,6 +27,7 @@ _CONDITIONAL_HEADERS = (
     "If-Range",
     "If-Unmodified-Since",
 )
+log = logging.getLogger(__name__)
 _HEALTH_PATH = "/_html-publish-health"
 _HEALTH_BODY = b"ok\n"
 
@@ -62,6 +64,10 @@ class PublicationRequestHandler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self) -> None:
         self.send_header("Cache-Control", "no-store")
         super().end_headers()
+
+    def log_message(self, format: str, *args: object) -> None:
+        """Access and error lines are step detail: stderr shows them only with --verbose."""
+        log.info("%s %s", self.address_string(), format % args)
 
     def list_directory(self, path: str | os.PathLike[str]) -> io.BytesIO | None:
         self.send_error(404, "File not found")
@@ -238,11 +244,14 @@ def _parse_args(parser: Parser, argv: Sequence[str]) -> ServerConfig:
 
 
 def serve(config: ServerConfig) -> int:
+    """Serve until SIGINT or SIGTERM, close the socket, then die from that signal."""
     handler = functools.partial(PublicationRequestHandler, directory=str(config.directory))
     server = PublicationHTTPServer((config.bind, config.port), handler)
     previous = {name: signal.getsignal(name) for name in (signal.SIGINT, signal.SIGTERM)}
+    received: list[int] = []
 
-    def stop(_signal: int, _frame: FrameType | None) -> None:
+    def stop(signal_number: int, _frame: FrameType | None) -> None:
+        received.append(signal_number)
         raise KeyboardInterrupt
 
     try:
@@ -255,7 +264,19 @@ def serve(config: ServerConfig) -> int:
         server.server_close()
         for name, handler_before in previous.items():
             signal.signal(name, handler_before)
+    if received:
+        _die_from(received[0])
     return 0
+
+
+def _die_from(signal_number: int) -> NoReturn:
+    """End the process by `signal_number`, so a service manager records a clean stop and a
+    shell reports 128 plus the signal number."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    signal.signal(signal_number, signal.SIG_DFL)
+    os.kill(os.getpid(), signal_number)
+    raise SystemExit(128 + signal_number)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

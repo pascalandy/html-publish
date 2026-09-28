@@ -52,7 +52,8 @@ NAME_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 HOST_PATTERN = re.compile(r"[A-Za-z0-9_.@-]+\Z")
 REMOTE_PATH_PATTERN = re.compile(r"/[A-Za-z0-9._/-]+\Z")
 
-ExitCode = Literal[0, 1, 2]
+ExitCode = Literal[0, 1, 2, 75]
+HOST_SIGNAL_EXITS = frozenset({130, 143})
 
 
 class CommandExpired(Exception):
@@ -66,7 +67,7 @@ class ProtocolFailure(Exception):
 
 
 class Parser(command_line.Parser):
-    exit_codes = (0, 1, 2, 130, 143)
+    exit_codes = (0, 1, 2, 75, 130, 143)
 
 
 @dataclass(frozen=True)
@@ -1146,7 +1147,7 @@ def _validate_host_payload(
     }
     if not required.issubset(payload):
         raise ProtocolFailure("The host result is missing common envelope fields")
-    if exit_code not in {0, 1, 2}:
+    if exit_code not in {0, 1, 2, 75, *HOST_SIGNAL_EXITS}:
         raise ProtocolFailure(f"The host returned unsupported exit code {exit_code}")
     if type(payload.get("schema_version")) is not int or payload.get("schema_version") != 1:
         raise ProtocolFailure("The host result has an unsupported schema version")
@@ -1261,7 +1262,7 @@ def _validate_host_payload(
     error = payload.get("error")
     if exit_code == 0 and (outcome == "error" or error is not None):
         raise ProtocolFailure("The host success exit does not agree with its result")
-    if exit_code in {1, 2} and (
+    if exit_code in {1, 2, 75, *HOST_SIGNAL_EXITS} and (
         (outcome != "error" and not (request.operation == "status" and outcome == "observed"))
         or not isinstance(error, dict)
     ):
@@ -1287,6 +1288,16 @@ def _validate_host_payload(
         raise ProtocolFailure("The host usage failure returned operational exit 1")
     if exit_code == 2 and error_values.get("phase") != "usage":
         raise ProtocolFailure("The host exit 2 does not describe invalid usage")
+    if exit_code == 75 and (
+        outcome != "error"
+        or error_values.get("code") != "lock_timeout"
+        or any(effect_values[key] is not False for key in ("archive_advanced", "activated"))
+    ):
+        raise ProtocolFailure("The host exit 75 does not describe a lock timeout without effects")
+    if exit_code in HOST_SIGNAL_EXITS and (
+        outcome != "error" or error_values.get("code") != "interrupted"
+    ):
+        raise ProtocolFailure("The host signal exit does not describe an interruption")
     if exit_code == 0 and request.operation in {"publish", "restore", "verify"}:
         if verification["result"] != "passed":
             raise ProtocolFailure("The successful host command has not passed verification")
@@ -1335,7 +1346,22 @@ def _validate_host_payload(
                 and payload["requested_record_revision"] != payload["archived_record_revision"]
             ):
                 raise ProtocolFailure("The successful host result does not archive its record")
+    if exit_code in HOST_SIGNAL_EXITS:
+        return 1
     return cast(ExitCode, exit_code)
+
+
+def _host_interrupted(payload: dict[str, object], request: Request) -> dict[str, object]:
+    """A host result for a host process that a signal ended: the client itself was not
+    signalled, so it exits 1, reports unknown mutation effects, and asks for inspection."""
+    updated = dict(payload)
+    if request.operation in {"publish", "restore"}:
+        updated["effects"] = {"archive_advanced": None, "activated": None}
+    error = dict(cast(dict[str, object], payload["error"]))
+    action = cast(dict[str, object], error["next_action"])
+    error["next_action"] = {**action, "kind": "inspect"}
+    updated["error"] = error
+    return updated
 
 
 def _retained_transport(staging: PurePosixPath | None, detail: str) -> dict[str, object]:
@@ -1431,6 +1457,8 @@ def _invoke(
         exit_code = _validate_host_payload(payload, result.returncode, settings, request)
     except ProtocolFailure as error:
         return _protocol_failure(settings, request, staging, str(error))
+    if result.returncode in HOST_SIGNAL_EXITS:
+        payload = _host_interrupted(payload, request)
     if (
         request.report == "summary"
         and len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))

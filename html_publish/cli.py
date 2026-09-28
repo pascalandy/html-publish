@@ -6,6 +6,7 @@ import copy
 import json
 import math
 import re
+import shlex
 import signal
 import sys
 import time
@@ -92,7 +93,7 @@ def _requested_report_mode(arguments: list[str]) -> ReportMode:
 
 
 class Parser(command_line.Parser):
-    exit_codes = (0, 1, 2, 130, 143)
+    exit_codes = (0, 1, 2, 75, 130, 143)
 
 
 @contextlib.contextmanager
@@ -667,6 +668,12 @@ def _parser(json_version: bool = False) -> Parser:
         item.add_argument("--role", choices=("publisher", "client"), required=True)
         if action == "init":
             item.add_argument("--base-url", required=True, help="canonical target URL ending in /")
+            item.add_argument(
+                "-n",
+                "--dry-run",
+                action="store_true",
+                help="run every check and report outcome planned without writing the file",
+            )
             item.add_argument("--archive", type=Path, help="publisher bare Git archive path")
             item.add_argument("--runtime", type=Path, help="publisher runtime directory")
             item.add_argument(
@@ -841,6 +848,8 @@ CONFIG_EXAMPLES = {
     "init": (
         "html-publish config init --role publisher --config publisher.json "
         "--base-url https://review.example/pages/",
+        "html-publish --json config init --role publisher --config publisher.json "
+        "--base-url https://review.example/pages/ --dry-run",
         "html-publish config init --role client --config client.json "
         "--base-url https://review.example/pages/ --target-id review --execution local "
         "--publisher-config /srv/html-publish/publisher.json",
@@ -1329,23 +1338,108 @@ def usage_report(
     }
 
 
-def emit_json(payload: Mapping[str, object], exit_code: Literal[0, 1, 2]) -> int:
+def emit_json(payload: Mapping[str, object], exit_code: int) -> int:
     print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
     return exit_code
 
 
-def _print_report(report: Report, json_output: bool, mode: ReportMode = "detail") -> int:
+def failure_exit_code(failure: Failure | None) -> int:
+    """0 on success, 75 for a lock timeout that an identical rerun may clear, else 1."""
+    if failure is None:
+        return 0
+    return 75 if failure.code == "lock_timeout" else 1
+
+
+def _print_report(
+    report: Report,
+    json_output: bool,
+    mode: ReportMode = "detail",
+    next_command: str | None = None,
+    exit_code: int | None = None,
+) -> int:
     payload = report_dict(report, mode)
+    code = failure_exit_code(report.error) if exit_code is None else exit_code
     if json_output:
-        return emit_json(payload, 1 if report.error else 0)
+        return emit_json(payload, code)
     elif report.error:
         print(f"html-publish: {report.error.message}", file=sys.stderr)
+        if next_command is not None:
+            print(f"next: {next_command}", file=sys.stderr)
     elif report.operation in {"publish", "restore"}:
         assert report.url is not None
+        detailed = {detail.code for detail in report.warning_details}
+        for detail in report.warning_details:
+            print(
+                f"html-publish: warning: {detail.code}: {detail.source_path} "
+                f"references {detail.reference}",
+                file=sys.stderr,
+            )
+        for warning in report.warnings:
+            if warning not in detailed:
+                print(f"html-publish: warning: {warning}", file=sys.stderr)
         print(report.url)
     else:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
-    return 1 if report.error else 0
+    return code
+
+
+def _with_option(arguments: list[str], flag: str, value: str | None) -> list[str]:
+    """`arguments` with `flag` set to `value`, or without `flag` when `value` is None."""
+    kept: list[str] = []
+    skip = False
+    for argument in arguments:
+        if skip:
+            skip = False
+        elif argument == flag:
+            skip = True
+        elif not argument.startswith(f"{flag}="):
+            kept.append(argument)
+    return kept if value is None else [*kept, flag, value]
+
+
+def _next_command(
+    kind: str, parsed: argparse.Namespace, arguments: list[str], config: Config | None
+) -> str:
+    """The command to run next for a runtime error, from its `next_action` kind; known values
+    are filled in and the rest are <placeholders>."""
+    config_flag = ["--config", str(parsed.config)] if getattr(parsed, "config", None) else []
+    name = str(getattr(parsed, "name", None) or "<name>")
+    role = str(getattr(parsed, "role", None) or "publisher")
+
+    def publisher(*words: str) -> list[str]:
+        return ["html-publish", *config_flag, *words]
+
+    same = ["html-publish", *arguments]
+    commands: dict[str, list[str]] = {
+        "retry": same,
+        "inspect": publisher("status", "--name", name),
+        "review_conflict": publisher("history", "--name", name),
+        "fix_route": publisher("status", "--name", name, "--host-check"),
+        "publish": publisher(
+            "publish",
+            "--name",
+            name,
+            "--source",
+            "<source>",
+            "--target",
+            config.base_url if config else "<target>",
+        ),
+        "rebind": ["html-publish", *_with_option(arguments, "--target", config.base_url)]
+        if config
+        else same,
+        "fix_input": ["html-publish", *_with_option(arguments, "--source", "<source>")],
+        "reduce_input": ["html-publish", *_with_option(arguments, "--source", "<source>")],
+        "move_input": ["html-publish", *_with_option(arguments, "--source", "<source>")],
+        "specify_entry": ["html-publish", *_with_option(arguments, "--entry", "<entry>")],
+        "fix_entry": ["html-publish", *_with_option(arguments, "--entry", "<entry>")],
+        "remove_entry": ["html-publish", *_with_option(arguments, "--entry", None)],
+        "fix_arguments": ["html-publish", str(getattr(parsed, "operation", "")), "--help"],
+        "fix_config": ["html-publish", "config", "validate", "--role", role, *config_flag],
+        "inspect_checks": ["html-publish", "doctor", "--role", role, *config_flag],
+        "fix_host": ["html-publish", "doctor", "--role", "publisher", *config_flag],
+        "fix_storage": ["html-publish", "doctor", "--role", "publisher", *config_flag],
+    }
+    return shlex.join(commands.get(kind, ["html-publish", "skills", "get", "recovery"]))
 
 
 def _run_skills(parsed: argparse.Namespace) -> int:
@@ -1395,7 +1489,12 @@ def _config_result(
     }
 
 
-def _emit_config(payload: dict[str, object], json_output: bool, exit_code: Literal[0, 1, 2]) -> int:
+def _emit_config(
+    payload: dict[str, object],
+    json_output: bool,
+    exit_code: int,
+    next_command: str | None = None,
+) -> int:
     if json_output:
         return emit_json(payload, exit_code)
     if payload["error"] is not None:
@@ -1408,6 +1507,8 @@ def _emit_config(payload: dict[str, object], json_output: bool, exit_code: Liter
                         f"  {check['id']}: {check['detail']}. {check['next_step']}",
                         file=sys.stderr,
                     )
+        if next_command is not None:
+            print(f"next: {next_command}", file=sys.stderr)
     else:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     return exit_code
@@ -1541,7 +1642,7 @@ def _run_config(parsed: argparse.Namespace) -> int:
     parsed.selected_config_path = path
     parsed.config_source = source
     if action == "init":
-        outcome = init_document(path, _init_raw(parsed), role)
+        outcome = init_document(path, _init_raw(parsed), role, dry_run=parsed.dry_run)
         return _emit_config(
             _config_result("config.init", role, path, source, outcome), parsed.json, 0
         )
@@ -1701,6 +1802,8 @@ def _main(arguments: list[str]) -> int:
                         json.dumps(result, indent=2),
                         file=sys.stdout if code == 0 else sys.stderr,
                     )
+                    if code != 0:
+                        print(f"next: {_host_preview_command(parsed)}", file=sys.stderr)
                     return code
                 spec, prerequisites = make_spec(config_path, config, parsed.unit_name, parsed.port)
                 result = (
@@ -1731,6 +1834,8 @@ def _main(arguments: list[str]) -> int:
             if parsed.json:
                 return emit_json(result, code)
             print(json.dumps(result, indent=2), file=sys.stdout if code == 0 else sys.stderr)
+            if code != 0:
+                print(f"next: {_host_preview_command(parsed)}", file=sys.stderr)
             return code
         config = load_config(config_path)
         command_seconds = parsed.command_seconds or config.limits.command_seconds
@@ -1781,7 +1886,16 @@ def _main(arguments: list[str]) -> int:
                     parsed.limit,
                     getattr(parsed, "host_check", False),
                 )
-        return _print_report(report, parsed.json, parsed.report)
+        return _print_report(
+            report,
+            parsed.json,
+            parsed.report,
+            _next_command(report.error.next_action, parsed, arguments, config)
+            if report.error
+            else None,
+        )
+    except command_line.Interrupted as interruption:
+        return _interrupted(parsed, json_output, arguments, config, interruption)
     except command_line.UsageError as error:
         sys.stderr.write(command_line.usage_text(error, parser, arguments))
         failure = Failure("invalid_usage", "usage", str(error), "fix_arguments")
@@ -1849,6 +1963,7 @@ def _main(arguments: list[str]) -> int:
                 ),
                 json_output,
                 1,
+                _next_command(error.failure.next_action, parsed, arguments, config),
             )
         error_operation: Operation
         error_operation = cast(
@@ -1871,7 +1986,107 @@ def _main(arguments: list[str]) -> int:
             ),
             error=error.failure,
         )
-        return _print_report(report, json_output, getattr(parsed, "report", "detail"))
+        return _print_report(
+            report,
+            json_output,
+            getattr(parsed, "report", "detail"),
+            _next_command(error.failure.next_action, parsed, arguments, config),
+        )
+
+
+def _interrupted(
+    parsed: argparse.Namespace,
+    json_output: bool,
+    arguments: list[str],
+    config: Config | None,
+    interruption: command_line.Interrupted,
+) -> int:
+    """Report a signal that ended a command: one JSON object in JSON mode, else two lines.
+
+    A publish or restore may have advanced the archive or selection before the signal, so
+    its effects are unknown and the next step is inspection.
+    """
+    operation = getattr(parsed, "operation", None)
+    mutating = operation in {"publish", "restore"}
+    failure = Failure(
+        "interrupted",
+        "interrupt",
+        f"The command was interrupted by {signal.Signals(interruption.signal_number).name}",
+        "inspect" if mutating else "retry",
+        ("name", "request_id", "expected_revision") if mutating else (),
+    )
+    if operation in OPERATIONS:
+        target = getattr(parsed, "target", config.base_url if config else None)
+        name = getattr(parsed, "name", None)
+        report = Report(
+            cast(Operation, operation),
+            "error",
+            target,
+            name,
+            publication_url(target, name) if target is not None and name is not None else None,
+            request_id=getattr(parsed, "request_id", None),
+            expected_revision=getattr(parsed, "expected_revision", None),
+            expected_record_revision=getattr(parsed, "expected_record_revision", None),
+            render_profile_id=(
+                RENDER_PROFILE_ID if getattr(parsed, "input_format", None) == "markdown" else None
+            ),
+            effects=Effects(None, None) if mutating else Effects(),
+            error=failure,
+        )
+        return _print_report(
+            report,
+            json_output,
+            getattr(parsed, "report", "detail"),
+            _next_command(failure.next_action, parsed, arguments, config),
+            exit_code=interruption.exit_code,
+        )
+    if json_output and operation in {"config", "doctor"}:
+        action = parsed.config_action if operation == "config" else "doctor"
+        return _emit_config(
+            _config_result(
+                f"config.{action}" if action != "doctor" else "doctor",
+                getattr(parsed, "role", None),
+                getattr(parsed, "selected_config_path", getattr(parsed, "config", None)),
+                getattr(parsed, "config_source", None),
+                "error",
+                failure=failure,
+            ),
+            True,
+            interruption.exit_code,
+        )
+    if json_output and operation == "host":
+        return emit_json(_host_error(parsed, failure), interruption.exit_code)
+    print(f"html-publish: {failure.message}", file=sys.stderr)
+    return interruption.exit_code
+
+
+def _host_error(parsed: argparse.Namespace, failure: Failure) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "operation": (
+            "host.route.setup" if parsed.host_action == "route" else f"host.{parsed.host_action}"
+        ),
+        "outcome": "error",
+        "error": {
+            "code": failure.code,
+            "message": failure.message,
+            "next_action": failure.next_action,
+        },
+    }
+
+
+def _host_preview_command(parsed: argparse.Namespace) -> str:
+    """The read-only host preview that shows why a host command failed."""
+    config_flag = ["--config", str(parsed.config)] if parsed.config else []
+    if parsed.host_action == "route":
+        words = ["host", "route", "setup", "--unit-name", parsed.unit_name]
+    elif parsed.host_action == "setup":
+        words = ["host", "setup", "--unit-name", parsed.unit_name, "--port", str(parsed.port)]
+    else:
+        return shlex.join(
+            ["html-publish", "config", "validate", "--role", "publisher", *config_flag]
+        )
+    return shlex.join(["html-publish", *config_flag, "--json", *words])
 
 
 def entrypoint() -> NoReturn:

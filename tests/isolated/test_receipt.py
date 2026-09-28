@@ -542,7 +542,7 @@ class HelperCliTest(ReceiptFixture):
                         with self.assertRaises(ProcessLookupError):
                             os.kill(publisher_pid, 0)
                         stdout, stderr = helper.communicate(timeout=2)
-                    self.assertEqual(helper.returncode, 1, stderr)
+                    self.assertEqual(helper.returncode, 143, stderr)
                     payload = json.loads(stdout)
                     self.assertEqual(payload["error"]["code"], "interrupted")
                     self.assertTrue(payload["publisher"]["cancelled"])
@@ -1443,7 +1443,7 @@ class HelperCliTest(ReceiptFixture):
 
         self.assertEqual(first.returncode, 0, first_stderr)
         self.assertTrue(first_stdout)
-        self.assertEqual(second.returncode, 1)
+        self.assertEqual(second.returncode, 75)
         error = self.payload(second)["error"]
         assert isinstance(error, dict)
         self.assertEqual(error["code"], "receipt_busy")

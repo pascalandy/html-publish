@@ -2423,7 +2423,7 @@ class PublisherCliTest(unittest.TestCase):
         finally:
             os.close(descriptor)
 
-        self.assertEqual(blocked.returncode, 1)
+        self.assertEqual(blocked.returncode, 75)
         blocked_payload = self.payload(blocked)
         self.assertEqual(blocked_payload["error"]["code"], "lock_timeout")
         self.assertEqual(blocked_payload["error"]["next_action"]["kind"], "retry")

@@ -284,7 +284,11 @@ def load_client_config(path: Path) -> ClientConfig:
     return config
 
 
-def init_document(path: Path, raw: dict[str, object], role: Role) -> str:
+def init_document(path: Path, raw: dict[str, object], role: Role, *, dry_run: bool = False) -> str:
+    """Validate `raw` and install it at `path`; return `config_written` or `unchanged`.
+
+    A dry run runs every check and returns `planned` where a real run would write.
+    """
     parsed = parse_document(role, raw)
     if isinstance(parsed, ClientConfig):
         parsed_url = urlsplit(parsed.target.base_url)
@@ -325,6 +329,8 @@ def init_document(path: Path, raw: dict[str, object], role: Role) -> str:
                 f"Existing configuration at {path} cannot be read: {error}", "config_exists"
             ) from error
         raise _invalid(f"Different configuration already exists at {path}", "config_exists")
+    if dry_run:
+        return "planned"
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as error:
