@@ -402,8 +402,10 @@ activation.
 
 Test real process termination at every durable transition and persistence-error paths. Claim
 ordinary process-interruption recovery separately from unproven power-loss resilience. Local Git
-history is not protection against loss of om1's storage; remote backup remains optional and
-deferred.
+history alone is not protection against loss of om1's storage. An operator-managed job outside
+the publisher may push the archive branch to a private remote. It never force-pushes or rewrites
+history. Recovery from that copy restores each page's newest archived commit through guarded
+restore. It does not reproduce a saved-but-inactive selection.
 
 ## S8. Caller identity and safe handoff
 
@@ -526,8 +528,9 @@ Do not reboot without explicit approval or call an unverified installation produ
 
 No Docker, database, mutable shared checkout, persistent publisher, event store, distributed
 locks, web upload UI, public Funnel, per-page ACLs, untrusted-HTML isolation, automatic tab
-refresh, automatic rollback/pruning/backup/activation, or separate publication service or remote
-publication protocol. The read-only delivery helper and thin SSH execution helper are allowed. No
+refresh, automatic rollback/pruning/activation, publisher-initiated backup, or separate publication
+service or remote publication protocol. The read-only delivery helper and thin SSH execution
+helper are allowed. An operator-managed archive push outside the publisher is allowed. No
 requirement to preserve Postplan-owned URLs: replacement produces new private URLs. Markdown is
 #9, after HTML cutover.
 
