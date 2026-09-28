@@ -15,6 +15,7 @@ import json
 import os
 import re
 import selectors
+import shlex
 import shutil
 import signal
 import socket
@@ -1147,6 +1148,59 @@ class RemoteContractTest(PublisherFixture):
                 with self.assertRaises(ProcessLookupError):
                     os.kill(transport, 0)
 
+    def test_verify_om1_mvp_passes_through_the_real_remote_publisher_and_server(self) -> None:
+        port = unused_port()
+        public = self.root / "mvp-runtime" / "public"
+        server = subprocess.Popen(
+            [PYTHON, "-m", "html_publish.server", "--directory", str(public), "--port", str(port)],
+            cwd=self.root,
+            env=self.env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self.addCleanup(stop_bytes, server)
+        wait_for_health(server, port)
+        base = f"http://127.0.0.1:{port}/"
+        config = self.root / "mvp-publisher.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "archive": str(self.root / "mvp-archive.git"),
+                    "runtime": str(public.parent),
+                    "base_url": base,
+                    "allow_http": True,
+                }
+            ),
+            encoding="utf-8",
+        )
+        remote = shlex.join(
+            [
+                PYTHON,
+                "-m",
+                "html_publish.remote",
+                *self.destination[:4],
+                "--remote-config",
+                str(config),
+                "--target",
+                base,
+                *self.destination[-2:],
+            ]
+        )
+        result = subprocess.run(
+            [PYTHON, "scripts/verify_om1_mvp.py", "--remote-command", remote, "--name", "mvp"],
+            cwd=ROOT,
+            env=self.env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        self.assertEqual((result.returncode, result.stderr), (0, ""), result.stdout)
+        evidence = json_object(result.stdout)
+        self.assertEqual(evidence["url"], f"{base}mvp/")
+        self.assertEqual(evidence["conflict_code"], "revision_conflict")
+        http = cast(dict[str, object], evidence["http"])
+        self.assertEqual((http["status"], http["cache_control"]), (200, "no-store"))
+
     def test_verbosity_changes_only_stderr_and_never_reaches_the_host(self) -> None:
         levels = {
             level: self.remote("status", "--name", "page", *level)
@@ -1621,6 +1675,8 @@ class OtherScriptsContractTest(unittest.TestCase):
         pages = json_object(sources.stdout)
         plain = self.run_command(*command, "sources", run_id)
         self.assertEqual(plain.stdout, "".join(f"{key}={value}\n" for key, value in pages.items()))
+        debug = self.run_command(*command, "sources", run_id, "--debug")
+        self.assertEqual((debug.returncode, debug.stdout), (0, plain.stdout))
         missing = self.run_command(*command, "doctor", run_id)
         self.assertEqual((missing.returncode, missing.stdout), (1, ""))
         self.assertEqual(
