@@ -345,10 +345,13 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             try:
                 return run(verbose=args.verbose or args.debug)
-            except Exception:
+            except Exception as error:
                 if args.debug:
                     traceback.print_exc()
-                raise
+                print(f"{PROG}: unexpected {type(error).__name__}: {error}", file=sys.stderr)
+                if not args.debug:
+                    print("run with --debug for a traceback", file=sys.stderr)
+                return 1
         except KeyboardInterrupt as error:
             print(f"{PROG}: interrupted", file=sys.stderr)
             return error.exit_code if isinstance(error, Interrupted) else 130

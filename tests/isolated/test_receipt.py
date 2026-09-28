@@ -43,6 +43,7 @@ F36: receipt: a failed attempt cleanup is reported as clean and hides the leftov
 F37: receipt: publisher success is reported complete although its result was not saved
 F38: receipt: a completion visible after a failed directory sync cannot be recovered locally
 F39: receipt: file bytes or a directory update with removed files differ through a real publisher
+F40: receipt: a publisher stopped by a signal is retried without inspecting the target
 """
 
 from __future__ import annotations
@@ -184,7 +185,7 @@ if mode == "ambiguous":
     state_path.write_text(json.dumps(state))
     print("lost response")
     raise SystemExit(1)
-if mode == "preflight":
+if mode in {"preflight", "interrupted"}:
     print(json.dumps({
         "schema_version": 1,
         "operation": "publish",
@@ -207,9 +208,9 @@ if mode == "preflight":
         "active_revision": state["active_revision"],
         "effects": {"archive_advanced": False, "activated": False},
         "verification": {"result": "not_checked", "revision": None},
-        "error": failure("transport_failure"),
+        "error": failure("transport_failure" if mode == "preflight" else "interrupted"),
     }))
-    raise SystemExit(1)
+    raise SystemExit(1 if mode == "preflight" else 143)
 
 active = state["active_revision"]
 previous_record = state.get("archived_record_revision")
@@ -1306,6 +1307,31 @@ class HelperCliTest(ReceiptFixture):
 
         self.assertEqual(retried.returncode, 0, retried.stderr)
         self.assertEqual([call["operation"] for call in self.calls()], ["publish", "publish"])
+
+    def test_a_publisher_stopped_by_a_signal_leaves_an_attempt_that_needs_inspection(
+        self,
+    ) -> None:
+        """Proves F40."""
+
+        self.write_scenario("interrupted", "auto")
+        source = self.root / "report.html"
+        source.write_text("interrupted")
+        receipt_dir = Path(str(source) + ".publish")
+
+        stopped = self.run_helper("publish", str(source), "--new", "interrupted")
+
+        self.assertEqual(stopped.returncode, 1, stopped.stderr)
+        self.assertEqual(self.payload(stopped)["outcome"], "uncertain")
+        pending = self.receipt(receipt_dir)["pending"]
+        assert isinstance(pending, dict)
+        self.assertEqual(pending["state"], "uncertain")
+
+        retried = self.run_helper("retry", "--receipt", str(receipt_dir))
+
+        self.assertEqual(retried.returncode, 0, retried.stderr)
+        self.assertEqual(
+            [call["operation"] for call in self.calls()], ["publish", "status", "publish"]
+        )
 
     def test_correlated_unknown_effects_remain_uncertain(self) -> None:
         """Proves F26."""

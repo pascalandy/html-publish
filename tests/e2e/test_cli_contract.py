@@ -92,7 +92,13 @@ FIXTURE_TREE = {
     "tests/e2e/__init__.py": "",
     "tests/isolated/__init__.py": "",
 }
-ENVIRONMENT = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+# A Git hook exports GIT_DIR and friends, and a caller may export CHECK_DEBUG or another
+# <NAME>_DEBUG switch; neither may reach a command whose output a test compares
+ENVIRONMENT = {
+    key: value
+    for key, value in os.environ.items()
+    if not key.startswith("GIT_") and not key.endswith("_DEBUG")
+}
 
 
 @dataclass(frozen=True)
@@ -407,10 +413,18 @@ class InstalledContractTest(unittest.TestCase):
 
     def test_help_wins_over_a_bad_command_or_value(self) -> None:
         cases = {
-            "html-publish": (("publsh", "--help"), ("status", "--limit", "0", "--help")),
+            "html-publish": (
+                ("publsh", "--help"),
+                ("status", "--limit", "0", "--help"),
+                ("help", "publsih", "--help"),
+            ),
             "html-publish-remote": (("publsh", "--help"), ("status", "--limit", "0", "--help")),
             "html-publish-server": (("--port", "99999", "--help"),),
-            "html-publish-deploy": (("instal", "--help"), ("rollback", "--release", "--help")),
+            "html-publish-deploy": (
+                ("instal", "--help"),
+                ("rollback", "--release", "--help"),
+                ("help", "instal", "-h"),
+            ),
         }
         for executable in INSTALLED:
             for arguments in cases[executable.prog]:
@@ -556,6 +570,8 @@ if (failing == "setup" and "mkdir" in command) or (failing == "invoke" and invok
     sys.exit(255)
 if os.environ.get("HP_SSH_BLOCK") and invoke:
     pause_when_ready("HP_SSH_BLOCK")
+if os.environ.get("HP_SSH_BLOCK_CLEANUP") and command.startswith("rm "):
+    pause_when_ready("HP_SSH_BLOCK_CLEANUP")
 os.execvp("sh", ["sh", "-c", command])
 """
 )
@@ -1001,6 +1017,48 @@ class RemoteContractTest(PublisherFixture):
                     self.assertEqual(
                         payload["effects"], {"archive_advanced": False, "activated": False}
                     )
+
+    def test_a_cancel_during_parsing_or_cleanup_keeps_the_json_handoff(self) -> None:
+        update = self.root / "cleanup.html"
+        update.write_text("<!doctype html><h1>cleanup</h1>\n", encoding="utf-8")
+        command = [PYTHON, "-m", "html_publish.remote", *self.destination]
+        for signal_number, code in ((signal.SIGINT, 130), (signal.SIGTERM, 143)):
+            with self.subTest(stage="parse", signal=signal_number.name):
+                process, remote = start_blocked(
+                    self,
+                    [*command, "status", "--name", "page"],
+                    "html_publish/remote.py",
+                    cwd=self.root,
+                    env=self.env,
+                )
+                os.kill(remote, signal_number)
+                stdout, stderr = process.communicate(timeout=60)
+                self.assertEqual(process.returncode, code, stderr)
+                self.assertNotIn(b"Traceback", stderr)
+                self.assertEqual(handoff_error(stdout)["code"], "interrupted")
+            with self.subTest(stage="cleanup", signal=signal_number.name):
+                ready = self.root / f"cleanup-{signal_number.name}.ready"
+                name = f"cleanup-{signal_number.name.lower()}"
+                process = subprocess.Popen(
+                    [*command, "publish", "--name", name, "--source", str(update)],
+                    cwd=self.root,
+                    env={**self.env, "HP_SSH_BLOCK_CLEANUP": str(ready)},
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                self.addCleanup(stop_process, process)
+                transport = wait_for_ready(process, ready)
+                process.send_signal(signal_number)
+                stdout, stderr = process.communicate(timeout=60)
+                self.assertEqual(process.returncode, code, stderr)
+                payload = json_object(stdout.decode())
+                self.assertEqual(payload["outcome"], "published")
+                self.assertEqual(
+                    cast(dict[str, object], payload["transport"])["detail"],
+                    "The caller cancelled cleanup",
+                )
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(transport, 0)
 
     def test_a_local_cancel_keeps_the_json_handoff(self) -> None:
         for signal_number, code in ((signal.SIGINT, 130), (signal.SIGTERM, 143)):
@@ -1450,16 +1508,18 @@ class OtherScriptsContractTest(unittest.TestCase):
                 self.assert_help(command, codes.format(failure))
                 self.assert_usage(command, "--cli", self.cli, "--reps", "0")
                 self.assert_usage(command, "--reps", "1")
-                report = self.root / f"{name}.json"
-                levels = {
-                    level: self.run_command(
+                levels: dict[tuple[str, ...], subprocess.CompletedProcess[str]] = {}
+                for index, level in enumerate(((), ("-v",), ("--debug",))):
+                    report = self.root / f"{name}-{index}.json"
+                    result = self.run_command(
                         *command, "--cli", self.cli, "--reps", "1", "-o", str(report), *level
                     )
-                    for level in ((), ("-v",), ("--debug",))
-                }
-                for result in levels.values():
+                    levels[level] = result
                     self.assertEqual((result.returncode, result.stdout), (0, ""), result.stderr)
-                    self.assertIsInstance(json_object(report.read_text()), dict)
+                    self.assertIn(
+                        "results" if name == "bench_capture" else "seconds",
+                        json_object(report.read_text()),
+                    )
                     self.assertNotIn("Traceback", result.stderr)
                 self.assertEqual(levels[()].stderr, "")
                 self.assertTrue(levels[("-v",)].stderr)
@@ -1564,6 +1624,16 @@ class OtherScriptsContractTest(unittest.TestCase):
         self.assertEqual(plain.stdout, "".join(f"{key}={value}\n" for key, value in pages.items()))
         debug = self.run_command(*command, "sources", run_id, "--debug")
         self.assertEqual((debug.returncode, debug.stdout), (0, plain.stdout))
+        unavailable = self.run_command(*command, "sources", f"{run_id}-missing", "--json")
+        self.assertEqual(unavailable.returncode, 1, unavailable.stderr)
+        self.assertEqual(handoff_error(unavailable)["code"], "failed")
+        for signal_number, code in ((signal.SIGINT, 130), (signal.SIGTERM, 143)):
+            with self.subTest(json=True, signal=signal_number.name):
+                returncode, stdout, stderr, _ = self.interrupt(
+                    [*command, "sources", run_id, "--json"], "scripts/instance.py", signal_number
+                )
+                self.assertEqual(returncode, code, stderr)
+                self.assertEqual(handoff_error(stdout)["code"], "interrupted")
         missing = self.run_command(*command, "doctor", run_id)
         self.assertEqual((missing.returncode, missing.stdout), (1, ""))
         self.assertEqual(
@@ -1621,6 +1691,17 @@ class OtherScriptsContractTest(unittest.TestCase):
         self.assertEqual((reused.returncode, reused.stdout), (2, ""))
         self.assertIn("fix: choose a fresh HTML_PUBLISH_E2E_RUN_ID", reused.stderr)
         self.assertEqual(recorded("e2e-usage", "--bogus").returncode, 2)
+        for level, tracebacks in (((), 0), (("--debug",), 1)):
+            with self.subTest(unwritable_root=level):
+                crashed = self.run_command(
+                    *command,
+                    *level,
+                    cwd=checkout,
+                    env={"HTML_PUBLISH_E2E_ROOT": "/dev/null", "HTML_PUBLISH_E2E_RUN_ID": "e2e-x"},
+                )
+                self.assertEqual((crashed.returncode, crashed.stdout), (1, ""), crashed.stderr)
+                self.assertEqual(crashed.stderr.count("Traceback"), tracebacks, crashed.stderr)
+                self.assertIn("python -m tests.e2e: unexpected ", crashed.stderr)
         (checkout / "html_publish/__main__.py").write_text('print("bye")\n', encoding="utf-8")
         failed = recorded("e2e-failed")
         self.assertEqual(
@@ -1739,13 +1820,9 @@ def stop_process(process: subprocess.Popen[Any]) -> None:
 
 
 def isolated_environment(root: Path) -> dict[str, str]:
-    """This environment with XDG directories under `root` and no debug switches, so no user
-    config, state, or verbosity leaks into a command under test."""
-    environment = {
-        key: value
-        for key, value in ENVIRONMENT.items()
-        if not (key.startswith("HTML_PUBLISH") and key.endswith("_DEBUG"))
-    }
+    """ENVIRONMENT with XDG directories under `root`, so no user config or state leaks into a
+    command under test."""
+    environment = dict(ENVIRONMENT)
     for variable in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"):
         environment[variable] = str(root / variable.lower())
     return environment

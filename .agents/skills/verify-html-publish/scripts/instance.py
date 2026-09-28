@@ -362,6 +362,19 @@ def _command(args: argparse.Namespace) -> int:
 
 
 def _main(arguments: list[str]) -> int:
+    """Run one command. With --json, a failure or a signal still prints one JSON object."""
+    as_json = "--json" in command_line.before_separator(arguments)
+    try:
+        return _run(arguments, as_json)
+    except KeyboardInterrupt as error:
+        if not as_json:
+            raise
+        print(f"{PROG}: interrupted", file=sys.stderr)
+        _emit({"error": {"code": "interrupted", "message": "a signal stopped the command"}}, True)
+        return command_line.interruption_exit(error)
+
+
+def _run(arguments: list[str], as_json: bool) -> int:
     parser = _parser()
     try:
         args = command_line.parse(parser, arguments)
@@ -381,12 +394,21 @@ def _main(arguments: list[str]) -> int:
             if args.command in {"start", "sources"}
             else "server identity does not match or instance unavailable"
         )
-        print(f"{PROG}: {what}: {error}", file=sys.stderr)
         fix = NEXT.get(args.command)
-        print(
-            f"next: {PROG} {fix} {args.run_id}" if fix else f"next: {PROG} start <fresh-run-id>",
-            file=sys.stderr,
-        )
+        next_command = f"{PROG} {fix} {args.run_id}" if fix else f"{PROG} start <fresh-run-id>"
+        print(f"{PROG}: {what}: {error}", file=sys.stderr)
+        print(f"next: {next_command}", file=sys.stderr)
+        if as_json:
+            _emit(
+                {
+                    "error": {
+                        "code": "failed",
+                        "message": f"{what}: {error}",
+                        "next": next_command,
+                    }
+                },
+                True,
+            )
         return 1
 
 

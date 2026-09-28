@@ -1487,19 +1487,23 @@ def _cleanup(
     staging: PurePosixPath,
     deadline: Deadline,
     mode: ReportMode = "detail",
-) -> str | None:
+) -> tuple[str | None, int | None]:
+    """Remove incoming staging; return why cleanup failed, if it did, and the 130 or 143 exit
+    of a signal that stopped it, so the caller keeps its JSON handoff and exits for the signal."""
     command = shlex.join(["rm", "-rf", "--", str(staging)])
     log.info("remove staging %s on %s", staging, settings.host)
     try:
         result = _ssh(settings, command, deadline)
-    except (CommandExpired, KeyboardInterrupt):
-        return "The command deadline expired before cleanup completed"
+    except CommandExpired:
+        return "The command deadline expired before cleanup completed", None
+    except KeyboardInterrupt as error:
+        return "The caller cancelled cleanup", command_line.interruption_exit(error)
     except OSError as error:
-        return f"Cleanup could not start: {error}"
+        return f"Cleanup could not start: {error}", None
     _write_stderr(result.stderr, mode)
     if result.returncode != 0:
-        return f"Cleanup exited {result.returncode}"
-    return None
+        return f"Cleanup exited {result.returncode}", None
+    return None, None
 
 
 def _add_cleanup_warning(
@@ -1585,10 +1589,10 @@ def _run_artifact(
             def abandon(detail: str, exit_code: int) -> int:
                 """Report a transfer that failed before invocation, after removing staging."""
                 payload = _transfer_failure(settings, request, detail)
-                cleanup_error = _cleanup(settings, staging, deadline, request.report)
+                cleanup_error, cancelled = _cleanup(settings, staging, deadline, request.report)
                 if cleanup_error is not None:
                     payload = _add_cleanup_warning(payload, staging, cleanup_error)
-                return emit_json(payload, exit_code)
+                return emit_json(payload, cancelled or exit_code)
 
             mkdir = (
                 shlex.join(["umask", "077"]) + " && " + shlex.join(["mkdir", "--", str(staging)])
@@ -1643,11 +1647,13 @@ def _run_artifact(
                 remote_source,
             )
             payload = invocation.payload
+            exit_code = invocation.exit_code
             if invocation.cleanup_allowed:
-                cleanup_error = _cleanup(settings, staging, deadline, request.report)
+                cleanup_error, cancelled = _cleanup(settings, staging, deadline, request.report)
                 if cleanup_error is not None:
                     payload = _add_cleanup_warning(payload, staging, cleanup_error)
-            return emit_json(payload, invocation.exit_code)
+                exit_code = cancelled or exit_code
+            return emit_json(payload, exit_code)
     except (OSError, PublishError) as error:
         failure = (
             error.failure
@@ -1664,6 +1670,21 @@ def main(argv: list[str] | None = None) -> int:
 
 def _main(arguments: list[str]) -> int:
     parser = _parser("--json" in command_line.before_separator(arguments))
+    try:
+        return _run_main(parser, arguments)
+    except KeyboardInterrupt as error:
+        failure = Failure(
+            "interrupted",
+            "cancel",
+            "The caller cancelled the command before it reached the host",
+            "retry",
+        )
+        return emit_json(_usage_payload(arguments, failure), command_line.interruption_exit(error))
+
+
+def _run_main(parser: Parser, arguments: list[str]) -> int:
+    """Parse, then run one request. A signal before the request exists reaches `_main`, which
+    still writes one JSON handoff from the command line's own identity."""
     try:
         parsed = command_line.parse(parser, arguments)
         if parsed is None:

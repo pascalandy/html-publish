@@ -222,7 +222,8 @@ def requested_help(
     """The parser whose help `arguments` ask for, or None when they ask for none.
 
     `-h` or `--help` before `--` asks for the deepest command named so far, whatever else the
-    line holds. `help COMMAND...` asks for that command and rejects an unknown one.
+    line holds. `help COMMAND...` asks for that command and rejects an unknown one, unless the
+    line also holds -h or --help, which then shows the deepest known command on that path.
     """
     parsers, wants_help, words = _walk(root, arguments)
     help_command = _subcommands(root).get("help")
@@ -234,6 +235,8 @@ def requested_help(
     for word in words:
         children = _subcommands(target)
         if word not in children:
+            if wants_help:
+                return target
             raise UsageError(
                 f"argument command: invalid choice: {word!r} (choose from {', '.join(children)})"
                 if children

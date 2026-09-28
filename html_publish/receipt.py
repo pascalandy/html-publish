@@ -1607,6 +1607,14 @@ def reduce_result(receipt: Receipt, result: SavedResult) -> Classification:
         and _object(cast(object, verification_payload), "verification").get("revision") == requested
     )
     completion = _completion(result)
+    if result.exit_code in {130, 143}:
+        return Classification(
+            dataclasses.replace(
+                classification_receipt, last_observation=observation, completion=completion
+            ),
+            "uncertain",
+            "A signal stopped the publisher; inspect the target before retrying",
+        )
     qualifies_activation = (
         requested is not None and activated and active == requested and record_identity_matches
     )
