@@ -82,4 +82,4 @@ Rule 1 has no direct check, because no script can tell when a test was written. 
 
 ## Hooks
 
-Run `lefthook install` once per clone. Before each commit, lefthook runs `just check --fast`, which skips the two E2E rows. Before each push, it runs `just check`. A passing verdict prints nothing; `just check -v` streams every check. Both hooks check the working tree, including unstaged edits. The full verdict takes about 3 minutes, so give an agent's shell call a 15-minute timeout
+Run `lefthook install` once per clone. Before each commit, lefthook runs `just check --fast`, which skips the two E2E rows. Before each push, it runs `just check`. A passing verdict prints nothing; `just check -v` streams every check. A check that runs out of time gets SIGTERM, then SIGKILL 10 s later, and the E2E runner names the test it was running. Both hooks check the working tree, including unstaged edits. The full verdict takes about 3 minutes, so give an agent's shell call a 15-minute timeout

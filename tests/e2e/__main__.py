@@ -264,10 +264,12 @@ class RecordingRunner(unittest.TextTestRunner):
     def __init__(self, recorder: Recorder, stream: TextIO, verbosity: int) -> None:
         super().__init__(stream=stream, verbosity=verbosity)
         self.recorder = recorder
+        self.result: unittest.TextTestResult | None = None
 
     def _makeResult(self) -> unittest.TextTestResult:
         result = RecordingResult(self.stream, self.descriptions, self.verbosity)
         result.recorder = self.recorder
+        self.result = result
         return result
 
 
@@ -382,7 +384,18 @@ def run(*, verbose: bool) -> int:
         str(ROOT / "tests" / "e2e"), pattern="test_*.py", top_level_dir=str(ROOT)
     )
     report: TextIO = sys.stderr if verbose else io.StringIO()
-    result = RecordingRunner(recorder, report, verbosity=2 if verbose else 1).run(suite)
+    runner = RecordingRunner(recorder, report, verbosity=2 if verbose else 1)
+    try:
+        result = runner.run(suite)
+    except KeyboardInterrupt:
+        # A timed-out check stops the suite with a signal; say what had failed and what hung
+        if runner.result is not None:
+            runner.result.printErrors()
+        if isinstance(report, io.StringIO):
+            sys.stderr.write(report.getvalue())
+        if recorder.tests:
+            print(f"{PROG}: stopped during {list(recorder.tests)[-1]}", file=sys.stderr)
+        raise
     manifest = recorder.write(started_at, {"start": source_at_start, "end": fingerprint()})
     if not verbose and not result.wasSuccessful():
         sys.stderr.write(report.getvalue() if isinstance(report, io.StringIO) else "")

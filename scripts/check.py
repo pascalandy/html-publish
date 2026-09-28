@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import logging
 import os
@@ -62,8 +63,8 @@ def takes_verbosity(command: Command) -> bool:
 
 
 # Timeouts stay inside the CI job's 20 minutes so the runner, not the job, reports a hang and
-# kills its process group. The isolated and E2E rows take about 50 s and 2 min locally, and
-# about 2.5 times that on the macOS runner
+# kills its process group. The isolated and E2E rows take about 50 s and 3 min locally; the E2E
+# row takes about 6 min on the Linux runner and longer on the macOS one
 CHECKS = [
     Check("format", ((PYTHON, "-m", "ruff", "format", "--check", "."),)),
     Check("lint", ((PYTHON, "-m", "ruff", "check", "."),)),
@@ -79,7 +80,7 @@ CHECKS = [
         ((PYTHON, "-m", "unittest", "discover", "-s", "tests/isolated", "-t", "."),),
         timeout=240,
     ),
-    Check("e2e", ((PYTHON, "-m", "tests.e2e"),), fast=False, timeout=600),
+    Check("e2e", ((PYTHON, "-m", "tests.e2e"),), fast=False, timeout=900),
     Check("e2e-artifacts", (script("check_e2e_artifacts"),), fast=False),
 ]
 
@@ -99,8 +100,15 @@ def execute(command: Command, timeout: int, verbose: bool) -> tuple[int, str]:
     try:
         output, _ = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGKILL)
-        output, _ = process.communicate()
+        # SIGTERM first, so the command can say where it hung before its group is killed
+        os.killpg(process.pid, signal.SIGTERM)
+        try:
+            output, _ = process.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            output, _ = process.communicate()
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
         return 124, (output or "") + f"\ntimed out after {timeout} s\n"
     except BaseException:
         os.killpg(process.pid, signal.SIGKILL)

@@ -1548,6 +1548,17 @@ class CliTest(unittest.TestCase):
         result = subprocess.run(command, capture_output=True, text=True)
         self.assertEqual(result.stdout, "hi\\n")
 """
+PARKED_TEST = (
+    PARKING
+    + """\
+import unittest
+
+
+class ParkedTest(unittest.TestCase):
+    def test_parks(self) -> None:
+        pause_when_ready("HP_PARK_READY")
+"""
+)
 FAILING_REMOTE = """\
 import json
 import sys
@@ -1627,31 +1638,28 @@ class OtherScriptsContractTest(unittest.TestCase):
 
     def test_bench_scripts(self) -> None:
         codes = "exit codes: 0 ok, 1 {}, 2 bad usage, 130 interrupted, 143 terminated"
-        for name, failure in (
-            ("bench_capture", "a timed plan failed"),
-            ("bench_publish", "a timed publish failed"),
+        for name, failure, key, step in (
+            ("bench_capture", "a timed plan failed", "results", '{"files": 1, '),
+            ("bench_publish", "a timed publish failed", "seconds", "run 0 published in "),
         ):
             command = (PYTHON, f"scripts/{name}.py")
             with self.subTest(script=name):
                 self.assert_help(command, codes.format(failure))
                 self.assert_usage(command, "--cli", self.cli, "--reps", "0")
                 self.assert_usage(command, "--reps", "1")
-                levels: dict[tuple[str, ...], subprocess.CompletedProcess[str]] = {}
-                for index, level in enumerate(((), ("-v",), ("--debug",))):
-                    report = self.root / f"{name}-{index}.json"
-                    result = self.run_command(
-                        *command, "--cli", self.cli, "--reps", "1", "-o", str(report), *level
-                    )
-                    levels[level] = result
-                    self.assertEqual((result.returncode, result.stdout), (0, ""), result.stderr)
-                    self.assertIn(
-                        "results" if name == "bench_capture" else "seconds",
-                        json_object(report.read_text()),
-                    )
-                    self.assertNotIn("Traceback", result.stderr)
-                self.assertEqual(levels[()].stderr, "")
-                self.assertTrue(levels[("-v",)].stderr)
-                self.assertIn(" finished in ", levels[("--debug",)].stderr)
+                quiet = self.run_command(*command, "--cli", self.cli, "--reps", "1")
+                self.assertEqual((quiet.returncode, quiet.stderr), (0, ""))
+                self.assertIn(key, json_object(quiet.stdout))
+                report = self.root / f"{name}.json"
+                debug = self.run_command(
+                    *command, "--cli", self.cli, "--reps", "1", "-o", str(report), "--debug"
+                )
+                self.assertEqual((debug.returncode, debug.stdout), (0, ""), debug.stderr)
+                self.assertIn(key, json_object(report.read_text()))
+                # --debug adds timings to the step lines -v prints
+                self.assertIn(step, debug.stderr)
+                self.assertIn(" finished in ", debug.stderr)
+                self.assertNotIn("Traceback", debug.stderr)
                 failing = self.root / "failing-cli"
                 failing.write_text("#!/bin/sh\necho 'refused' >&2\nexit 1\n")
                 failing.chmod(0o755)
@@ -1664,11 +1672,6 @@ class OtherScriptsContractTest(unittest.TestCase):
                     )
                     self.assertEqual((returncode, stdout), (code, b""), stderr)
                     self.assertNotIn(b"Traceback", stderr)
-        stdout_report = self.run_command(
-            PYTHON, "scripts/bench_capture.py", "--cli", self.cli, "--reps", "1"
-        )
-        self.assertEqual((stdout_report.returncode, stdout_report.stderr), (0, ""))
-        self.assertIn("results", json_object(stdout_report.stdout))
 
     def test_verify_om1_mvp(self) -> None:
         command = (PYTHON, "scripts/verify_om1_mvp.py")
@@ -1851,6 +1854,29 @@ class OtherScriptsContractTest(unittest.TestCase):
                 )
                 self.assertEqual((returncode, stdout), (code, b""), stderr)
                 self.assertNotIn(b"Traceback", stderr)
+        (checkout / "tests/e2e/test_park.py").write_text(PARKED_TEST, encoding="utf-8")
+        ready = self.root / "parked.ready"
+        parked = subprocess.Popen(
+            command,
+            cwd=checkout,
+            env={
+                **ENVIRONMENT,
+                "HTML_PUBLISH_E2E_ROOT": str(runs),
+                "HTML_PUBLISH_E2E_RUN_ID": "e2e-parked",
+                "HP_PARK_READY": str(ready),
+            },
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.addCleanup(stop_process, parked)
+        os.kill(wait_for_ready(parked, ready), signal.SIGTERM)
+        stdout, stderr = parked.communicate(timeout=60)
+        self.assertEqual((parked.returncode, stdout), (143, b""), stderr)
+        self.assertIn(b"FAIL: test_child_prints", stderr)
+        self.assertIn(
+            b"python -m tests.e2e: stopped during tests.e2e.test_park.ParkedTest.test_parks\n",
+            stderr,
+        )
 
     def test_systemd_proof_help_and_usage(self) -> None:
         # A CI runner sets RUNNER_TEMP; an empty one keeps every call here out of the real
