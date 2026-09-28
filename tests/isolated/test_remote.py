@@ -1124,7 +1124,8 @@ class RemoteCliTest(unittest.TestCase):
                 )
                 self.assert_no_live_children()
                 payload = json.loads(result.stdout)
-                self.assertEqual(result.returncode, 0 if stage == "cleanup" else 1, result.stderr)
+                expected_code = {"cleanup": 0, "invoke": 1}.get(stage, 75)
+                self.assertEqual(result.returncode, expected_code, result.stderr)
                 self.assertEqual(
                     payload["effects"],
                     {
@@ -1165,7 +1166,7 @@ class RemoteCliTest(unittest.TestCase):
             self.assertTrue(self.pids.exists())
             process.send_signal(signal.SIGTERM)
             stdout, stderr = process.communicate(timeout=3)
-        self.assertEqual(process.returncode, 1, stderr)
+        self.assertEqual(process.returncode, 143, stderr)
         self.assertEqual(
             json.loads(stdout)["effects"], {"archive_advanced": None, "activated": None}
         )

@@ -576,15 +576,34 @@ os.execv(sys.executable, [sys.executable, "-m", "html_publish", *sys.argv[1:]])
 """
 SSH_SHIM = """\
 import os
+import signal
 import sys
+from pathlib import Path
 
-os.execvp("sh", ["sh", "-c", sys.argv[-1]])
+command = sys.argv[-1]
+invoke = " --json " in command
+if os.environ.get("HP_SSH_LOG"):
+    with open(os.environ["HP_SSH_LOG"], "a") as log:
+        log.write(command + "\\n")
+failing = os.environ.get("HP_SSH_FAIL")
+if (failing == "setup" and "mkdir" in command) or (failing == "invoke" and invoke):
+    sys.exit(255)
+if os.environ.get("HP_SSH_BLOCK") and invoke:
+    ready = Path(os.environ["HP_SSH_BLOCK"])
+    ready.with_suffix(".tmp").write_text(str(os.getpid()))
+    ready.with_suffix(".tmp").rename(ready)
+    while True:
+        signal.pause()
+os.execvp("sh", ["sh", "-c", command])
 """
 SCP_SHIM = """\
+import os
 import shutil
 import sys
 from pathlib import Path
 
+if os.environ.get("HP_SCP_FAIL"):
+    sys.exit(1)
 source = Path(sys.argv[-2])
 destination = Path(sys.argv[-1].split(":", 1)[1]) / source.name
 if source.is_dir():
@@ -594,8 +613,8 @@ else:
 """
 
 
-class PublisherContractTest(unittest.TestCase):
-    """html-publish root operations, artifact commands, and host serve."""
+class PublisherFixture(unittest.TestCase):
+    """A publisher config and archive whose pages a loopback HTTP server delivers."""
 
     def setUp(self) -> None:
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="hp-publisher-")))
@@ -712,6 +731,10 @@ class PublisherContractTest(unittest.TestCase):
             "--target",
             self.base_url,
         ]
+
+
+class PublisherContractTest(PublisherFixture):
+    """html-publish root operations, artifact commands, and host serve."""
 
     def test_publisher_exit_codes(self) -> None:
         published = self.cli(*self.publish_arguments())
@@ -997,6 +1020,151 @@ class PublisherContractTest(unittest.TestCase):
         self.assertEqual(error["code"], "interrupted")
         self.assertEqual(cast(dict[str, object], error["next_action"])["kind"], "inspect")
         self.assertEqual(payload["effects"], {"archive_advanced": None, "activated": None})
+
+
+class RemoteContractTest(PublisherFixture):
+    """html-publish-remote's own transport outcomes, through ssh and scp shims on PATH."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        shims = self.root / "shims"
+        shims.mkdir()
+        for name, body in (("ssh", SSH_SHIM), ("scp", SCP_SHIM)):
+            (shims / name).write_text(f"#!{PYTHON}\n{body}", encoding="utf-8")
+            (shims / name).chmod(0o755)
+        host = self.root / "host-publish"
+        host.write_text(f'#!/bin/sh\nexec {PYTHON} -m html_publish "$@"\n', encoding="utf-8")
+        host.chmod(0o755)
+        (self.root / "incoming").mkdir()
+        self.env = {
+            **self.env,
+            "PATH": f"{shims}{os.pathsep}{self.env['PATH']}",
+            "HP_SSH_LOG": str(self.root / "ssh.log"),
+        }
+        self.destination = [
+            "--host",
+            "fixture",
+            "--remote-executable",
+            str(host),
+            "--remote-config",
+            str(self.config),
+            "--target",
+            self.base_url,
+            "--incoming-root",
+            str(self.root / "incoming"),
+        ]
+        published = self.cli(*self.publish_arguments())
+        self.assertEqual(published.returncode, 0, published.stderr)
+
+    def remote(
+        self, *arguments: str, env: Mapping[str, str] | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [PYTHON, "-m", "html_publish.remote", *self.destination, *arguments],
+            cwd=self.root,
+            env={**self.env, **(env or {})},
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+    def test_remote_exit_codes(self) -> None:
+        update = self.root / "update.html"
+        update.write_text("<!doctype html><h1>update</h1>\n", encoding="utf-8")
+        publish = ("publish", "--name", "page", "--source", str(update))
+        cases: list[tuple[str, tuple[str, ...], Mapping[str, str], int, str | None]] = [
+            ("success", ("status", "--name", "page"), {}, 0, None),
+            ("host failure", ("verify", "--name", "missing"), {}, 1, None),
+            ("scp failure", publish, {"HP_SCP_FAIL": "1"}, 1, "transport_failure"),
+            ("ssh 255 on setup", publish, {"HP_SSH_FAIL": "setup"}, 75, "transport_failure"),
+            (
+                "ssh 255 on a read-only invocation",
+                ("status", "--name", "page"),
+                {"HP_SSH_FAIL": "invoke"},
+                75,
+                "transport_failure",
+            ),
+            (
+                "deadline before the host command",
+                ("status", "--name", "page", "--command-seconds", "1e-9"),
+                {},
+                75,
+                "command_timeout",
+            ),
+            (
+                "ssh 255 on a mutation",
+                publish,
+                {"HP_SSH_FAIL": "invoke"},
+                1,
+                "publication_outcome_unknown",
+            ),
+        ]
+        for label, arguments, env, code, error_code in cases:
+            with self.subTest(label):
+                result = self.remote(*arguments, env=env)
+                self.assertEqual(result.returncode, code, result.stdout + result.stderr)
+                payload = json_object(result.stdout)
+                if code == 0:
+                    self.assertEqual(result.stderr, "")
+                if error_code is not None:
+                    self.assertEqual(handoff_error(result)["code"], error_code)
+                if code == 75:
+                    self.assertEqual(
+                        payload["effects"], {"archive_advanced": False, "activated": False}
+                    )
+
+    def test_a_local_cancel_keeps_the_json_handoff(self) -> None:
+        for signal_number, code in ((signal.SIGINT, 130), (signal.SIGTERM, 143)):
+            with self.subTest(signal=signal_number.name):
+                ready = self.root / f"ssh-{signal_number.name}.ready"
+                process = subprocess.Popen(
+                    [
+                        PYTHON,
+                        "-m",
+                        "html_publish.remote",
+                        *self.destination,
+                        "status",
+                        "--name",
+                        "page",
+                    ],
+                    cwd=self.root,
+                    env={**self.env, "HP_SSH_BLOCK": str(ready)},
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                self.addCleanup(stop_bytes, process)
+                transport = wait_for_ready(process, ready)
+                process.send_signal(signal_number)
+                stdout, stderr = process.communicate(timeout=30)
+                self.assertEqual(process.returncode, code, stderr)
+                self.assertNotIn(b"Traceback", stderr)
+                payload = json_object(stdout.decode())
+                self.assertEqual(handoff_error(stdout)["code"], "transport_failure")
+                self.assertEqual(
+                    cast(dict[str, object], payload["transport"])["detail"],
+                    "The caller cancelled the invocation",
+                )
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(transport, 0)
+
+    def test_verbosity_changes_only_stderr_and_never_reaches_the_host(self) -> None:
+        levels = {
+            level: self.remote("status", "--name", "page", *level)
+            for level in ((), ("-v",), ("--debug",))
+        }
+        default = levels[()]
+        self.assertEqual((default.returncode, default.stderr), (0, ""))
+        for level, result in levels.items():
+            with self.subTest(level=level):
+                self.assertEqual((result.returncode, result.stdout), (0, default.stdout))
+        self.assertIn("html-publish-remote: run status on fixture\n", levels[("-v",)].stderr)
+        self.assertNotRegex(levels[("-v",)].stderr, r"\+\d+\.\d{3}s")
+        self.assertRegex(levels[("--debug",)].stderr, r"\+\d+\.\d{3}s run ssh -o BatchMode=yes")
+        forwarded = (self.root / "ssh.log").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(forwarded), 3)
+        for command in forwarded:
+            self.assertNotIn(" -v", command)
+            self.assertNotIn("--debug", command)
 
 
 @contextlib.contextmanager

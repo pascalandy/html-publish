@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import logging
 import math
 import os
 import re
@@ -11,12 +12,12 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from types import FrameType
-from typing import Literal, NoReturn, cast
+from typing import Literal, cast
 from urllib.parse import urlparse
 
 from html_publish import __version__, command_line
@@ -54,6 +55,9 @@ REMOTE_PATH_PATTERN = re.compile(r"/[A-Za-z0-9._/-]+\Z")
 
 ExitCode = Literal[0, 1, 2, 75]
 HOST_SIGNAL_EXITS = frozenset({130, 143})
+TEMPORARY = 75
+
+log = logging.getLogger("html_publish.remote")
 
 
 class CommandExpired(Exception):
@@ -152,7 +156,7 @@ Request = ArtifactRequest | StatusRequest | VerifyRequest | HistoryRequest | Res
 @dataclass(frozen=True)
 class Invocation:
     payload: dict[str, object]
-    exit_code: ExitCode
+    exit_code: int
     cleanup_allowed: bool
 
 
@@ -769,20 +773,23 @@ def _terminate_group(process: subprocess.Popen[bytes]) -> None:
 
 
 def _run(argv: list[str], deadline: Deadline) -> subprocess.CompletedProcess[bytes]:
-    def cancel(_signum: int, _frame: FrameType | None) -> NoReturn:
-        raise KeyboardInterrupt
+    """Run one transport command in its own process group within `deadline`.
 
+    A signal reaches this process as command_line.Interrupted; the group is killed and the
+    interruption propagates, so each caller keeps its JSON handoff and exits 130 or 143.
+    """
     try:
         timeout = deadline.remaining()
     except PublishError as error:
         raise CommandExpired from error
+    log.debug("run %s", shlex.join(argv))
+    started = time.monotonic()
     process = subprocess.Popen(
         argv,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         start_new_session=True,
     )
-    previous = signal.signal(signal.SIGTERM, cancel)
     try:
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as error:
@@ -791,10 +798,13 @@ def _run(argv: list[str], deadline: Deadline) -> subprocess.CompletedProcess[byt
     except BaseException:
         _terminate_group(process)
         raise
-    finally:
-        signal.signal(signal.SIGTERM, previous)
     _terminate_group(process)
+    log.debug("%s exit %d after %.3f s", argv[0], process.returncode, time.monotonic() - started)
     return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
+
+
+def _cancel_exit(error: KeyboardInterrupt) -> int:
+    return error.exit_code if isinstance(error, command_line.Interrupted) else 130
 
 
 def _write_stderr(data: bytes, mode: ReportMode = "detail") -> None:
@@ -1377,6 +1387,8 @@ def _invocation_loss(
     staging: PurePosixPath | None,
     detail: str,
 ) -> Invocation:
+    """SSH lost the host result. A lost mutation has unknown effects and exits 1; a lost
+    read-only result changed nothing, so rerunning is safe and the exit is 75."""
     mutating = request.operation in {"publish", "restore"}
     failure = Failure(
         "publication_outcome_unknown" if mutating else "transport_failure",
@@ -1392,7 +1404,7 @@ def _invocation_loss(
         Effects(None, None) if mutating else Effects(),
         details=_retained_transport(staging, detail),
     )
-    return Invocation(payload, 1, False)
+    return Invocation(payload, 1 if mutating else TEMPORARY, False)
 
 
 def _protocol_failure(
@@ -1431,15 +1443,17 @@ def _invoke(
     remote_source: PurePosixPath | None = None,
 ) -> Invocation:
     remote_command = shlex.join(_remote_arguments(settings, request, remote_source))
+    log.info("run %s on %s", request.operation, settings.host)
     try:
         result = _ssh(settings, remote_command, deadline)
     except CommandExpired as error:
         if not error.started:
             failure = Failure("command_timeout", "invoke", str(error), "retry")
-            return Invocation(_failure_payload(settings, request, failure), 1, True)
+            return Invocation(_failure_payload(settings, request, failure), TEMPORARY, True)
         return _invocation_loss(settings, request, staging, "The command deadline expired")
-    except KeyboardInterrupt:
-        return _invocation_loss(settings, request, staging, "The caller cancelled the invocation")
+    except KeyboardInterrupt as error:
+        loss = _invocation_loss(settings, request, staging, "The caller cancelled the invocation")
+        return Invocation(loss.payload, _cancel_exit(error), loss.cleanup_allowed)
     except OSError as error:
         failure = Failure(
             "transport_failure",
@@ -1450,6 +1464,7 @@ def _invoke(
         )
         return Invocation(_failure_payload(settings, request, failure), 1, True)
     _write_stderr(result.stderr, request.report)
+    log.info("host exited %d", result.returncode)
     if result.returncode == 255:
         return _invocation_loss(settings, request, staging, "SSH exited 255")
     try:
@@ -1477,6 +1492,7 @@ def _cleanup(
     mode: ReportMode = "detail",
 ) -> str | None:
     command = shlex.join(["rm", "-rf", "--", str(staging)])
+    log.info("remove staging %s on %s", staging, settings.host)
     try:
         result = _ssh(settings, command, deadline)
     except (CommandExpired, KeyboardInterrupt):
@@ -1566,26 +1582,37 @@ def _run_artifact(
                     remote_source /= request.source.name
             else:
                 captured = capture(request.source, workspace, "sha1", limits, deadline)
+            log.info("captured %s", request.source)
             transport_deadline = _transport_deadline(deadline, settings.command_seconds)
+
+            def abandon(detail: str, exit_code: int) -> int:
+                """Report a transfer that failed before invocation, after removing staging."""
+                payload = _transfer_failure(settings, request, detail)
+                cleanup_error = _cleanup(settings, staging, deadline, request.report)
+                if cleanup_error is not None:
+                    payload = _add_cleanup_warning(payload, staging, cleanup_error)
+                return emit_json(payload, exit_code)
+
             mkdir = (
                 shlex.join(["umask", "077"]) + " && " + shlex.join(["mkdir", "--", str(staging)])
             )
+            log.info("create staging %s on %s", staging, settings.host)
             try:
                 setup = _ssh(settings, mkdir, transport_deadline)
-            except (CommandExpired, OSError, KeyboardInterrupt) as error:
-                payload = _transfer_failure(settings, request, str(error))
-                cleanup_error = _cleanup(settings, staging, deadline, request.report)
-                if cleanup_error is not None:
-                    payload = _add_cleanup_warning(payload, staging, cleanup_error)
-                return emit_json(payload, 1)
+            except CommandExpired as error:
+                return abandon(str(error), TEMPORARY)
+            except OSError as error:
+                return abandon(str(error), 1)
+            except KeyboardInterrupt as error:
+                return abandon("The caller cancelled the transfer", _cancel_exit(error))
             _write_stderr(setup.stderr, request.report)
             if setup.returncode != 0:
-                payload = _transfer_failure(settings, request, f"setup exited {setup.returncode}")
-                cleanup_error = _cleanup(settings, staging, deadline, request.report)
-                if cleanup_error is not None:
-                    payload = _add_cleanup_warning(payload, staging, cleanup_error)
-                return emit_json(payload, 1)
+                return abandon(
+                    f"setup exited {setup.returncode}",
+                    TEMPORARY if setup.returncode == 255 else 1,
+                )
             destination = f"{settings.host}:{staging}/"
+            log.info("upload %s to %s", captured.root, destination)
             try:
                 transfer = _run(
                     [
@@ -1598,19 +1625,15 @@ def _run_artifact(
                     ],
                     transport_deadline,
                 )
-            except (CommandExpired, PublishError, OSError, KeyboardInterrupt) as error:
-                payload = _transfer_failure(settings, request, str(error))
-                cleanup_error = _cleanup(settings, staging, deadline, request.report)
-                if cleanup_error is not None:
-                    payload = _add_cleanup_warning(payload, staging, cleanup_error)
-                return emit_json(payload, 1)
+            except (CommandExpired, PublishError) as error:
+                return abandon(str(error) or "The command deadline expired", TEMPORARY)
+            except OSError as error:
+                return abandon(str(error), 1)
+            except KeyboardInterrupt as error:
+                return abandon("The caller cancelled the transfer", _cancel_exit(error))
             _write_stderr(transfer.stderr, request.report)
             if transfer.returncode != 0:
-                payload = _transfer_failure(settings, request, f"scp exited {transfer.returncode}")
-                cleanup_error = _cleanup(settings, staging, deadline, request.report)
-                if cleanup_error is not None:
-                    payload = _add_cleanup_warning(payload, staging, cleanup_error)
-                return emit_json(payload, 1)
+                return abandon(f"scp exited {transfer.returncode}", 1)
             invocation = _invoke(
                 settings,
                 request,
@@ -1661,9 +1684,18 @@ def _main(arguments: list[str]) -> int:
     except PublishError as error:
         return emit_json(_usage_payload(arguments, error.failure), 1)
     deadline = Deadline.start(settings.command_seconds)
-    if isinstance(request, ArtifactRequest):
-        return _run_artifact(settings, request, deadline)
-    invocation = _invoke(settings, request, deadline)
+    try:
+        if isinstance(request, ArtifactRequest):
+            return _run_artifact(settings, request, deadline)
+        invocation = _invoke(settings, request, deadline)
+    except KeyboardInterrupt as error:
+        failure = Failure(
+            "interrupted",
+            "cancel",
+            "The caller cancelled the command before it reached the host",
+            "retry",
+        )
+        return emit_json(_failure_payload(settings, request, failure), _cancel_exit(error))
     return emit_json(invocation.payload, invocation.exit_code)
 
 

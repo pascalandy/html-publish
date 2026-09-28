@@ -27,7 +27,7 @@ _CONDITIONAL_HEADERS = (
     "If-Range",
     "If-Unmodified-Since",
 )
-log = logging.getLogger(__name__)
+log = logging.getLogger("html_publish.server")
 _HEALTH_PATH = "/_html-publish-health"
 _HEALTH_BODY = b"ok\n"
 
