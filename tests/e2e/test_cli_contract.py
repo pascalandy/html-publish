@@ -1408,22 +1408,31 @@ class OtherScriptsContractTest(unittest.TestCase):
         stdout, stderr = process.communicate(timeout=60)
         return process.returncode, stdout, stderr, blocked
 
-    def assert_help(self, command: Sequence[str], exit_codes: str, *, verbose: bool = True) -> str:
-        reference = self.run_command(*command, "--help")
+    def assert_help(
+        self,
+        command: Sequence[str],
+        exit_codes: str,
+        *,
+        verbose: bool = True,
+        env: Mapping[str, str] | None = None,
+    ) -> str:
+        reference = self.run_command(*command, "--help", env=env)
         self.assertEqual((reference.returncode, reference.stderr), (0, ""))
         self.assertTrue(reference.stdout.startswith("usage: "), reference.stdout)
         self.assertTrue(2 <= len(examples_in(reference.stdout)) <= 5, reference.stdout)
         self.assertIn(exit_codes, " ".join(reference.stdout.split()))
         for arguments in (("-h",), ("--bogus", "--help"), *((("-vh",),) if verbose else ())):
             with self.subTest(command=command[-1], arguments=arguments):
-                result = self.run_command(*command, *arguments)
+                result = self.run_command(*command, *arguments, env=env)
                 self.assertEqual(
                     (result.returncode, result.stdout, result.stderr), (0, reference.stdout, "")
                 )
         return reference.stdout
 
-    def assert_usage(self, command: Sequence[str], *arguments: str) -> str:
-        result = self.run_command(*command, *arguments)
+    def assert_usage(
+        self, command: Sequence[str], *arguments: str, env: Mapping[str, str] | None = None
+    ) -> str:
+        result = self.run_command(*command, *arguments, env=env)
         self.assertEqual((result.returncode, result.stdout), (2, ""), result.stderr)
         lines = result.stderr.splitlines()
         self.assertTrue(lines[0].startswith("usage: "), result.stderr)
@@ -1635,16 +1644,19 @@ class OtherScriptsContractTest(unittest.TestCase):
                 self.assertNotIn(b"Traceback", stderr)
 
     def test_systemd_proof_help_and_usage(self) -> None:
-        command = ("bash", SYSTEMD)
+        # A CI runner sets RUNNER_TEMP; an empty one keeps every call here out of the real
+        # stages, which create an account with sudo
+        command, runner = ("bash", SYSTEMD), {"RUNNER_TEMP": ""}
         self.assert_help(
             command,
             "exit codes: 0 ok, 1 a stage failed or cleanup refused (result.txt keeps the raw "
             "code), 2 bad usage, 130 interrupted, 143 terminated",
+            env=runner,
         )
-        self.assert_usage(command)
-        self.assert_usage(command, "--bogus", "wheel", "uv")
-        self.assert_usage(command, "--", "--help")
-        missing = self.assert_usage(command, "wheel.whl", "uv")
+        self.assert_usage(command, env=runner)
+        self.assert_usage(command, "--bogus", "wheel", "uv", env=runner)
+        self.assert_usage(command, "--", "--help", env=runner)
+        missing = self.assert_usage(command, "wheel.whl", "uv", env=runner)
         self.assertIn("RUNNER_TEMP must name the directory for evidence", missing)
 
 
