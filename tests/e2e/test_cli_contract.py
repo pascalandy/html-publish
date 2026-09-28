@@ -1389,6 +1389,331 @@ class DeployContractTest(unittest.TestCase):
         self.assertRegex(debug.stderr, r"\+\d+\.\d{3}s run tailscale serve status --json\n")
 
 
+RUNNER_TEST = """\
+import subprocess
+import sys
+import unittest
+
+
+class CliTest(unittest.TestCase):
+    def test_child_prints(self) -> None:
+        command = [sys.executable, "-m", "html_publish"]
+        result = subprocess.run(command, capture_output=True, text=True)
+        self.assertEqual(result.stdout, "hi\\n")
+"""
+FAILING_REMOTE = """\
+import json
+import sys
+
+print(json.dumps({"outcome": "error", "error": {"code": "%s"}}))
+sys.exit(%d)
+"""
+SLEEPING_REMOTE = """\
+import os
+import signal
+from pathlib import Path
+
+ready = Path(os.environ["HP_CONTRACT_READY"])
+ready.with_suffix(".tmp").write_text(str(os.getpid()))
+ready.with_suffix(".tmp").rename(ready)
+while True:
+    signal.pause()
+"""
+INSTANCE = ROOT / ".agents/skills/verify-html-publish/scripts/instance.sh"
+SYSTEMD = "scripts/verify-host-systemd.sh"
+
+
+class OtherScriptsContractTest(unittest.TestCase):
+    """The bench scripts, verify_om1_mvp, instance.sh, the E2E runner, and the systemd proof."""
+
+    def setUp(self) -> None:
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="hp-scripts-")))
+        self.hook = self.root / "hook"
+        self.hook.mkdir()
+        (self.hook / "sitecustomize.py").write_text(BLOCK_HOOK, encoding="utf-8")
+        self.cli = str(Path(PYTHON).with_name("html-publish"))
+
+    def run_command(
+        self, *command: str, env: Mapping[str, str] | None = None, cwd: Path = ROOT
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            list(command),
+            cwd=cwd,
+            env={**ENVIRONMENT, **(env or {})},
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+
+    def interrupt(
+        self,
+        command: Sequence[str],
+        target: str,
+        signal_number: signal.Signals,
+        *,
+        cwd: Path = ROOT,
+        env: Mapping[str, str] | None = None,
+    ) -> tuple[int, bytes, bytes, int]:
+        """Run `command`, block `target` after it parses, signal it, and return
+        (exit code, stdout, stderr, blocked PID)."""
+        ready = self.root / f"ready-{time.monotonic_ns()}"
+        process = subprocess.Popen(
+            list(command),
+            cwd=cwd,
+            env={
+                **ENVIRONMENT,
+                **(env or {}),
+                "PYTHONPATH": str(self.hook),
+                "HP_CONTRACT_BLOCK": target,
+                "HP_CONTRACT_READY": str(ready),
+            },
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.addCleanup(stop_bytes, process)
+        blocked = wait_for_ready(process, ready)
+        os.kill(blocked, signal_number)
+        stdout, stderr = process.communicate(timeout=60)
+        return process.returncode, stdout, stderr, blocked
+
+    def assert_help(self, command: Sequence[str], exit_codes: str, *, verbose: bool = True) -> str:
+        reference = self.run_command(*command, "--help")
+        self.assertEqual((reference.returncode, reference.stderr), (0, ""))
+        self.assertTrue(reference.stdout.startswith("usage: "), reference.stdout)
+        self.assertTrue(2 <= len(examples_in(reference.stdout)) <= 5, reference.stdout)
+        self.assertIn(exit_codes, " ".join(reference.stdout.split()))
+        for arguments in (("-h",), ("--bogus", "--help"), *((("-vh",),) if verbose else ())):
+            with self.subTest(command=command[-1], arguments=arguments):
+                result = self.run_command(*command, *arguments)
+                self.assertEqual(
+                    (result.returncode, result.stdout, result.stderr), (0, reference.stdout, "")
+                )
+        return reference.stdout
+
+    def assert_usage(self, command: Sequence[str], *arguments: str) -> str:
+        result = self.run_command(*command, *arguments)
+        self.assertEqual((result.returncode, result.stdout), (2, ""), result.stderr)
+        lines = result.stderr.splitlines()
+        self.assertTrue(lines[0].startswith("usage: "), result.stderr)
+        self.assertRegex(lines[-1], r"^run '.+ --help' for details$")
+        return result.stderr
+
+    def test_bench_scripts(self) -> None:
+        codes = "exit codes: 0 ok, 1 {}, 2 bad usage, 130 interrupted, 143 terminated"
+        for name, failure in (
+            ("bench_capture", "a timed plan failed"),
+            ("bench_publish", "a timed publish failed"),
+        ):
+            command = (PYTHON, f"scripts/{name}.py")
+            with self.subTest(script=name):
+                self.assert_help(command, codes.format(failure))
+                self.assert_usage(command, "--cli", self.cli, "--reps", "0")
+                self.assert_usage(command, "--reps", "1")
+                report = self.root / f"{name}.json"
+                levels = {
+                    level: self.run_command(
+                        *command, "--cli", self.cli, "--reps", "1", "-o", str(report), *level
+                    )
+                    for level in ((), ("-v",), ("--debug",))
+                }
+                for result in levels.values():
+                    self.assertEqual((result.returncode, result.stdout), (0, ""), result.stderr)
+                    self.assertIsInstance(json_object(report.read_text()), dict)
+                    self.assertNotIn("Traceback", result.stderr)
+                self.assertEqual(levels[()].stderr, "")
+                self.assertTrue(levels[("-v",)].stderr)
+                self.assertIn(" finished in ", levels[("--debug",)].stderr)
+                failing = self.root / "failing-cli"
+                failing.write_text("#!/bin/sh\necho 'refused' >&2\nexit 1\n")
+                failing.chmod(0o755)
+                failed = self.run_command(*command, "--cli", str(failing), "--reps", "1")
+                self.assertEqual((failed.returncode, failed.stdout), (1, ""))
+                self.assertIn("refused", failed.stderr)
+                for signal_number, code in ((signal.SIGINT, 130), (signal.SIGTERM, 143)):
+                    returncode, stdout, stderr, _ = self.interrupt(
+                        [*command, "--cli", self.cli], f"scripts/{name}.py", signal_number
+                    )
+                    self.assertEqual((returncode, stdout), (code, b""), stderr)
+                    self.assertNotIn(b"Traceback", stderr)
+        stdout_report = self.run_command(
+            PYTHON, "scripts/bench_capture.py", "--cli", self.cli, "--reps", "1"
+        )
+        self.assertEqual((stdout_report.returncode, stdout_report.stderr), (0, ""))
+        self.assertIn("results", json_object(stdout_report.stdout))
+
+    def test_verify_om1_mvp(self) -> None:
+        command = (PYTHON, "scripts/verify_om1_mvp.py")
+        self.assert_help(
+            command,
+            "exit codes: 0 ok, 1 the verification failed, 2 bad usage, "
+            "75 a remote step reported a temporary failure, 130 interrupted, 143 terminated",
+        )
+        self.assert_usage(command, "--timeout", "0")
+        self.assert_usage(command, "--remote-command", "")
+        remotes: dict[str, str] = {}
+        for label, code, exit_code in (
+            ("failing", "status_failed", 1),
+            ("busy", "lock_timeout", 75),
+        ):
+            remote = self.root / f"{label}-remote.py"
+            remote.write_text(FAILING_REMOTE % (code, exit_code), encoding="utf-8")
+            remotes[label] = f"{PYTHON} {remote}"
+        levels = {
+            level: self.run_command(*command, "--remote-command", remotes["failing"], *level)
+            for level in ((), ("-v",), ("--debug",))
+        }
+        for result in levels.values():
+            self.assertEqual((result.returncode, result.stdout), (1, ""), result.stderr)
+        self.assertEqual(
+            levels[()].stderr,
+            "error: status-initial failed with status_failed (exit 1)\n",
+        )
+        self.assertIn("status-initial: status --name om1-deployment-mvp\n", levels[("-v",)].stderr)
+        self.assertRegex(levels[("--debug",)].stderr, r"status-initial exit 1 after \d+\.\d{3} s\n")
+        busy = self.run_command(*command, "--remote-command", remotes["busy"])
+        self.assertEqual((busy.returncode, busy.stdout), (75, ""), busy.stderr)
+        self.assertIn("status-initial reported lock_timeout (exit 75)", busy.stderr)
+        sleeping = self.root / "sleeping-remote.py"
+        sleeping.write_text(SLEEPING_REMOTE, encoding="utf-8")
+        for signal_number, code in ((signal.SIGINT, 130), (signal.SIGTERM, 143)):
+            with self.subTest(signal=signal_number.name):
+                ready = self.root / f"remote-{signal_number.name}.ready"
+                process = subprocess.Popen(
+                    [*command, "--remote-command", f"{PYTHON} {sleeping}"],
+                    cwd=ROOT,
+                    env={**ENVIRONMENT, "HP_CONTRACT_READY": str(ready)},
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                self.addCleanup(stop_bytes, process)
+                remote = wait_for_ready(process, ready)
+                process.send_signal(signal_number)
+                stdout, stderr = process.communicate(timeout=60)
+                self.assertEqual((process.returncode, stdout), (code, b""), stderr)
+                self.assertNotIn(b"Traceback", stderr)
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(remote, 0)
+
+    def test_instance_helper(self) -> None:
+        command = ("bash", str(INSTANCE))
+        codes = "Exit codes: 0 success, including no change 1 runtime failure 2 usage error"
+        self.assert_help(command, codes, verbose=False)
+        for path in ("start", "sources", "doctor", "offline", "stop", "help"):
+            with self.subTest(path=path):
+                reference = self.run_command(*command, path, "--help")
+                self.assertEqual((reference.returncode, reference.stderr), (0, ""))
+                self.assertTrue(2 <= len(examples_in(reference.stdout)) <= 5)
+                for arguments in (("help", path), (path, "-h")):
+                    result = self.run_command(*command, *arguments)
+                    self.assertEqual((result.returncode, result.stdout), (0, reference.stdout))
+        self.assertNotIn("supervise", self.run_command(*command, "--help").stdout)
+        self.assert_usage(command, "doctor")
+        mistyped = self.assert_usage(command, "stpo", "run")
+        self.assertIn("did you mean 'stop'?\n", mistyped)
+        run_id = f"contract-{os.getpid()}-{time.monotonic_ns()}"
+        run = Path("/tmp/html-publish-verify") / run_id
+        self.addCleanup(shutil.rmtree, run, True)
+        nothing = self.run_command(*command, "stop", run_id)
+        self.assertEqual((nothing.returncode, nothing.stdout, nothing.stderr), (0, "", ""))
+        (run / "instance").mkdir(parents=True)
+        sources = self.run_command(*command, "sources", run_id, "--json")
+        self.assertEqual((sources.returncode, sources.stderr), (0, ""))
+        pages = json_object(sources.stdout)
+        plain = self.run_command(*command, "sources", run_id)
+        self.assertEqual(plain.stdout, "".join(f"{key}={value}\n" for key, value in pages.items()))
+        missing = self.run_command(*command, "doctor", run_id)
+        self.assertEqual((missing.returncode, missing.stdout), (1, ""))
+        self.assertEqual(
+            missing.stderr.splitlines()[-1], f"next: instance.sh stop {run_id}", missing.stderr
+        )
+        for signal_number, code in ((signal.SIGINT, 130), (signal.SIGTERM, 143)):
+            with self.subTest(signal=signal_number.name):
+                returncode, stdout, stderr, _ = self.interrupt(
+                    [*command, "stop", run_id], "scripts/instance.py", signal_number
+                )
+                self.assertEqual((returncode, stdout), (code, b""), stderr)
+                self.assertNotIn(b"Traceback", stderr)
+
+    def test_e2e_runner(self) -> None:
+        checkout = self.root / "checkout"
+        for relative, content in {
+            "html_publish/__init__.py": "",
+            "html_publish/__main__.py": 'print("hi")\n',
+            "tests/__init__.py": "",
+            "tests/e2e/__init__.py": "",
+            "tests/e2e/test_cli.py": RUNNER_TEST,
+        }.items():
+            (checkout / relative).parent.mkdir(parents=True, exist_ok=True)
+            (checkout / relative).write_text(content, encoding="utf-8")
+        for name in ("__main__.py", "_fingerprint.py"):
+            shutil.copy2(ROOT / "tests/e2e" / name, checkout / "tests/e2e" / name)
+        subprocess.run(["git", "init", "-q"], cwd=checkout, env=ENVIRONMENT, check=True)
+        runs = self.root / "runs"
+        command = (PYTHON, "-m", "tests.e2e")
+
+        def recorded(run_id: str, *arguments: str) -> subprocess.CompletedProcess[str]:
+            return self.run_command(
+                *command,
+                *arguments,
+                cwd=checkout,
+                env={"HTML_PUBLISH_E2E_ROOT": str(runs), "HTML_PUBLISH_E2E_RUN_ID": run_id},
+            )
+
+        help_text = self.run_command(*command, "--help", cwd=checkout)
+        self.assertEqual((help_text.returncode, help_text.stderr), (0, ""))
+        self.assertTrue(2 <= len(examples_in(help_text.stdout)) <= 5)
+        self.assertIn("130 interrupted", help_text.stdout)
+        levels = {
+            level: recorded(f"e2e-{index}", *level) for index, level in enumerate(((), ("-v",)))
+        }
+        for index, result in enumerate(levels.values()):
+            self.assertEqual(
+                (result.returncode, result.stdout),
+                (0, f"E2E_ARTIFACTS={runs / f'e2e-{index}' / 'artifacts'}\n"),
+                result.stderr,
+            )
+        self.assertEqual(levels[()].stderr, "")
+        self.assertIn("test_child_prints", levels[("-v",)].stderr)
+        reused = recorded("e2e-0")
+        self.assertEqual((reused.returncode, reused.stdout), (2, ""))
+        self.assertIn("fix: choose a fresh HTML_PUBLISH_E2E_RUN_ID", reused.stderr)
+        self.assertEqual(recorded("e2e-usage", "--bogus").returncode, 2)
+        (checkout / "html_publish/__main__.py").write_text('print("bye")\n', encoding="utf-8")
+        failed = recorded("e2e-failed")
+        self.assertEqual(
+            (failed.returncode, failed.stdout),
+            (1, f"E2E_ARTIFACTS={runs / 'e2e-failed' / 'artifacts'}\n"),
+        )
+        self.assertIn("FAIL: test_child_prints", failed.stderr)
+        for signal_number, code in ((signal.SIGINT, 130), (signal.SIGTERM, 143)):
+            with self.subTest(signal=signal_number.name):
+                returncode, stdout, stderr, _ = self.interrupt(
+                    command,
+                    "tests/e2e/__main__.py",
+                    signal_number,
+                    cwd=checkout,
+                    env={
+                        "HTML_PUBLISH_E2E_ROOT": str(runs),
+                        "HTML_PUBLISH_E2E_RUN_ID": f"e2e-{signal_number.name}",
+                    },
+                )
+                self.assertEqual((returncode, stdout), (code, b""), stderr)
+                self.assertNotIn(b"Traceback", stderr)
+
+    def test_systemd_proof_help_and_usage(self) -> None:
+        command = ("bash", SYSTEMD)
+        self.assert_help(
+            command,
+            "exit codes: 0 ok, 1 a stage failed or cleanup refused (result.txt keeps the raw "
+            "code), 2 bad usage, 130 interrupted, 143 terminated",
+        )
+        self.assert_usage(command)
+        self.assert_usage(command, "--bogus", "wheel", "uv")
+        self.assert_usage(command, "--", "--help")
+        missing = self.assert_usage(command, "wheel.whl", "uv")
+        self.assertIn("RUNNER_TEMP must name the directory for evidence", missing)
+
+
 @contextlib.contextmanager
 def held(path: Path) -> Generator[None]:
     """Hold an exclusive flock on `path`, as a concurrent writer would."""

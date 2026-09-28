@@ -198,7 +198,7 @@ class VerifyOm1MvpTest(unittest.TestCase):
 
         result = self.run_verifier()
 
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
         evidence = cast(dict[str, Any], json.loads(result.stdout))
         self.assertEqual(
             [operation["step"] for operation in evidence["operations"]],
@@ -250,7 +250,7 @@ class VerifyOm1MvpTest(unittest.TestCase):
 
         result = self.run_verifier("--timeout", "301")
 
-        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.returncode, 2)
         self.assertEqual(result.stdout, "")
         self.assertIn("timeout must be between 1 and 300 seconds", result.stderr)
         self.assertFalse(self.log.exists())

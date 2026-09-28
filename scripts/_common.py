@@ -23,6 +23,14 @@ SIGNAL_EXIT_CODES = {signal.SIGINT: 130, signal.SIGTERM: 143}
 class ScriptError(Exception):
     """Expected failure; each argument is one message that says what to fix."""
 
+    exit_code = 1
+
+
+class TemporaryFailure(ScriptError):
+    """Expected failure that rerunning the same command may clear; it exits 75."""
+
+    exit_code = 75
+
 
 class Interrupted(KeyboardInterrupt):
     """SIGINT or SIGTERM arrived; `exit_code` is 130 or 143."""
@@ -64,8 +72,18 @@ class Parser(argparse.ArgumentParser):
         return False
 
 
-def exit_codes(failure: str) -> str:
-    return f"exit codes: 0 ok, 1 {failure}, 2 bad usage, 130 interrupted, 143 terminated"
+def exit_codes(failure: str, temporary: str | None = None) -> str:
+    retry = f", 75 {temporary}" if temporary else ""
+    return f"exit codes: 0 ok, 1 {failure}, 2 bad usage{retry}, 130 interrupted, 143 terminated"
+
+
+def write_output(target: str, text: str) -> None:
+    """Write a script's result to the file `target` names, or to stdout when it is `-`."""
+    if target == "-":
+        sys.stdout.write(text)
+        sys.stdout.flush()
+        return
+    Path(target).write_text(text, encoding="utf-8")
 
 
 @contextmanager
@@ -89,13 +107,15 @@ def run_script(
     argv: list[str] | None = None,
     *,
     failure: str,
+    temporary: str | None = None,
 ) -> int:
     """Parse arguments, run `work`, and turn its outcome into an exit code.
 
     `work` writes the script's result to stdout itself, raises ScriptError for an expected
     failure, and returns a one-line summary that appears on stderr only with --verbose. `failure`
-    says what exit 1 means in the generated help. Call run_script from `main()` and pass its
-    result to `SystemExit`.
+    says what exit 1 means in the generated help, and `temporary` what exit 75 means for a
+    script that raises TemporaryFailure. Call run_script from `main()` and pass its result to
+    `SystemExit`.
     """
     arguments = sys.argv[1:] if argv is None else list(argv)
     variable = Path(parser.prog.split()[-1]).stem.upper().replace("-", "_") + "_DEBUG"
@@ -107,7 +127,9 @@ def run_script(
         action="store_true",
         help=f"also print timings and tracebacks on stderr; {variable}=1 does the same",
     )
-    parser.epilog = "\n\n".join(part for part in (parser.epilog, exit_codes(failure)) if part)
+    parser.epilog = "\n\n".join(
+        part for part in (parser.epilog, exit_codes(failure, temporary)) if part
+    )
     options = arguments[: arguments.index("--")] if "--" in arguments else arguments
     debug = os.environ.get(variable) == "1" or "--debug" in options
 
@@ -130,7 +152,7 @@ def run_script(
         except ScriptError as error:
             for message in error.args:
                 print(f"error: {message}", file=sys.stderr)
-            return 1
+            return error.exit_code
         except KeyboardInterrupt:
             raise
         except Exception as error:

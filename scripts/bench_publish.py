@@ -1,18 +1,38 @@
+"""Time `html-publish publish` of a 100-file fixture with loopback HTTP verification."""
+
 import argparse
 import functools
 import http.server
 import json
+import logging
 import os
 import platform
 import shlex
 import shutil
 import statistics
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 import urllib.request
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from _common import Parser, ScriptError, run_script, write_output
+
+EPILOG = """\
+Each run publishes the same fixture into a fresh archive: one warmup, --reps timed
+publishes, then one publish with a git wrapper on PATH that counts git calls. The
+JSON report goes to --output.
+
+examples:
+  uv run python scripts/bench_publish.py --cli .venv/bin/html-publish
+  uv run python scripts/bench_publish.py --cli "$WHEEL_VENV/bin/html-publish" -o publish.json -v
+  uv run python scripts/bench_publish.py --cli .venv/bin/html-publish --reps 3 --workdir /var/tmp"""
+
+log = logging.getLogger("bench-publish")
 
 
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
@@ -20,16 +40,27 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
         pass
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--cli", required=True, type=Path)
-    parser.add_argument("--out", required=True, type=Path)
-    parser.add_argument("--reps", type=int, default=5)
-    parser.add_argument("--workdir", type=Path)
-    args = parser.parse_args()
+def positive_reps(value):
+    try:
+        reps = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("reps must be a positive integer") from error
+    if reps < 1:
+        raise argparse.ArgumentTypeError("reps must be at least 1")
+    return reps
+
+
+def executable(value):
+    path = Path(value)
+    if not path.is_file() or not os.access(path, os.X_OK):
+        raise argparse.ArgumentTypeError(f"{value} is not an executable file")
+    return path
+
+
+def bench(args):
     actual_git = shutil.which("git")
     if actual_git is None:
-        raise RuntimeError("git unavailable")
+        raise ScriptError("git is not on PATH; fix: install git or add it to PATH")
     with tempfile.TemporaryDirectory(prefix="html-publish-publish-", dir=args.workdir) as temporary:
         root = Path(temporary)
         source = root / "source"
@@ -97,20 +128,27 @@ def main():
                     "--target",
                     base_url,
                 ]
+                log.debug("run %s", shlex.join(command))
                 start = time.perf_counter()
-                completed = subprocess.run(command, text=True, capture_output=True, env=env)
+                completed = subprocess.run(
+                    command, text=True, capture_output=True, env=env, check=False
+                )
                 elapsed = time.perf_counter() - start
                 if completed.returncode:
-                    raise RuntimeError(f"publish failed: {completed.stdout} {completed.stderr}")
+                    raise ScriptError(
+                        f"publish exited {completed.returncode}: "
+                        f"{completed.stdout.strip()} {completed.stderr.strip()}"
+                    )
                 payload = json.loads(completed.stdout)
                 if payload["outcome"] != "published":
-                    raise RuntimeError(f"unexpected publish: {payload}")
+                    raise ScriptError(f"publish returned an unexpected result: {payload}")
                 if payload["verification"]["result"] != "passed":
-                    raise RuntimeError(f"verification failed: {payload}")
+                    raise ScriptError(f"publish verification failed: {payload}")
                 if revision is None:
                     revision = payload["active_revision"]
                 elif revision != payload["active_revision"]:
-                    raise RuntimeError("revision changed across repetitions")
+                    raise ScriptError("the revision changed across repetitions")
+                log.info("run %d published in %.3f s", attempt, elapsed)
                 if 1 <= attempt <= args.reps:
                     times.append(elapsed)
                 if attempt == args.reps + 1:
@@ -122,12 +160,12 @@ def main():
                     }
                 with urllib.request.urlopen(base_url + "fixture/", timeout=5) as response:
                     if response.read() != files["index.html"]:
-                        raise RuntimeError("served index bytes differ")
+                        raise ScriptError("the served index bytes differ from the fixture")
                 with urllib.request.urlopen(
                     base_url + "fixture/file-0099.txt", timeout=5
                 ) as response:
                     if response.read() != files["file-0099.txt"]:
-                        raise RuntimeError("served asset bytes differ")
+                        raise ScriptError("the served asset bytes differ from the fixture")
             finally:
                 server.shutdown()
                 server.server_close()
@@ -147,9 +185,35 @@ def main():
         "git_calls": git_calls,
         "http": "full CLI verification plus served index and asset bytes",
     }
-    args.out.write_text(json.dumps(report, indent=2) + "\n")
-    print(json.dumps(report))
+    write_output(args.output, json.dumps(report, indent=2) + "\n")
+    return f"ok: timed {args.reps} publishes"
+
+
+def main(argv=None):
+    parser = Parser(
+        prog="bench_publish.py",
+        description=__doc__,
+        epilog=EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False,
+    )
+    parser.add_argument(
+        "--cli", required=True, type=executable, help="html-publish executable to time"
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        default="-",
+        help="file for the JSON report; - writes it to stdout (default: -)",
+    )
+    parser.add_argument(
+        "--reps", type=positive_reps, default=5, help="timed publishes (default: 5)"
+    )
+    parser.add_argument(
+        "--workdir", type=Path, help="parent directory for fixtures (default: the temp dir)"
+    )
+    return run_script(parser, bench, argv, failure="a timed publish failed")
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -1,8 +1,74 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-wheel=$1
-uv_bin=$2
+prog=verify-host-systemd.sh
+
+usage() {
+	printf 'usage: %s [-h] [-v] WHEEL UV\n' "$prog"
+}
+
+help_text() {
+	usage
+	cat <<'HELP'
+
+Install a wheel as a durable uv tool in a throwaway account, apply `html-publish host
+setup` as that account's systemd user service, publish, restart the service, and publish
+again. Evidence goes to $RUNNER_TEMP/html-publish-host-evidence. Run it only on a
+disposable CI runner: it creates the account htmlpubverify and uses sudo.
+
+positional arguments:
+  WHEEL          the html-publish wheel to install
+  UV             the uv executable the account uses
+
+options:
+  -h, --help     show this help message and exit
+  -v, --verbose  print each stage on stderr
+
+examples:
+  bash scripts/verify-host-systemd.sh "$PWD"/dist/*.whl "$(command -v uv)"
+  bash scripts/verify-host-systemd.sh --verbose dist/html_publish-0.1.0-py3-none-any.whl /usr/local/bin/uv
+
+exit codes: 0 ok, 1 a stage failed or cleanup refused (result.txt keeps the raw code),
+2 bad usage, 130 interrupted, 143 terminated
+HELP
+}
+
+usage_error() {
+	usage >&2
+	printf '%s: error: %s\n' "$prog" "$1" >&2
+	printf "run '%s --help' for details\n" "$prog" >&2
+	exit 2
+}
+
+for argument in "$@"; do
+	case $argument in
+	--) break ;;
+	-h | --help | -[!-]*h*)
+		help_text
+		exit 0
+		;;
+	esac
+done
+verbose=
+positionals=()
+while (($#)); do
+	case $1 in
+	-v | --verbose) verbose=1 ;;
+	--)
+		shift
+		positionals+=("$@")
+		break
+		;;
+	-*) usage_error "unrecognized option: $1" ;;
+	*) positionals+=("$1") ;;
+	esac
+	shift
+done
+((${#positionals[@]} == 2)) || usage_error "expected WHEEL and UV, got ${#positionals[@]} arguments"
+test -n "${RUNNER_TEMP:-}" || usage_error "RUNNER_TEMP must name the directory for evidence"
+
+wheel=${positionals[0]}
+uv_bin=${positionals[1]}
 account=htmlpubverify
 home_dir=/home/$account
 wheel_dir=$home_dir/ci-wheel
@@ -10,15 +76,19 @@ staged_wheel=$wheel_dir/$(basename -- "$wheel")
 wheel_hash=
 unit=html-publish-ci.service
 port=49317
-evidence=${RUNNER_TEMP:?}/html-publish-host-evidence
+evidence=$RUNNER_TEMP/html-publish-host-evidence
 mkdir -p "$evidence"
 stage_name=initialization
 failed_command=
 failed_line=
+signal_code=
 
 stage() {
 	stage_name=$1
-	printf '%s %s\n' "$(date -u +%FT%TZ)" "$stage_name" | tee -a "$evidence/stages.log"
+	printf '%s %s\n' "$(date -u +%FT%TZ)" "$stage_name" >>"$evidence/stages.log"
+	if test -n "$verbose"; then
+		printf '%s: %s\n' "$prog" "$stage_name" >&2
+	fi
 }
 
 stage "$stage_name"
@@ -42,6 +112,7 @@ cleanup() {
 	result=$?
 	set +e
 	trap - EXIT ERR
+	trap '' INT TERM
 	{
 		printf 'exit_code=%s\nstage=%s\nline=%s\ncommand=%s\n' "$result" "$stage_name" "$failed_line" "$failed_command"
 		printf 'account_uid=%s\n' "${uid:-unassigned}"
@@ -110,10 +181,20 @@ PY
 		sudo timeout 15 systemctl stop "user-runtime-dir@${uid}.service" || true
 	fi
 	printf 'final_exit_code=%s\n' "$result" >>"$evidence/result.txt"
-	exit "$result"
+	if test -n "$signal_code"; then
+		normalized=$signal_code
+	elif test "$result" -eq 0; then
+		normalized=0
+	else
+		normalized=1
+	fi
+	printf 'normalized_exit_code=%s\n' "$normalized" >>"$evidence/result.txt"
+	exit "$normalized"
 }
 trap cleanup EXIT
 trap 'failed_command=$BASH_COMMAND; failed_line=$LINENO' ERR
+trap 'signal_code=130; exit 130' INT
+trap 'signal_code=143; exit 143' TERM
 
 stage create-dedicated-account
 sudo useradd --create-home --shell /bin/bash "$account"
@@ -151,7 +232,7 @@ sudo install -m 600 -o "$account" -g "$account_group" "$wheel" "$staged_wheel"
 staged_hash=$(as_user sha256sum "$staged_wheel" | cut -d ' ' -f 1)
 test "$staged_hash" = "$wheel_hash"
 stage install-durable-tool
-as_user "$uv_bin" tool install --from "$staged_wheel" html-publish
+as_user "$uv_bin" tool install --from "$staged_wheel" html-publish >"$evidence/tool-install.txt" 2>&1
 cli=$home_dir/bin/html-publish
 as_user "$cli" --version >"$evidence/version.txt"
 
@@ -175,7 +256,7 @@ as_user test ! -e "$record"
 as_user test ! -e "$unit_path"
 stage apply-host-setup
 as_user "$cli" --config "$config" --json host setup --unit-name html-publish-ci --port "$port" --apply >"$evidence/apply.json"
-jq -e '.outcome == "applied" and .effects.start == "changed"' "$evidence/apply.json"
+jq -e '.outcome == "applied" and .effects.start == "changed"' "$evidence/apply.json" >/dev/null
 as_user test ! -e "$home_dir/archive.git"
 test "$(sudo -u "$account" cat "$home_dir/receipt.json")" = receipt-preserved
 
@@ -190,7 +271,7 @@ archive_before_repeat=$(archive_hash)
 
 stage verify-repeat-apply
 as_user "$cli" --config "$config" --json host setup --unit-name html-publish-ci --port "$port" --apply >"$evidence/repeat.json"
-jq -e '.outcome == "unchanged"' "$evidence/repeat.json"
+jq -e '.outcome == "unchanged"' "$evidence/repeat.json" >/dev/null
 test "$(as_user systemctl --user show "$unit" --property=MainPID --value)" = "$pid_before"
 
 stage restart-user-service

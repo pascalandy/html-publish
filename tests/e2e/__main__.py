@@ -1,7 +1,5 @@
 """Run the E2E suite and leave a verifiable, repeatable artifact for every test.
 
-Usage: uv run python -m tests.e2e
-
 Each run writes $HTML_PUBLISH_E2E_ROOT/<run id>/artifacts/. The root defaults to
 /tmp/html-publish-verify, which CI uploads, and the run ID comes from
 $HTML_PUBLISH_E2E_RUN_ID or is generated.
@@ -16,22 +14,30 @@ $HTML_PUBLISH_E2E_RUN_ID or is generated.
                          still running then records null
 
 scripts/check_e2e_artifacts.py verifies a run against its files and the test tree.
+stdout carries one E2E_ARTIFACTS=<directory> line. A quiet run prints unittest's report on
+stderr only when a test fails; -v streams per-test progress.
 """
 
 from __future__ import annotations
 
+import argparse
 import datetime
 import hashlib
+import io
 import json
 import os
 import platform
+import signal
 import subprocess
 import sys
 import time
+import traceback
 import unittest
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, TextIO
+from types import FrameType
+from typing import Any, NoReturn, TextIO
 
 from tests.e2e._fingerprint import git_environment, source_fingerprint
 
@@ -39,6 +45,15 @@ ROOT = Path(__file__).resolve().parents[2]
 SPAWN_EVENTS = frozenset({"subprocess.Popen", "os.system"})
 HEAD_CHARACTERS = 2000
 SCHEMA_VERSION = 2
+PROG = "python -m tests.e2e"
+EPILOG = """\
+examples:
+  uv run python -m tests.e2e
+  uv run python -m tests.e2e -v
+  HTML_PUBLISH_E2E_RUN_ID=e2e-manual-1 uv run python -m tests.e2e
+
+exit codes: 0 ok, 1 a test failed, 2 bad usage or a reused run ID, 130 interrupted,
+143 terminated"""
 
 
 def now() -> str:
@@ -246,8 +261,8 @@ def fingerprint() -> str | None:
 
 
 class RecordingRunner(unittest.TextTestRunner):
-    def __init__(self, recorder: Recorder, stream: TextIO) -> None:
-        super().__init__(stream=stream, verbosity=2)
+    def __init__(self, recorder: Recorder, stream: TextIO, verbosity: int) -> None:
+        super().__init__(stream=stream, verbosity=verbosity)
         self.recorder = recorder
 
     def _makeResult(self) -> unittest.TextTestResult:
@@ -256,7 +271,90 @@ class RecordingRunner(unittest.TextTestRunner):
         return result
 
 
-def main(stream: TextIO = sys.stderr) -> int:
+class UsageError(Exception):
+    pass
+
+
+class Interrupted(KeyboardInterrupt):
+    def __init__(self, signal_number: int) -> None:
+        super().__init__(signal.Signals(signal_number).name)
+        self.exit_code = 128 + signal_number
+
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message: str) -> NoReturn:
+        raise UsageError(message)
+
+
+def parser() -> Parser:
+    command = Parser(
+        prog=PROG,
+        description=(__doc__ or "").split("\n", 1)[0],
+        epilog=EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False,
+    )
+    command.add_argument(
+        "-v", "--verbose", action="store_true", help="stream per-test progress on stderr"
+    )
+    command.add_argument(
+        "--debug", action="store_true", help="like --verbose, plus a traceback if the runner fails"
+    )
+    return command
+
+
+@contextmanager
+def signal_guard() -> Generator[None]:
+    def interrupt(signal_number: int, _frame: FrameType | None) -> NoReturn:
+        raise Interrupted(signal_number)
+
+    previous = {
+        number: signal.signal(number, interrupt) for number in (signal.SIGINT, signal.SIGTERM)
+    }
+    try:
+        yield
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+
+
+def main(argv: list[str] | None = None) -> int:
+    arguments = sys.argv[1:] if argv is None else argv
+    options = arguments[: arguments.index("--")] if "--" in arguments else arguments
+    command = parser()
+    with signal_guard():
+        try:
+            if any(
+                option in ("-h", "--help")
+                or (
+                    option[:1] == "-"
+                    and option[1:2] != "-"
+                    and "h" in option
+                    and set(option[1:]) <= {"h", "v"}
+                )
+                for option in options
+            ):
+                command.print_help()
+                return 0
+            try:
+                args = command.parse_args(arguments)
+            except UsageError as error:
+                sys.stderr.write(command.format_usage())
+                print(f"{PROG}: error: {error}", file=sys.stderr)
+                print(f"run '{PROG} --help' for details", file=sys.stderr)
+                return 2
+            try:
+                return run(verbose=args.verbose or args.debug)
+            except Exception:
+                if args.debug:
+                    traceback.print_exc()
+                raise
+        except KeyboardInterrupt as error:
+            print(f"{PROG}: interrupted", file=sys.stderr)
+            return error.exit_code if isinstance(error, Interrupted) else 130
+
+
+def run(*, verbose: bool) -> int:
     run_id = os.environ.get("HTML_PUBLISH_E2E_RUN_ID") or (
         f"e2e-{datetime.datetime.now(datetime.UTC):%Y%m%dT%H%M%SZ}-{os.getpid()}"
     )
@@ -264,8 +362,9 @@ def main(stream: TextIO = sys.stderr) -> int:
     artifacts = artifacts / run_id / "artifacts"
     if artifacts.exists():
         print(
-            f"error: {artifacts} already exists; choose a fresh HTML_PUBLISH_E2E_RUN_ID",
-            file=stream,
+            f"{PROG}: error: {artifacts} already exists; "
+            "fix: choose a fresh HTML_PUBLISH_E2E_RUN_ID",
+            file=sys.stderr,
         )
         return 2
     artifacts.mkdir(parents=True)
@@ -279,9 +378,12 @@ def main(stream: TextIO = sys.stderr) -> int:
     suite = unittest.defaultTestLoader.discover(
         str(ROOT / "tests" / "e2e"), pattern="test_*.py", top_level_dir=str(ROOT)
     )
-    result = RecordingRunner(recorder, stream).run(suite)
+    report: TextIO = sys.stderr if verbose else io.StringIO()
+    result = RecordingRunner(recorder, report, verbosity=2 if verbose else 1).run(suite)
     manifest = recorder.write(started_at, {"start": source_at_start, "end": fingerprint()})
-    print(f"E2E_ARTIFACTS={manifest.parent}", file=stream)
+    if not verbose and not result.wasSuccessful():
+        sys.stderr.write(report.getvalue() if isinstance(report, io.StringIO) else "")
+    print(f"E2E_ARTIFACTS={manifest.parent}", flush=True)
     return 0 if result.wasSuccessful() else 1
 
 

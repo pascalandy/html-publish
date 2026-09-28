@@ -22,8 +22,9 @@ class VerifySkillLifecycleTest(unittest.TestCase):
         unrelated: subprocess.Popen[bytes] | None = None
 
         try:
-            started = self.run_helper("start", run_id)
-            self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+            started = self.run_helper("start", run_id, "--json")
+            self.assertEqual((started.returncode, started.stderr), (0, ""), started.stdout)
+            self.assertEqual(json.loads(started.stdout)["ARTIFACTS"], str(artifacts))
             original_identity = identity.read_text(encoding="utf-8")
             server_pid = json.loads(original_identity)["pid"]
 
@@ -35,8 +36,8 @@ class VerifySkillLifecycleTest(unittest.TestCase):
 
             refused = self.run_helper("stop", run_id)
 
-            self.assertEqual(refused.returncode, 1, refused.stdout + refused.stderr)
-            self.assertIn("server identity does not match", refused.stdout)
+            self.assertEqual((refused.returncode, refused.stdout), (1, ""), refused.stderr)
+            self.assertIn("server identity does not match", refused.stderr)
             self.assertTrue(instance.is_dir())
             self.assertTrue(identity.is_file())
             os.kill(server_pid, 0)
@@ -44,16 +45,19 @@ class VerifySkillLifecycleTest(unittest.TestCase):
 
             identity.write_text(original_identity, encoding="utf-8")
             stopped = self.run_helper("stop", run_id)
-            self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+            self.assertEqual(
+                (stopped.returncode, stopped.stdout, stopped.stderr),
+                (0, f"ARTIFACTS={artifacts}\n", ""),
+            )
             self.assertFalse(instance.exists())
             self.assertTrue(artifacts.is_dir())
             self.assertIsNone(unrelated.poll())
 
             stopped_again = self.run_helper("stop", run_id)
             self.assertEqual(
-                stopped_again.returncode, 0, stopped_again.stdout + stopped_again.stderr
+                (stopped_again.returncode, stopped_again.stdout, stopped_again.stderr),
+                (0, f"ARTIFACTS={artifacts}\n", ""),
             )
-            self.assertIn("nothing to stop", stopped_again.stdout)
         finally:
             if original_identity and instance.exists():
                 identity.write_text(original_identity, encoding="utf-8")
@@ -62,9 +66,11 @@ class VerifySkillLifecycleTest(unittest.TestCase):
                 unrelated.terminate()
                 unrelated.wait(timeout=2)
 
-    def run_helper(self, command: str, run_id: str) -> subprocess.CompletedProcess[str]:
+    def run_helper(
+        self, command: str, run_id: str, *options: str
+    ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            ["bash", str(HELPER), command, run_id],
+            ["bash", str(HELPER), command, run_id, *options],
             cwd=ROOT,
             text=True,
             capture_output=True,

@@ -15,7 +15,7 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
       - run: uv build --wheel --out-dir dist
       - name: Verify installed user service in a dedicated account
-        run: bash scripts/verify-host-systemd.sh "$PWD"/dist/*.whl "$(command -v uv)"
+        run: bash scripts/verify-host-systemd.sh --verbose "$PWD"/dist/*.whl "$(command -v uv)"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:

@@ -358,7 +358,8 @@ def usage_text(error: UsageError, root: argparse.ArgumentParser, arguments: Sequ
 
 
 def debug_variable(prog: str) -> str:
-    return prog.upper().replace("-", "_") + "_DEBUG"
+    """`<NAME>_DEBUG`: the command name without a file suffix, uppercased, `-` as `_`."""
+    return prog.rsplit(".", 1)[0].upper().replace("-", "_") + "_DEBUG"
 
 
 def debug_requested(prog: str, arguments: Sequence[str]) -> bool:
