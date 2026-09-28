@@ -1343,7 +1343,7 @@ class ServerContractTest(PublisherFixture):
         self.assertRegex(failure, rf"^html-publish-server: {busy_error}$")
         self.assertEqual(
             next_line,
-            f"next: html-publish-server --directory {self.runtime / 'public'} "
+            f"next: html-publish-server --directory {(self.runtime / 'public').resolve()} "
             "--bind 127.0.0.1 --port '<port>'",
         )
         self.assertEqual((host.returncode, host.stdout), (1, ""))

@@ -14,7 +14,8 @@ HELPER = ROOT / ".agents/skills/verify-html-publish/scripts/instance.sh"
 class VerifySkillLifecycleTest(unittest.TestCase):
     def test_stop_refuses_stale_identity_and_preserves_the_instance(self) -> None:
         run_id = f"lifecycle-safety-{os.getpid()}-{time.time_ns()}"
-        run_dir = Path("/tmp/html-publish-verify") / run_id
+        # The helper resolves its runs root, which on macOS lives under /private/tmp
+        run_dir = Path("/tmp/html-publish-verify").resolve() / run_id
         instance = run_dir / "instance"
         artifacts = run_dir / "artifacts"
         identity = instance / "server.identity"
