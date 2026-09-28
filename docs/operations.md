@@ -107,6 +107,8 @@ The `pascal` user owns the service and all deployment state
 | Publication runtime | `/home/pascal/.local/share/html-publish/runtime` |
 | Publisher configuration | `/home/pascal/.config/html-publish/publisher.json` |
 | User systemd unit | `/home/pascal/.config/systemd/user/html-publish.service` |
+| Archive backup timer | `/home/pascal/.config/systemd/user/pascalandy-html-publish-backup.timer`, installed by the dotfiles repository |
+| Archive backup remote | `git@github.com:pascalandy/html-publish-archive.git`, branch `published`, private |
 
 The user service listens on `127.0.0.1:4177`. Tailscale serves HTTPS on port 8444 and proxies `/html-publish` to that loopback service
 
@@ -313,6 +315,67 @@ Reviewed manual cleanup after confirming no publication is in flight:
 
 An orphaned Git ref lock is reported in the `archive_failure` message and is never removed automatically. After confirming no publisher process runs, remove the named `*.lock` file under the archive and retry
 
+## Remote backup
+
+The archive is the only copy of every saved page version. A daily job outside the publisher pushes its `published` branch to the private GitHub repository `pascalandy/html-publish-archive`. The dotfiles repository owns the job and installs it on `om1` only: the `pascalandy-html-publish-backup` user timer and service, and the `html-publish-backup` script. The publisher never pushes, and the archive keeps no remote configuration
+
+The job runs this push. It ignores global and system Git configuration, disables hooks, and fails instead of prompting for SSH input:
+
+```sh
+GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+	GIT_SSH_COMMAND='/usr/bin/ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes -i /home/pascal/.ssh/id_ed25519' \
+	/usr/bin/git -c core.hooksPath=/dev/null \
+	--git-dir /home/pascal/.local/share/html-publish/archive.git \
+	push git@github.com:pascalandy/html-publish-archive.git refs/heads/published:refs/heads/published
+```
+
+The branch only moves forward, so the push never needs force. A push with nothing new reports that everything is up to date. If GitHub rejects a push as non-fast-forward, the archive or the backup was replaced. Stop and compare both histories. Never force-push or rewrite either history
+
+To back up right after an important publication, start the job and compare both branch tips:
+
+```sh
+systemctl --user start pascalandy-html-publish-backup.service
+journalctl --user -u pascalandy-html-publish-backup.service -n 20
+git ls-remote git@github.com:pascalandy/html-publish-archive.git refs/heads/published
+git --git-dir /home/pascal/.local/share/html-publish/archive.git rev-parse published
+```
+
+### What the backup covers
+
+The backup holds the full `published` history, with every `site/` tree and every private `record/` tree. It does not hold the runtime, the publisher and client configurations, receipts, the application releases, or the host and route records. A restore rebuilds the runtime from the archive. The [install procedure](#install-or-upgrade) rebuilds the application and its configuration
+
+A daily push means up to one day of publications exists only on `om1`. A failed push raises no alert, so read the job's journal to confirm the last run
+
+GitHub warns about files larger than 50 MiB and rejects files larger than 100 MiB. The archive already holds one file of about 51 MiB. The publisher's default `max_bytes` input limit is 100 MiB, so no captured file can exceed the GitHub limit. If you raise `max_bytes`, one larger file blocks every later push, because the archive history is never rewritten
+
+### Restore from the backup
+
+A restore brings back each page's newest archived version. If an interrupted publication left a saved but inactive version, that version becomes live
+
+1. Stop the service with `systemctl --user stop html-publish.service`. Move any damaged archive and runtime aside, and keep them until the restore succeeds
+2. Clone the backup into the configured archive path:
+
+   ```sh
+   git clone --bare --branch published git@github.com:pascalandy/html-publish-archive.git \
+       /home/pascal/.local/share/html-publish/archive.git
+   ```
+
+3. Confirm that the publisher configuration points at that archive and at a runtime path that does not exist yet. Start the service with `systemctl --user start html-publish.service`
+4. Restore every page. `status` and `history` fail until the first restore recreates the runtime, so read each page's newest commit with Git. Set the variables as in [Use the six installed commands](#use-the-six-installed-commands). Pass no `--expected-revision`, because an expectation conflicts with an absent page:
+
+   ```sh
+   archive=/home/pascal/.local/share/html-publish/archive.git
+   for name in $(git --git-dir "$archive" ls-tree -d --name-only published); do
+       commit="$(git --git-dir "$archive" log -1 --format=%H published -- "$name")"
+       "$HTML_PUBLISH" --config "$PUBLISHER_CONFIG" --json restore \
+           --name "$name" --archive-commit "$commit" --target "$PUBLISHER_TARGET"
+   done
+   ```
+
+5. Require exit 0, outcome `published`, and verification `passed` for every page. Then run `status` and confirm that every page is `selected`
+
+The [restore drill record](evidence/backup/2026-09-28-restore-drill.md) proves steps 2 to 5 with a clone of the live archive and a throwaway loopback publisher. It did not clone from GitHub
+
 ## Application rollback
 
 Roll back to the previously installed application release
@@ -339,7 +402,8 @@ Return to the reviewed checkout with the same `html-publish-install --source ...
 - User linger was enabled separately on 2026-09-22 after the installed preservation checks. A later user reboot produced [bounded postboot startup and delivery evidence](evidence/deployment/2026-09-22-om1-installed.md#successful-postboot-checks-after-user-reboot). The [expired recorder attempt](evidence/deployment/2026-09-22-om1-installed.md#expired-recorder-attempt) captured neither the outage nor the recovery
 - A lost SSH connection can leave its private `incoming` directory for operator inspection. The client deadline cannot prove that remote publication stopped
 - Application rollback changes the application release pointer; it does not restore publication content. Publication restore is available through the installed CLI
-- Remote backup and the browser and second-device fault matrices remain deferred. Browser and second-device success transitions are recorded. Controlled SSH and SCP fixtures cover transport failures and timeouts, and separate private stores cover installed-executable faults
+- The [remote backup](#remote-backup) runs daily, so up to one day of publications exists only on `om1`. A failed push raises no alert
+- The browser and second-device fault matrices remain deferred. Browser and second-device success transitions are recorded. Controlled SSH and SCP fixtures cover transport failures and timeouts, and separate private stores cover installed-executable faults
 - The workflow is a controlled private MVP and is not production-ready
 
 ## Installed Linux user service
