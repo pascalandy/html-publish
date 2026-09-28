@@ -1949,6 +1949,31 @@ class PublisherCliTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 2)
                 self.assertEqual(self.payload(result)["operation"], operation)
 
+    def test_artifact_review_arguments_are_rejected_before_receipt_work(self) -> None:
+        receipt_dir = self.root / "page.receipt"
+        restore = ("restore", "--receipt", str(receipt_dir), "--archive-commit", "abc")
+        for arguments in (
+            (
+                "publish",
+                str(self.root / "page.html"),
+                "--receipt",
+                str(receipt_dir),
+                "--reviewed-revision",
+                "",
+                "--replaces-attempt",
+                "attempt",
+            ),
+            (*restore, "--reviewed-revision", "rev", "--replaces-attempt", "../escape"),
+            (*restore, "--reviewed-record-revision", "r" * 257),
+        ):
+            with self.subTest(arguments=arguments[:1] + arguments[-2:]):
+                result = self.run_cli("artifact", *arguments)
+                self.assertEqual(result.returncode, 2, result.stdout)
+                payload = self.payload(result)
+                self.assertEqual(payload["operation"], arguments[0])
+                self.assertEqual(payload["error"]["code"], "invalid_usage")
+                self.assertFalse(receipt_dir.exists())
+
     def test_empty_status_has_explicit_entries_and_common_envelope(self) -> None:
         result = self.run_cli("status")
         self.assertEqual(result.returncode, 0, result.stderr)

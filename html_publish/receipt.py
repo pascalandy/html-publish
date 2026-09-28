@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Publish HTML or rendered Markdown through the existing publisher and receipt."""
 
 from __future__ import annotations
@@ -16,13 +15,12 @@ import shutil
 import signal
 import stat
 import subprocess
-import sys
 import time
 import uuid
 from collections.abc import Generator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, NoReturn, Protocol, cast
+from typing import Literal, Protocol, cast
 
 from html_publish.configuration import (
     ClientConfig,
@@ -35,7 +33,6 @@ from html_publish.configuration import (
 from html_publish.markdown import RENDER_PROFILE_ID
 from html_publish.model import PublishError
 
-DEFAULT_CONFIG = Path("~/.config/html-publish/client.json").expanduser()
 MIN_MUTATION_OUTPUT_BYTES = 1024 * 1024
 MAX_REPORT_IDENTITY_BYTES = 64 * 1024
 NAME_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
@@ -43,10 +40,6 @@ NAME_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 PendingState = Literal["uncertain", "retryable", "conflict"]
 InputKind = Literal["file", "directory"]
 ExecutorKind = Literal["local", "remote"]
-
-
-class UsageFailure(Exception):
-    pass
 
 
 class ReceiptFailure(Exception):
@@ -73,11 +66,6 @@ class CommandBudget:
                 "command_timeout", "The artifact command exceeded its total time budget", "retry"
             )
         return min(remaining, ceiling) if ceiling is not None else remaining
-
-
-class Parser(argparse.ArgumentParser):
-    def error(self, message: str) -> NoReturn:
-        raise UsageFailure(message)
 
 
 @dataclass(frozen=True)
@@ -253,20 +241,6 @@ def _optional_revision(value: object, label: str) -> str | None:
         return None
     if not isinstance(value, str) or not value or len(value) > 256:
         raise ReceiptFailure("invalid_state", f"{label} is invalid", "inspect")
-    return value
-
-
-def _name(value: str) -> str:
-    if len(value) > 80 or not NAME_PATTERN.fullmatch(value):
-        raise argparse.ArgumentTypeError(
-            "name must use lowercase letters, digits, and single hyphens, up to 80 characters"
-        )
-    return value
-
-
-def _revision(value: str) -> str:
-    if not value or len(value) > 256:
-        raise argparse.ArgumentTypeError("revision must contain 1 to 256 characters")
     return value
 
 
@@ -2560,41 +2534,6 @@ def _status(arguments: argparse.Namespace, config_path: Path, started_at: float)
         return 0
 
 
-def _parser() -> Parser:
-    parser = Parser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
-    commands = parser.add_subparsers(dest="operation", required=True)
-
-    publish = commands.add_parser("publish")
-    publish.add_argument("source")
-    publish.add_argument("--receipt")
-    publish.add_argument(
-        "--format", dest="input_format", choices=("html", "markdown"), default="html"
-    )
-    publish.add_argument("--entry")
-    identity = publish.add_mutually_exclusive_group()
-    identity.add_argument("--new", type=_name)
-    identity.add_argument("--adopt", type=_name)
-    publish.add_argument("--reviewed-revision", type=_revision)
-    publish.add_argument("--reviewed-record-revision", type=_revision)
-    publish.add_argument("--replaces-attempt", type=_attempt_id)
-    publish.add_argument("--local-only", action="store_true")
-
-    retry = commands.add_parser("retry")
-    retry.add_argument("--receipt", required=True)
-
-    status = commands.add_parser("status")
-    status.add_argument("--receipt", required=True)
-    status.add_argument("--local-only", action="store_true")
-    restore = commands.add_parser("restore")
-    restore.add_argument("--receipt", required=True)
-    restore.add_argument("--archive-commit", required=True)
-    restore.add_argument("--reviewed-revision", type=_revision)
-    restore.add_argument("--reviewed-record-revision", type=_revision)
-    restore.add_argument("--replaces-attempt", type=_attempt_id)
-    return parser
-
-
 def run(parsed: argparse.Namespace, config_path: Path, started_at: float | None = None) -> int:
     operation = parsed.artifact_action
     started_at = time.monotonic() if started_at is None else started_at
@@ -2668,22 +2607,3 @@ def usage_error(action: str, message: str) -> int:
         )
     )
     return 2
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    started_at = time.monotonic()
-    arguments = list(sys.argv[1:] if argv is None else argv)
-    operation = next(
-        (item for item in arguments if item in {"publish", "retry", "status", "restore"}), "usage"
-    )
-    try:
-        parsed = _parser().parse_args(arguments)
-    except UsageFailure as error:
-        return usage_error(operation, str(error))
-    parsed.artifact_action = parsed.operation
-    config_path = cast(Path, parsed.config).expanduser().absolute()
-    return run(parsed, config_path, started_at)
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

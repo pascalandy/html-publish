@@ -67,9 +67,9 @@ from pathlib import Path
 from typing import cast
 from unittest import mock
 
-from html_publish import receipt
+from html_publish import cli, receipt
 
-SCRIPT = Path(receipt.__file__).resolve()
+PUBLISHER = [sys.executable, "-m", "html_publish"]
 
 FAKE_PUBLISHER = r"""#!/usr/bin/env python3
 import hashlib
@@ -366,7 +366,7 @@ class ReceiptFixture(unittest.TestCase):
 
     def run_helper(self, *arguments: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            [sys.executable, str(SCRIPT), "--config", str(self.config), *arguments],
+            [*PUBLISHER, "--config", str(self.config), "artifact", *arguments],
             capture_output=True,
             text=True,
             check=False,
@@ -375,7 +375,7 @@ class ReceiptFixture(unittest.TestCase):
     def run_main(self, *arguments: str) -> tuple[int, dict[str, object]]:
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            code = receipt.main(["--config", str(self.config), *arguments])
+            code = cli.main(["--config", str(self.config), "artifact", *arguments])
         return code, json.loads(output.getvalue())
 
     def payload(self, result: subprocess.CompletedProcess[str]) -> dict[str, object]:
@@ -507,10 +507,10 @@ class HelperCliTest(ReceiptFixture):
                 bundle = Path(str(source) + ".publish")
                 helper = subprocess.Popen(
                     [
-                        sys.executable,
-                        str(SCRIPT),
+                        *PUBLISHER,
                         "--config",
                         str(self.config),
+                        "artifact",
                         "publish",
                         str(source),
                         "--new",
@@ -699,10 +699,10 @@ class HelperCliTest(ReceiptFixture):
 
         result = subprocess.run(
             [
-                sys.executable,
-                str(SCRIPT),
+                *PUBLISHER,
                 "--config",
                 str(self.config),
+                "artifact",
                 "publish",
                 str(source),
                 "--new",
@@ -742,10 +742,10 @@ class HelperCliTest(ReceiptFixture):
         started = time.monotonic()
         result = subprocess.run(
             [
-                sys.executable,
-                str(SCRIPT),
+                *PUBLISHER,
                 "--config",
                 str(self.config),
+                "artifact",
                 "publish",
                 str(source),
                 "--new",
@@ -1421,10 +1421,10 @@ class HelperCliTest(ReceiptFixture):
         source.write_text("lock")
         first = subprocess.Popen(
             [
-                sys.executable,
-                str(SCRIPT),
+                *PUBLISHER,
                 "--config",
                 str(self.config),
+                "artifact",
                 "publish",
                 str(source),
                 "--new",
@@ -1510,10 +1510,10 @@ class HelperCliTest(ReceiptFixture):
 
         result = subprocess.run(
             [
-                sys.executable,
-                str(SCRIPT),
+                *PUBLISHER,
                 "--config",
                 str(remote_config),
+                "artifact",
                 "publish",
                 str(source),
                 "--new",
@@ -1695,10 +1695,10 @@ class RealLoopbackPublisherTest(unittest.TestCase):
     def run_helper(self, *arguments: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [
-                sys.executable,
-                str(SCRIPT),
+                *PUBLISHER,
                 "--config",
                 str(self.client_config),
+                "artifact",
                 *arguments,
             ],
             capture_output=True,

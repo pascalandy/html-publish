@@ -135,6 +135,25 @@ def _name(value: str) -> Name:
     return Name(value)
 
 
+def _revision(value: str) -> str:
+    if not value or len(value) > 256:
+        raise argparse.ArgumentTypeError("revision must contain 1 to 256 characters")
+    return value
+
+
+def _attempt_id(value: str) -> str:
+    if (
+        not value
+        or len(value) > 128
+        or value in {".", ".."}
+        or any(ord(char) < 32 or ord(char) == 127 or char in "/\\" for char in value)
+    ):
+        raise argparse.ArgumentTypeError(
+            "attempt ID must be a safe identifier of 1 to 128 characters"
+        )
+    return value
+
+
 def _positive_int(value: str) -> int:
     parsed = int(value)
     if parsed < 1 or parsed > 100:
@@ -444,14 +463,19 @@ def _parser(json_version: bool = False) -> Parser:
     identity.add_argument("--new", type=_name, help="bind a new publication name")
     identity.add_argument("--adopt", type=_name, help="bind an existing name after review")
     artifact_publish.add_argument(
-        "--reviewed-revision", help="reviewed active revision for adoption or conflict replacement"
+        "--reviewed-revision",
+        type=_revision,
+        help="reviewed active revision for adoption or conflict replacement",
     )
     artifact_publish.add_argument(
         "--reviewed-record-revision",
+        type=_revision,
         help="reviewed private record revision when upgrading a legacy receipt",
     )
     artifact_publish.add_argument(
-        "--replaces-attempt", help="stored conflicting attempt ID; requires --reviewed-revision"
+        "--replaces-attempt",
+        type=_attempt_id,
+        help="stored conflicting attempt ID; requires --reviewed-revision",
     )
     artifact_publish.add_argument(
         "--local-only",
@@ -499,14 +523,19 @@ def _parser(json_version: bool = False) -> Parser:
         "--archive-commit", required=True, help="reachable publisher history commit"
     )
     artifact_restore.add_argument(
-        "--reviewed-revision", help="reviewed active revision for conflict replacement"
+        "--reviewed-revision",
+        type=_revision,
+        help="reviewed active revision for conflict replacement",
     )
     artifact_restore.add_argument(
         "--reviewed-record-revision",
+        type=_revision,
         help="reviewed private record revision for conflict replacement",
     )
     artifact_restore.add_argument(
-        "--replaces-attempt", help="stored conflicting attempt ID; requires --reviewed-revision"
+        "--replaces-attempt",
+        type=_attempt_id,
+        help="stored conflicting attempt ID; requires --reviewed-revision",
     )
     _globals(artifact_restore, version)
 
