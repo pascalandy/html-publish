@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
+import shlex
 import subprocess
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -11,6 +14,8 @@ from typing import BinaryIO, cast
 from html_publish.model import Deadline, PublishError
 
 MINIMUM_GIT_VERSION = (2, 36)
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -95,6 +100,7 @@ def command(
     if git_dir is not None:
         invocation.append(f"--git-dir={git_dir}")
     invocation.extend(args)
+    started = time.monotonic()
     try:
         completed = subprocess.run(
             invocation,
@@ -121,6 +127,12 @@ def command(
             f"Git could not run: {error}",
             "fix_host",
         ) from error
+    log.debug(
+        "git %s: exit %d after %.3f s",
+        shlex.join(args),
+        completed.returncode,
+        time.monotonic() - started,
+    )
     if completed.returncode not in allowed_returncodes:
         detail = completed.stderr.decode("utf-8", "replace").strip()
         raise PublishError(

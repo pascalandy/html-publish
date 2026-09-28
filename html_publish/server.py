@@ -4,7 +4,9 @@ import argparse
 import functools
 import http.server
 import io
+import logging
 import os
+import shlex
 import signal
 import socket
 import socketserver
@@ -15,7 +17,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
-from typing import BinaryIO
+from typing import BinaryIO, NoReturn, cast
+
+from html_publish import __version__, command_line
 
 _CONDITIONAL_HEADERS = (
     "If-Match",
@@ -24,6 +28,7 @@ _CONDITIONAL_HEADERS = (
     "If-Range",
     "If-Unmodified-Since",
 )
+log = logging.getLogger("html_publish.server")
 _HEALTH_PATH = "/_html-publish-health"
 _HEALTH_BODY = b"ok\n"
 
@@ -60,6 +65,10 @@ class PublicationRequestHandler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self) -> None:
         self.send_header("Cache-Control", "no-store")
         super().end_headers()
+
+    def log_message(self, format: str, *args: object) -> None:
+        """Access and error lines are step detail: stderr shows them only with --verbose."""
+        log.info("%s %s", self.address_string(), format % args)
 
     def list_directory(self, path: str | os.PathLike[str]) -> io.BytesIO | None:
         self.send_error(404, "File not found")
@@ -149,13 +158,6 @@ class PublicationRequestHandler(http.server.SimpleHTTPRequestHandler):
         return resolved == release or resolved.is_relative_to(release)
 
 
-def _port(value: str) -> int:
-    port = int(value)
-    if not 0 <= port <= 65535:
-        raise argparse.ArgumentTypeError("port must be between 0 and 65535")
-    return port
-
-
 def _directory(value: str) -> Path:
     directory = Path(os.path.abspath(value))
     if sys.platform == "darwin" and len(directory.parts) > 1:
@@ -182,29 +184,82 @@ def _directory(value: str) -> Path:
     return directory
 
 
-def _parse_args(argv: Sequence[str] | None) -> ServerConfig:
-    parser = argparse.ArgumentParser(description="Serve html-publish releases over HTTP")
-    parser.add_argument("--directory", required=True, type=_directory)
-    parser.add_argument("--bind", default="127.0.0.1")
-    parser.add_argument("--port", default=8000, type=_port)
-    arguments = parser.parse_args(argv)
+class Parser(command_line.Parser):
+    exit_codes = (0, 1, 2, 130, 143)
 
-    directory = arguments.directory
-    if not isinstance(directory, Path):
-        parser.error("directory must be a path")
-    bind = arguments.bind
-    port = arguments.port
-    if not isinstance(bind, str) or not isinstance(port, int):
-        parser.error("invalid server address")
-    return ServerConfig(directory, bind, port)
+
+def _parser() -> Parser:
+    parser = Parser(
+        prog="html-publish-server",
+        description="Serve selected html-publish releases read-only over HTTP",
+        epilog="Examples:\n  "
+        + "\n  ".join(
+            (
+                "html-publish-server --directory ~/.local/share/html-publish/runtime/public",
+                "html-publish-server --directory ./runtime/public --bind 127.0.0.1 --port 4177",
+            )
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False,
+    )
+    parser.add_argument(
+        "--directory",
+        required=True,
+        type=_directory,
+        help="publisher runtime/public directory to serve",
+    )
+    parser.add_argument("--bind", default="127.0.0.1", help="listen address (default: %(default)s)")
+    parser.add_argument(
+        "--port",
+        default=8000,
+        type=command_line.port(0),
+        help="listen port, 0 to 65535 (default: %(default)s)",
+    )
+    parser.add_argument(
+        "-v", "--verbose", action="store_true", help="print the access log on stderr"
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="also print tracebacks on stderr (or set HTML_PUBLISH_SERVER_DEBUG=1)",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"html-publish-server {__version__}",
+        help="show installed version",
+    )
+    return parser
+
+
+def _server_config(arguments: argparse.Namespace, argv: Sequence[str]) -> ServerConfig:
+    command_line.configure_logging(
+        "html-publish-server",
+        verbose=arguments.verbose,
+        debug=arguments.debug or command_line.debug_requested("html-publish-server", argv),
+    )
+    return ServerConfig(
+        cast(Path, arguments.directory), cast(str, arguments.bind), cast(int, arguments.port)
+    )
+
+
+class BindError(Exception):
+    """The listen address could not be bound."""
 
 
 def serve(config: ServerConfig) -> int:
+    """Serve until SIGINT or SIGTERM, close the socket, then die from that signal."""
     handler = functools.partial(PublicationRequestHandler, directory=str(config.directory))
-    server = PublicationHTTPServer((config.bind, config.port), handler)
+    try:
+        server = PublicationHTTPServer((config.bind, config.port), handler)
+    except OSError as error:
+        raise BindError(f"cannot listen on {config.bind}:{config.port}: {error}") from error
+    log.info("serving %s on http://%s:%d/", config.directory, config.bind, server.server_port)
     previous = {name: signal.getsignal(name) for name in (signal.SIGINT, signal.SIGTERM)}
+    received: list[int] = []
 
-    def stop(_signal: int, _frame: FrameType | None) -> None:
+    def stop(signal_number: int, _frame: FrameType | None) -> None:
+        received.append(signal_number)
         raise KeyboardInterrupt
 
     try:
@@ -217,11 +272,51 @@ def serve(config: ServerConfig) -> int:
         server.server_close()
         for name, handler_before in previous.items():
             signal.signal(name, handler_before)
+    if received:
+        _die_from(received[0])
     return 0
 
 
+def _die_from(signal_number: int) -> NoReturn:
+    """End the process by `signal_number`, so a service manager records a clean stop and a
+    shell reports 128 plus the signal number."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    signal.signal(signal_number, signal.SIG_DFL)
+    os.kill(os.getpid(), signal_number)
+    raise SystemExit(128 + signal_number)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    return serve(_parse_args(argv))
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    return command_line.run("html-publish-server", arguments, lambda: _main(arguments))
+
+
+def _main(arguments: list[str]) -> int:
+    parser = _parser()
+    try:
+        parsed = command_line.parse(parser, arguments)
+        if parsed is None:
+            return 0
+        config = _server_config(parsed, arguments)
+    except command_line.UsageError as error:
+        sys.stderr.write(command_line.usage_text(error, parser, arguments))
+        return 2
+    try:
+        return serve(config)
+    except BindError as error:
+        print(f"html-publish-server: {error}", file=sys.stderr)
+        fixed = [
+            "html-publish-server",
+            "--directory",
+            str(config.directory),
+            "--bind",
+            config.bind,
+            "--port",
+            "<port>",
+        ]
+        print(f"next: {shlex.join(fixed)}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

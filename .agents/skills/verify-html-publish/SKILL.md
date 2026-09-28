@@ -17,7 +17,7 @@ Start one isolated instance. Run the script from any directory. It resolves the 
 .agents/skills/verify-html-publish/scripts/instance.sh start <run_id>
 ```
 
-Pick a fresh `<run_id>` per proof, for example `first-pub-20260921`. On success the script prints `KEY=value` lines and exits 0. Export them as shell variables before running recipes, because every recipe below uses these names.
+Pick a fresh `<run_id>` per proof, for example `first-pub-20260921`. On success the script prints `KEY=value` lines on stdout, or one JSON object with `--json`, and exits 0 with an empty stderr. Export them as shell variables before running recipes, because every recipe below uses these names. `instance.sh --help` and `instance.sh help <command>` own the syntax.
 
 ```sh
 .../instance.sh start <run_id>
@@ -27,7 +27,7 @@ export PATH="${CLI%/*}:$PATH"
 
 The keys are `REPO_ROOT`, `RUN_ID`, `INSTANCE`, `CONFIG`, `URL`, `PORT`, `ARTIFACTS`, and `CLI`. Start builds a wheel into the evidence directory and installs it in this instance's virtual environment. `CLI` names that installed executable. The PATH export also makes the client config's bare `html-publish` command use this wheel. Readiness requires the owning supervisor to confirm that its server answers `ok` at `$URL/_html-publish-health`. HTTP reads have a one-second timeout. Failure retains logs and metadata for diagnosis. Run cleanup after a failed proof; malformed ownership metadata is retained rather than bypassed. Completion criterion is a passing doctor.
 
-Write the standard source fixtures into the instance. It prints `PAGE_A=` and `PAGE_B=` paths and prints the same values on every call for one run. Export those two names as well.
+Write the standard source fixtures into the instance. It prints `PAGE_A=` and `PAGE_B=` paths, or one JSON object with `--json`, and prints the same values on every call for one run. Export those two names as well.
 
 ```sh
 .../instance.sh sources <run_id>
@@ -44,7 +44,7 @@ Run this read-only check first whenever anything looks off. It reports whether t
 .../instance.sh doctor <run_id>
 ```
 
-It asks the owning supervisor whether its child is alive and healthy, checks that config paths stay inside this run's instance, and invokes the installed executable's `--version`. Exit 0 means drive it. Exit 1 reports the failed check; stop the instance when ownership permits and use a fresh run ID instead of repairing it.
+It asks the owning supervisor whether its child is alive and healthy, checks that config paths stay inside this run's instance, and invokes the installed executable's `--version`. Exit 0 with no output means drive it. Exit 1 reports the failed check and a `next:` command on stderr; stop the instance when ownership permits and use a fresh run ID instead of repairing it.
 
 ## Drive
 
@@ -74,7 +74,7 @@ curl -sS -o /dev/null -w '%{http_code}\n' "$URL/release-notes"
 curl -sS -o /dev/null -w '%{http_code}\n' "$URL/release-notes/missing.html"
 ```
 
-The directory URL returns the page body, the slashless form returns `301`, and an unknown path inside the page returns `404`. Use `--json` plus `jq` for assertions. Plain publish output is the URL only. Never hand-edit `$CONFIG`.
+The directory URL returns the page body, the slashless form returns `301`, and an unknown path inside the page returns `404`. Use `--json` plus `jq` for assertions. Plain publish output is the URL only on stdout, with any warnings on stderr; a successful command without warnings writes nothing to stderr. Exit 75 marks a failure that an identical rerun may clear, such as `lock_timeout`. Never hand-edit `$CONFIG`.
 
 ## Evidence
 
@@ -102,7 +102,7 @@ To prove read-only behavior while delivery is unavailable, stop the owned server
 .../instance.sh stop <run_id>
 ```
 
-It stops the owned server process, verifies that the bounded health request fails, copies `server.log` into `$ARTIFACTS`, removes the instance directory, and keeps the evidence. Completion criterion is a second `stop` reporting a clean no-op while the artifacts still exist. Run `stop` after failed iterations too. If cleanup refuses a stale identity, keep the metadata for diagnosis and choose a fresh run ID.
+It stops the owned server process, verifies that the bounded health request fails, copies `server.log` into `$ARTIFACTS`, removes the instance directory, keeps the evidence, and prints `ARTIFACTS=<kept directory>`. Completion criterion is a second `stop` that exits 0 and prints the same `ARTIFACTS=` line while the artifacts still exist. Run `stop` after failed iterations too. If cleanup refuses a stale identity, keep the metadata for diagnosis and choose a fresh run ID.
 
 ## Feature map
 

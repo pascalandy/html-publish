@@ -6,6 +6,7 @@ import copy
 import json
 import math
 import re
+import shlex
 import signal
 import sys
 import time
@@ -16,7 +17,7 @@ from types import FrameType
 from typing import Literal, NoReturn, cast
 from urllib.parse import urlparse
 
-from html_publish import __version__, _git
+from html_publish import __version__, _git, command_line
 from html_publish import guides as guides_registry
 from html_publish.configuration import (
     ClientConfig,
@@ -48,6 +49,7 @@ from html_publish.model import (
     Selection,
     Verification,
 )
+from html_publish.receipt import parse_attempt_id
 from html_publish.store import PublicationStore
 
 NAME_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
@@ -83,6 +85,7 @@ def bound_report_text(
 
 def _requested_report_mode(arguments: list[str]) -> ReportMode:
     selected: str | None = None
+    arguments = command_line.before_separator(arguments)
     for index, value in enumerate(arguments):
         if value == "--report":
             selected = arguments[index + 1] if index + 1 < len(arguments) else None
@@ -91,13 +94,8 @@ def _requested_report_mode(arguments: list[str]) -> ReportMode:
     return "summary" if selected == "summary" else "detail"
 
 
-class UsageFailure(Exception):
-    pass
-
-
-class Parser(argparse.ArgumentParser):
-    def error(self, message: str) -> NoReturn:
-        raise UsageFailure(message)
+class Parser(command_line.Parser):
+    exit_codes = (0, 1, 2, 75, 130, 143)
 
 
 @contextlib.contextmanager
@@ -135,8 +133,17 @@ def _name(value: str) -> Name:
     return Name(value)
 
 
+def _revision(value: str) -> str:
+    if not value or len(value) > 256:
+        raise argparse.ArgumentTypeError("revision must contain 1 to 256 characters")
+    return value
+
+
 def _positive_int(value: str) -> int:
-    parsed = int(value)
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("value must be an integer between 1 and 100") from error
     if parsed < 1 or parsed > 100:
         raise argparse.ArgumentTypeError("value must be between 1 and 100")
     return parsed
@@ -154,6 +161,7 @@ def _positive_seconds(value: str) -> float:
 
 def _globals(command: argparse.ArgumentParser, version: str) -> None:
     command.add_argument(
+        "-c",
         "--config",
         type=Path,
         default=argparse.SUPPRESS,
@@ -164,6 +172,20 @@ def _globals(command: argparse.ArgumentParser, version: str) -> None:
         action="store_true",
         default=argparse.SUPPRESS,
         help="write one JSON object to stdout",
+    )
+    command.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="print one line per step on stderr",
+    )
+    command.add_argument(
+        "--debug",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="also print timings, subprocess commands, and tracebacks on stderr "
+        "(or set HTML_PUBLISH_DEBUG=1)",
     )
     command.add_argument(
         "--version", action="version", version=version, help="show installed version"
@@ -190,14 +212,36 @@ def _parser(json_version: bool = False) -> Parser:
         "Use artifact publish for durable receipts and safe fresh-session updates. "
         "The root plan, publish, status, verify, history, and restore commands "
         "address the publisher directly.",
+        epilog="Examples:\n  "
+        + "\n  ".join(
+            (
+                "html-publish --config client.json artifact publish ./page.html "
+                "--new release-notes",
+                "html-publish --config publisher.json --json plan --name release-notes "
+                "--source ./page.html --target https://host.example/pages/",
+                "html-publish --config publisher.json status --name release-notes",
+                "html-publish help artifact publish",
+            )
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         allow_abbrev=False,
     )
     parser.add_argument(
+        "-c",
         "--config",
         type=Path,
         help="JSON configuration file; defaults to the role's user config",
     )
     parser.add_argument("--json", action="store_true", help="write one JSON object to stdout")
+    parser.add_argument(
+        "-v", "--verbose", action="store_true", help="print one line per step on stderr"
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="also print timings, subprocess commands, and tracebacks on stderr "
+        "(or set HTML_PUBLISH_DEBUG=1)",
+    )
     parser.add_argument(
         "--version", action="version", version=version, help="show installed version"
     )
@@ -216,6 +260,9 @@ def _parser(json_version: bool = False) -> Parser:
         examples=(
             "html-publish --config publisher.json plan --name release-notes "
             "--source ./page.html --target https://host.example/pages/",
+            "html-publish --config publisher.json --json plan --name guide --source ./docs "
+            "--format markdown --target https://host.example/pages/ "
+            "--expected-revision REVISION --expected-record-revision RECORD",
         ),
         effects=("reads source and saved state", "does not change archive or selection"),
     )
@@ -263,6 +310,9 @@ def _parser(json_version: bool = False) -> Parser:
             "--source ./page.html --target https://host.example/pages/",
             "html-publish --config publisher.json --json publish --name guide "
             "--source ./docs --format markdown --target https://host.example/pages/",
+            "html-publish --config publisher.json --json publish --name release-notes "
+            "--source ./page.html --target https://host.example/pages/ "
+            "--expected-revision REVISION --request-id attempt-001",
         ),
         effects=("may advance archive", "may activate page", "probes delivery"),
     )
@@ -312,7 +362,11 @@ def _parser(json_version: bool = False) -> Parser:
         commands,
         "status",
         "observe bounded local state",
-        examples=("html-publish --config publisher.json --json status --name release-notes",),
+        examples=(
+            "html-publish --config publisher.json --json status --name release-notes",
+            "html-publish --config publisher.json --json status --limit 20",
+            "html-publish --config publisher.json --json status --name release-notes --host-check",
+        ),
         effects=(
             "reads state",
             "--host-check validates saved bytes and delivery",
@@ -340,7 +394,10 @@ def _parser(json_version: bool = False) -> Parser:
         commands,
         "verify",
         "validate the selected export and probe delivery",
-        examples=("html-publish --config publisher.json --json verify --name release-notes",),
+        examples=(
+            "html-publish --config publisher.json --json verify --name release-notes",
+            "html-publish --config publisher.json verify --name release-notes --report summary",
+        ),
         effects=("reads saved bytes and HTTP delivery", "does not activate"),
     )
     verify.add_argument("--name", required=True, type=_name, help="publication name")
@@ -350,7 +407,11 @@ def _parser(json_version: bool = False) -> Parser:
         commands,
         "history",
         "list bounded publication history for a name",
-        examples=("html-publish --config publisher.json --json history --name release-notes",),
+        examples=(
+            "html-publish --config publisher.json --json history --name release-notes",
+            "html-publish --config publisher.json --json history --name release-notes "
+            "--limit 5 --diff REVISION",
+        ),
         effects=("reads Git history", "does not change archive or selection"),
     )
     history.add_argument("--name", required=True, type=_name, help="publication name")
@@ -374,6 +435,9 @@ def _parser(json_version: bool = False) -> Parser:
             "html-publish --config publisher.json --json restore --name release-notes "
             "--archive-commit COMMIT --target https://host.example/pages/ "
             "--expected-revision REVISION",
+            "html-publish --config publisher.json --json restore --name release-notes "
+            "--archive-commit COMMIT --target https://host.example/pages/ "
+            "--expected-revision REVISION --request-id attempt-002",
         ),
         effects=("may append archive history", "may activate saved revision", "probes delivery"),
     )
@@ -411,7 +475,11 @@ def _parser(json_version: bool = False) -> Parser:
         commands,
         "artifact",
         "manage a durable receipt for one stable publication URL",
-        examples=("html-publish artifact publish ./page.html --new release-notes",),
+        examples=(
+            "html-publish artifact publish ./page.html --new release-notes",
+            "html-publish artifact retry --receipt ./page.html.publish",
+            "html-publish artifact status --receipt ./page.html.publish --local-only",
+        ),
         effects=("writes a private receipt", "calls the configured publisher"),
     )
     _globals(artifact, version)
@@ -423,6 +491,10 @@ def _parser(json_version: bool = False) -> Parser:
         examples=(
             "html-publish --config client.json artifact publish ./page.html "
             "--new release-notes --receipt ./page.publish",
+            "html-publish --config client.json artifact publish ./page.html "
+            "--receipt ./page.publish",
+            "html-publish --config client.json artifact publish ./docs --format markdown "
+            "--new guide",
         ),
         effects=("saves immutable pending input", "may publish and verify"),
     )
@@ -444,14 +516,19 @@ def _parser(json_version: bool = False) -> Parser:
     identity.add_argument("--new", type=_name, help="bind a new publication name")
     identity.add_argument("--adopt", type=_name, help="bind an existing name after review")
     artifact_publish.add_argument(
-        "--reviewed-revision", help="reviewed active revision for adoption or conflict replacement"
+        "--reviewed-revision",
+        type=_revision,
+        help="reviewed active revision for adoption or conflict replacement",
     )
     artifact_publish.add_argument(
         "--reviewed-record-revision",
+        type=_revision,
         help="reviewed private record revision when upgrading a legacy receipt",
     )
     artifact_publish.add_argument(
-        "--replaces-attempt", help="stored conflicting attempt ID; requires --reviewed-revision"
+        "--replaces-attempt",
+        type=parse_attempt_id,
+        help="stored conflicting attempt ID; requires --reviewed-revision",
     )
     artifact_publish.add_argument(
         "--local-only",
@@ -463,7 +540,11 @@ def _parser(json_version: bool = False) -> Parser:
         artifact_commands,
         "retry",
         "resume the same pending bytes or restore commit",
-        examples=("html-publish --config client.json artifact retry --receipt ./page.publish",),
+        examples=(
+            "html-publish --config client.json artifact retry --receipt ./page.publish",
+            "html-publish --config client.json artifact retry --receipt ./page.publish "
+            "--command-seconds 300",
+        ),
         effects=("inspects uncertain state", "may retry the original mutation"),
     )
     artifact_retry.add_argument("--receipt", required=True, help="private receipt directory")
@@ -472,7 +553,10 @@ def _parser(json_version: bool = False) -> Parser:
         artifact_commands,
         "status",
         "observe host state without accepting its revision",
-        examples=("html-publish artifact status --receipt ./page.publish --local-only",),
+        examples=(
+            "html-publish artifact status --receipt ./page.publish --local-only",
+            "html-publish --config client.json artifact status --receipt ./page.publish",
+        ),
         effects=(
             "reads receipt",
             "may record a host observation",
@@ -491,6 +575,8 @@ def _parser(json_version: bool = False) -> Parser:
         examples=(
             "html-publish --config client.json artifact restore --receipt ./page.publish "
             "--archive-commit COMMIT",
+            "html-publish --config client.json artifact restore --receipt ./page.publish "
+            "--archive-commit COMMIT --reviewed-revision REVISION --replaces-attempt ATTEMPT",
         ),
         effects=("saves a source-free restore intent", "may append history and activate"),
     )
@@ -499,14 +585,19 @@ def _parser(json_version: bool = False) -> Parser:
         "--archive-commit", required=True, help="reachable publisher history commit"
     )
     artifact_restore.add_argument(
-        "--reviewed-revision", help="reviewed active revision for conflict replacement"
+        "--reviewed-revision",
+        type=_revision,
+        help="reviewed active revision for conflict replacement",
     )
     artifact_restore.add_argument(
         "--reviewed-record-revision",
+        type=_revision,
         help="reviewed private record revision for conflict replacement",
     )
     artifact_restore.add_argument(
-        "--replaces-attempt", help="stored conflicting attempt ID; requires --reviewed-revision"
+        "--replaces-attempt",
+        type=parse_attempt_id,
+        help="stored conflicting attempt ID; requires --reviewed-revision",
     )
     _globals(artifact_restore, version)
 
@@ -514,7 +605,7 @@ def _parser(json_version: bool = False) -> Parser:
         commands,
         "schema",
         "print parser-derived command discovery as JSON",
-        examples=("html-publish schema",),
+        examples=("html-publish schema", "html-publish schema | jq '.commands[].name'"),
         effects=("reads command definitions only",),
     )
     _globals(schema, version)
@@ -523,7 +614,12 @@ def _parser(json_version: bool = False) -> Parser:
         commands,
         "config",
         "create or inspect explicit publisher and client configuration",
-        examples=("html-publish config validate --role publisher",),
+        examples=(
+            "html-publish config validate --role publisher",
+            "html-publish config init --role publisher --config publisher.json "
+            "--base-url https://review.example/pages/",
+            "html-publish --json config show --role client",
+        ),
         effects=("init writes only the selected config file", "show and validate read only"),
     )
     _globals(config_command, version)
@@ -533,12 +629,7 @@ def _parser(json_version: bool = False) -> Parser:
             config_actions,
             action,
             f"{action} a publisher or client configuration",
-            examples=(
-                "html-publish config init --role publisher --config publisher.json "
-                "--base-url https://review.example/pages/"
-                if action == "init"
-                else f"html-publish config {action} --role publisher --config publisher.json",
-            ),
+            examples=CONFIG_EXAMPLES[action],
             effects=("writes only the selected config file",)
             if action == "init"
             else ("reads configuration only",),
@@ -546,6 +637,12 @@ def _parser(json_version: bool = False) -> Parser:
         item.add_argument("--role", choices=("publisher", "client"), required=True)
         if action == "init":
             item.add_argument("--base-url", required=True, help="canonical target URL ending in /")
+            item.add_argument(
+                "-n",
+                "--dry-run",
+                action="store_true",
+                help="run every check and report outcome planned without writing the file",
+            )
             item.add_argument("--archive", type=Path, help="publisher bare Git archive path")
             item.add_argument("--runtime", type=Path, help="publisher runtime directory")
             item.add_argument(
@@ -572,7 +669,10 @@ def _parser(json_version: bool = False) -> Parser:
         commands,
         "doctor",
         "inspect local prerequisites; opt in to network reads",
-        examples=("html-publish doctor --role publisher --config publisher.json --json",),
+        examples=(
+            "html-publish doctor --role publisher --config publisher.json --json",
+            "html-publish doctor --role client --network",
+        ),
         effects=(
             "reads local configuration and prerequisites",
             "--network probes configured SSH and HTTP targets",
@@ -605,13 +705,21 @@ def _parser(json_version: bool = False) -> Parser:
         host_actions,
         "serve",
         "serve configured public pages in the foreground",
-        examples=("html-publish --config publisher.json host serve --port 4177",),
+        examples=(
+            "html-publish --config publisher.json host serve --port 4177",
+            "html-publish host serve --bind 127.0.0.1 --port 8080",
+        ),
         effects=("reads runtime/public", "binds to loopback by default"),
     )
     serve_command.add_argument(
         "--bind", default="127.0.0.1", help="listen address (non-loopback exposes HTTP)"
     )
-    serve_command.add_argument("--port", type=int, default=4177, help="listen port (default: 4177)")
+    serve_command.add_argument(
+        "--port",
+        type=command_line.port(0),
+        default=4177,
+        help="listen port, 0 to 65535 (default: 4177)",
+    )
     _globals(serve_command, version)
     setup_command = register_command(
         host_actions,
@@ -633,14 +741,20 @@ def _parser(json_version: bool = False) -> Parser:
         "--unit-name", default="html-publish", help="owned unit basename (default: html-publish)"
     )
     setup_command.add_argument(
-        "--port", type=int, default=4177, help="IPv4 loopback port (default: 4177)"
+        "--port",
+        type=command_line.port(1),
+        default=4177,
+        help="IPv4 loopback port, 1 to 65535 (default: 4177)",
     )
     _globals(setup_command, version)
     route_command = register_command(
         host_actions,
         "route",
         "preview or apply private HTTPS route setup",
-        examples=("html-publish --config publisher.json --json host route setup",),
+        examples=(
+            "html-publish --config publisher.json --json host route setup",
+            "html-publish --config publisher.json --json host route setup --apply",
+        ),
         effects=("route setup previews by default; --apply changes one owned Serve path",),
     )
     _globals(route_command, version)
@@ -670,7 +784,7 @@ def _parser(json_version: bool = False) -> Parser:
         commands,
         "skills",
         "read the bundled version-matched guides offline",
-        examples=("html-publish skills list",),
+        examples=("html-publish skills list", "html-publish skills get core"),
         effects=("reads packaged guide bytes only", "needs no configuration or network"),
     )
     _globals(skills, version)
@@ -679,7 +793,7 @@ def _parser(json_version: bool = False) -> Parser:
         skills_actions,
         "list",
         "list the bundled guides as JSON",
-        examples=("html-publish skills list",),
+        examples=("html-publish skills list", "html-publish skills list | jq -r '.guides[].name'"),
         effects=("reads packaged guide bytes only", "needs no configuration or network"),
     )
     _globals(skills_list, version)
@@ -687,14 +801,40 @@ def _parser(json_version: bool = False) -> Parser:
         skills_actions,
         "get",
         "print one bundled guide",
-        examples=("html-publish skills get core",),
+        examples=("html-publish skills get core", "html-publish skills get recovery --json"),
         effects=("reads packaged guide bytes only", "needs no configuration or network"),
     )
     skills_get.add_argument(
         "guide", metavar="NAME", choices=guides_registry.names(), help="bundled guide name"
     )
     _globals(skills_get, version)
+    command_line.add_help_command(
+        commands,
+        "html-publish",
+        ("html-publish help publish", "html-publish help artifact publish"),
+    )
     return parser
+
+
+CONFIG_EXAMPLES = {
+    "init": (
+        "html-publish config init --role publisher --config publisher.json "
+        "--base-url https://review.example/pages/",
+        "html-publish --json config init --role publisher --config publisher.json "
+        "--base-url https://review.example/pages/ --dry-run",
+        "html-publish config init --role client --config client.json "
+        "--base-url https://review.example/pages/ --target-id review --execution local "
+        "--publisher-config /srv/html-publish/publisher.json",
+    ),
+    "show": (
+        "html-publish config show --role publisher --config publisher.json",
+        "html-publish --json config show --role client",
+    ),
+    "validate": (
+        "html-publish config validate --role publisher --config publisher.json",
+        "html-publish --json config validate --role client",
+    ),
+}
 
 
 def _require_object(raw: object, label: str) -> dict[str, object]:
@@ -1170,23 +1310,108 @@ def usage_report(
     }
 
 
-def emit_json(payload: Mapping[str, object], exit_code: Literal[0, 1, 2]) -> int:
+def emit_json(payload: Mapping[str, object], exit_code: int) -> int:
     print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
     return exit_code
 
 
-def _print_report(report: Report, json_output: bool, mode: ReportMode = "detail") -> int:
+def failure_exit_code(failure: Failure | None) -> int:
+    """0 on success, 75 for a lock timeout that an identical rerun may clear, else 1."""
+    if failure is None:
+        return 0
+    return 75 if failure.code == "lock_timeout" else 1
+
+
+def _print_report(
+    report: Report,
+    json_output: bool,
+    mode: ReportMode = "detail",
+    next_command: str | None = None,
+    exit_code: int | None = None,
+) -> int:
     payload = report_dict(report, mode)
+    code = failure_exit_code(report.error) if exit_code is None else exit_code
     if json_output:
-        return emit_json(payload, 1 if report.error else 0)
+        return emit_json(payload, code)
     elif report.error:
         print(f"html-publish: {report.error.message}", file=sys.stderr)
+        if next_command is not None:
+            print(f"next: {next_command}", file=sys.stderr)
     elif report.operation in {"publish", "restore"}:
         assert report.url is not None
+        detailed = {detail.code for detail in report.warning_details}
+        for detail in report.warning_details:
+            print(
+                f"html-publish: warning: {detail.code}: {detail.source_path} "
+                f"references {detail.reference}",
+                file=sys.stderr,
+            )
+        for warning in report.warnings:
+            if warning not in detailed:
+                print(f"html-publish: warning: {warning}", file=sys.stderr)
         print(report.url)
     else:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
-    return 1 if report.error else 0
+    return code
+
+
+def _with_option(arguments: list[str], flag: str, value: str | None) -> list[str]:
+    """`arguments` with `flag` set to `value`, or without `flag` when `value` is None."""
+    kept: list[str] = []
+    skip = False
+    for argument in arguments:
+        if skip:
+            skip = False
+        elif argument == flag:
+            skip = True
+        elif not argument.startswith(f"{flag}="):
+            kept.append(argument)
+    return kept if value is None else [*kept, flag, value]
+
+
+def _next_command(
+    kind: str, parsed: argparse.Namespace, arguments: list[str], config: Config | None
+) -> str:
+    """The command to run next for a runtime error, from its `next_action` kind; known values
+    are filled in and the rest are <placeholders>."""
+    config_flag = ["--config", str(parsed.config)] if getattr(parsed, "config", None) else []
+    name = str(getattr(parsed, "name", None) or "<name>")
+    role = str(getattr(parsed, "role", None) or "publisher")
+
+    def publisher(*words: str) -> list[str]:
+        return ["html-publish", *config_flag, *words]
+
+    same = ["html-publish", *arguments]
+    commands: dict[str, list[str]] = {
+        "retry": same,
+        "inspect": publisher("status", "--name", name),
+        "review_conflict": publisher("history", "--name", name),
+        "fix_route": publisher("status", "--name", name, "--host-check"),
+        "publish": publisher(
+            "publish",
+            "--name",
+            name,
+            "--source",
+            "<source>",
+            "--target",
+            config.base_url if config else "<target>",
+        ),
+        "rebind": ["html-publish", *_with_option(arguments, "--target", config.base_url)]
+        if config
+        else same,
+        "fix_input": ["html-publish", *_with_option(arguments, "--source", "<source>")],
+        "reduce_input": ["html-publish", *_with_option(arguments, "--source", "<source>")],
+        "move_input": ["html-publish", *_with_option(arguments, "--source", "<source>")],
+        "specify_entry": ["html-publish", *_with_option(arguments, "--entry", "<entry>")],
+        "fix_entry": ["html-publish", *_with_option(arguments, "--entry", "<entry>")],
+        "remove_entry": ["html-publish", *_with_option(arguments, "--entry", None)],
+        "fix_arguments": ["html-publish", str(getattr(parsed, "operation", "")), "--help"],
+        "fix_config": ["html-publish", "config", "validate", "--role", role, *config_flag],
+        "inspect_checks": ["html-publish", "doctor", "--role", role, *config_flag],
+        "fix_host": ["html-publish", "doctor", "--role", "publisher", *config_flag],
+        "fix_storage": ["html-publish", "doctor", "--role", "publisher", *config_flag],
+    }
+    return shlex.join(commands.get(kind, ["html-publish", "skills", "get", "recovery"]))
 
 
 def _run_skills(parsed: argparse.Namespace) -> int:
@@ -1236,7 +1461,12 @@ def _config_result(
     }
 
 
-def _emit_config(payload: dict[str, object], json_output: bool, exit_code: Literal[0, 1, 2]) -> int:
+def _emit_config(
+    payload: dict[str, object],
+    json_output: bool,
+    exit_code: int,
+    next_command: str | None = None,
+) -> int:
     if json_output:
         return emit_json(payload, exit_code)
     if payload["error"] is not None:
@@ -1249,24 +1479,44 @@ def _emit_config(payload: dict[str, object], json_output: bool, exit_code: Liter
                         f"  {check['id']}: {check['detail']}. {check['next_step']}",
                         file=sys.stderr,
                     )
+        if next_command is not None:
+            print(f"next: {next_command}", file=sys.stderr)
     else:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     return exit_code
 
 
+def _given(parsed: argparse.Namespace, names: tuple[str, ...]) -> list[str]:
+    """The flags among `names` (argparse destinations) that the command line set."""
+    return [
+        "--" + name.replace("_", "-")
+        for name in names
+        if getattr(parsed, name) not in (None, False)
+    ]
+
+
+def _placeholders(flags: list[str]) -> list[str]:
+    return [word for flag in flags for word in (flag, f"<{flag.removeprefix('--')}>")]
+
+
 def _init_raw(parsed: argparse.Namespace) -> dict[str, object]:
     if parsed.role == "publisher":
-        invalid = (
-            "target_id",
-            "execution",
-            "publisher_config",
-            "host",
-            "remote_executable",
-            "remote_config",
-            "incoming_root",
+        invalid = _given(
+            parsed,
+            (
+                "target_id",
+                "execution",
+                "publisher_config",
+                "host",
+                "remote_executable",
+                "remote_config",
+                "incoming_root",
+            ),
         )
-        if any(getattr(parsed, name) is not None for name in invalid):
-            raise UsageFailure("client options cannot be used for publisher config init")
+        if invalid:
+            raise command_line.UsageError(
+                "client options cannot be used for publisher config init", drop=invalid
+            )
         root = (
             data_root() / "html-publish"
             if parsed.archive is None or parsed.runtime is None
@@ -1282,18 +1532,36 @@ def _init_raw(parsed: argparse.Namespace) -> dict[str, object]:
             "object_format": "sha1",
             "limits": {},
         }
-    if parsed.archive is not None or parsed.runtime is not None or parsed.allow_http:
-        raise UsageFailure("publisher options cannot be used for client config init")
+    invalid = _given(parsed, ("archive", "runtime", "allow_http"))
+    if invalid:
+        raise command_line.UsageError(
+            "publisher options cannot be used for client config init", drop=invalid
+        )
     if parsed.target_id is None or parsed.execution is None:
-        raise UsageFailure("client config init requires --target-id and --execution")
+        raise command_line.UsageError(
+            "client config init requires --target-id and --execution",
+            add=_placeholders(
+                [
+                    flag
+                    for flag, value in (
+                        ("--target-id", parsed.target_id),
+                        ("--execution", parsed.execution),
+                    )
+                    if value is None
+                ]
+            ),
+        )
     if parsed.execution == "local":
         if parsed.publisher_config is None:
-            raise UsageFailure("local client config init requires --publisher-config")
-        if any(
-            getattr(parsed, name) is not None
-            for name in ("host", "remote_executable", "remote_config", "incoming_root")
-        ):
-            raise UsageFailure("SSH options cannot be used with local execution")
+            raise command_line.UsageError(
+                "local client config init requires --publisher-config",
+                add=_placeholders(["--publisher-config"]),
+            )
+        invalid = _given(parsed, ("host", "remote_executable", "remote_config", "incoming_root"))
+        if invalid:
+            raise command_line.UsageError(
+                "SSH options cannot be used with local execution", drop=invalid
+            )
         execution: dict[str, object] = {
             "kind": "local",
             "command": ["html-publish"],
@@ -1301,7 +1569,9 @@ def _init_raw(parsed: argparse.Namespace) -> dict[str, object]:
         }
     else:
         if parsed.publisher_config is not None:
-            raise UsageFailure("--publisher-config is only for local execution")
+            raise command_line.UsageError(
+                "--publisher-config is only for local execution", drop=["--publisher-config"]
+            )
         missing = [
             flag
             for name, flag in (
@@ -1313,7 +1583,10 @@ def _init_raw(parsed: argparse.Namespace) -> dict[str, object]:
             if getattr(parsed, name) is None
         ]
         if missing:
-            raise UsageFailure("remote client config init requires " + ", ".join(missing))
+            raise command_line.UsageError(
+                "remote client config init requires " + ", ".join(missing),
+                add=_placeholders(missing),
+            )
         execution = {
             "kind": "remote",
             "command": ["html-publish-remote"],
@@ -1334,12 +1607,14 @@ def _run_config(parsed: argparse.Namespace) -> int:
     role = cast(Literal["publisher", "client"], parsed.role)
     action = parsed.config_action if parsed.operation == "config" else "doctor"
     if action == "init" and parsed.config is None:
-        raise UsageFailure("config init requires an explicit --config path")
+        raise command_line.UsageError(
+            "config init requires an explicit --config path", add=["--config", "<path>"]
+        )
     path, source = selected_path(role, parsed.config)
     parsed.selected_config_path = path
     parsed.config_source = source
     if action == "init":
-        outcome = init_document(path, _init_raw(parsed), role)
+        outcome = init_document(path, _init_raw(parsed), role, dry_run=parsed.dry_run)
         return _emit_config(
             _config_result("config.init", role, path, source, outcome), parsed.json, 0
         )
@@ -1427,14 +1702,24 @@ def _run_config(parsed: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    started_at = time.monotonic()
     arguments = list(sys.argv[1:] if argv is None else argv)
-    json_output = "--json" in arguments
+    return command_line.run("html-publish", arguments, lambda: _main(arguments))
+
+
+def _main(arguments: list[str]) -> int:
+    started_at = time.monotonic()
+    json_output = "--json" in command_line.before_separator(arguments)
     parsed = argparse.Namespace()
     config: Config | None = None
+    parser = _parser(json_output)
     try:
-        parser = _parser(json_output)
-        parser.parse_args(arguments, namespace=parsed)
+        if command_line.parse(parser, arguments, parsed) is None:
+            return 0
+        command_line.configure_logging(
+            "html-publish",
+            verbose=parsed.verbose,
+            debug=parsed.debug or command_line.debug_requested("html-publish", arguments),
+        )
         if parsed.operation == "schema":
             return emit_json(command_schema(parser, "html-publish"), 0)
         if parsed.operation == "skills":
@@ -1444,7 +1729,10 @@ def main(argv: list[str] | None = None) -> int:
         expected_render_profile_id = getattr(parsed, "expected_render_profile_id", None)
         if expected_render_profile_id is not None:
             if parsed.operation != "publish" or parsed.input_format != "markdown":
-                raise UsageFailure("--expected-render-profile-id requires Markdown publish")
+                raise command_line.UsageError(
+                    "--expected-render-profile-id requires Markdown publish",
+                    add=["--format", "markdown"],
+                )
             if expected_render_profile_id != RENDER_PROFILE_ID:
                 raise PublishError(
                     "unsupported_render_profile",
@@ -1460,15 +1748,24 @@ def main(argv: list[str] | None = None) -> int:
         config_path, _ = selected_path("publisher", parsed.config)
         if parsed.operation == "host":
             from html_publish.host import HostError, apply, make_spec, preview
-            from html_publish.server import ServerConfig, serve
+            from html_publish.server import BindError, ServerConfig, serve
 
             config_path = config_path.absolute()
             try:
                 config = load_config(config_path)
                 if parsed.host_action == "serve":
-                    if not 0 <= parsed.port <= 65535:
-                        raise UsageFailure("serve port must be between 0 and 65535")
-                    return serve(ServerConfig(config.runtime / "public", parsed.bind, parsed.port))
+                    try:
+                        return serve(
+                            ServerConfig(config.runtime / "public", parsed.bind, parsed.port)
+                        )
+                    except BindError as error:
+                        failure = Failure("bind_failed", "serve", str(error), "choose_port")
+                        if parsed.json:
+                            return emit_json(_host_error(parsed, failure), 1)
+                        print(f"html-publish: {error}", file=sys.stderr)
+                        fixed = _with_option(arguments, "--port", "<port>")
+                        print(f"next: {shlex.join(['html-publish', *fixed])}", file=sys.stderr)
+                        return 1
                 if parsed.host_action == "route":
                     from html_publish.host_route import apply as route_apply
                     from html_publish.host_route import preview as route_preview
@@ -1485,6 +1782,8 @@ def main(argv: list[str] | None = None) -> int:
                         json.dumps(result, indent=2),
                         file=sys.stdout if code == 0 else sys.stderr,
                     )
+                    if code != 0:
+                        print(f"next: {_host_preview_command(parsed)}", file=sys.stderr)
                     return code
                 spec, prerequisites = make_spec(config_path, config, parsed.unit_name, parsed.port)
                 result = (
@@ -1515,6 +1814,8 @@ def main(argv: list[str] | None = None) -> int:
             if parsed.json:
                 return emit_json(result, code)
             print(json.dumps(result, indent=2), file=sys.stdout if code == 0 else sys.stderr)
+            if code != 0:
+                print(f"next: {_host_preview_command(parsed)}", file=sys.stderr)
             return code
         config = load_config(config_path)
         command_seconds = parsed.command_seconds or config.limits.command_seconds
@@ -1565,8 +1866,18 @@ def main(argv: list[str] | None = None) -> int:
                     parsed.limit,
                     getattr(parsed, "host_check", False),
                 )
-        return _print_report(report, parsed.json, parsed.report)
-    except UsageFailure as error:
+        return _print_report(
+            report,
+            parsed.json,
+            parsed.report,
+            _next_command(report.error.next_action, parsed, arguments, config)
+            if report.error
+            else None,
+        )
+    except command_line.Interrupted as interruption:
+        return _interrupted(parsed, json_output, arguments, config, interruption)
+    except command_line.UsageError as error:
+        sys.stderr.write(command_line.usage_text(error, parser, arguments))
         failure = Failure("invalid_usage", "usage", str(error), "fix_arguments")
         operation = getattr(parsed, "operation", None)
         if operation == "artifact":
@@ -1582,6 +1893,8 @@ def main(argv: list[str] | None = None) -> int:
                 "usage",
             )
             return receipt.usage_error(action, str(error))
+        if not json_output:
+            return 2
         if operation in {"config", "doctor"} and not hasattr(parsed, "role"):
             return _emit_config(
                 _config_result(operation, None, None, None, "error", failure=failure),
@@ -1602,23 +1915,19 @@ def main(argv: list[str] | None = None) -> int:
                 json_output,
                 2,
             )
-        if json_output:
-            return emit_json(
-                usage_report(
-                    operation,
-                    failure,
-                    target=getattr(parsed, "target", None),
-                    name=getattr(parsed, "name", None),
-                    expected_revision=getattr(parsed, "expected_revision", None),
-                    expected_record_revision=getattr(parsed, "expected_record_revision", None),
-                    request_id=getattr(parsed, "request_id", None),
-                    mode=getattr(parsed, "report", _requested_report_mode(arguments)),
-                ),
-                2,
-            )
-        else:
-            print(f"html-publish: {error}", file=sys.stderr)
-        return 2
+        return emit_json(
+            usage_report(
+                operation,
+                failure,
+                target=getattr(parsed, "target", None),
+                name=getattr(parsed, "name", None),
+                expected_revision=getattr(parsed, "expected_revision", None),
+                expected_record_revision=getattr(parsed, "expected_record_revision", None),
+                request_id=getattr(parsed, "request_id", None),
+                mode=getattr(parsed, "report", _requested_report_mode(arguments)),
+            ),
+            2,
+        )
     except PublishError as error:
         operation = getattr(parsed, "operation", None)
         if operation in {"config", "doctor"}:
@@ -1634,6 +1943,7 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 json_output,
                 1,
+                _next_command(error.failure.next_action, parsed, arguments, config),
             )
         error_operation: Operation
         error_operation = cast(
@@ -1656,7 +1966,107 @@ def main(argv: list[str] | None = None) -> int:
             ),
             error=error.failure,
         )
-        return _print_report(report, json_output, getattr(parsed, "report", "detail"))
+        return _print_report(
+            report,
+            json_output,
+            getattr(parsed, "report", "detail"),
+            _next_command(error.failure.next_action, parsed, arguments, config),
+        )
+
+
+def _interrupted(
+    parsed: argparse.Namespace,
+    json_output: bool,
+    arguments: list[str],
+    config: Config | None,
+    interruption: command_line.Interrupted,
+) -> int:
+    """Report a signal that ended a command: one JSON object in JSON mode, else two lines.
+
+    A publish or restore may have advanced the archive or selection before the signal, so
+    its effects are unknown and the next step is inspection.
+    """
+    operation = getattr(parsed, "operation", None)
+    mutating = operation in {"publish", "restore"}
+    failure = Failure(
+        "interrupted",
+        "interrupt",
+        f"The command was interrupted by {signal.Signals(interruption.signal_number).name}",
+        "inspect" if mutating else "retry",
+        ("name", "request_id", "expected_revision") if mutating else (),
+    )
+    if operation in OPERATIONS:
+        target = getattr(parsed, "target", config.base_url if config else None)
+        name = getattr(parsed, "name", None)
+        report = Report(
+            cast(Operation, operation),
+            "error",
+            target,
+            name,
+            publication_url(target, name) if target is not None and name is not None else None,
+            request_id=getattr(parsed, "request_id", None),
+            expected_revision=getattr(parsed, "expected_revision", None),
+            expected_record_revision=getattr(parsed, "expected_record_revision", None),
+            render_profile_id=(
+                RENDER_PROFILE_ID if getattr(parsed, "input_format", None) == "markdown" else None
+            ),
+            effects=Effects(None, None) if mutating else Effects(),
+            error=failure,
+        )
+        return _print_report(
+            report,
+            json_output,
+            getattr(parsed, "report", "detail"),
+            _next_command(failure.next_action, parsed, arguments, config),
+            exit_code=interruption.exit_code,
+        )
+    if json_output and operation in {"config", "doctor"}:
+        action = parsed.config_action if operation == "config" else "doctor"
+        return _emit_config(
+            _config_result(
+                f"config.{action}" if action != "doctor" else "doctor",
+                getattr(parsed, "role", None),
+                getattr(parsed, "selected_config_path", getattr(parsed, "config", None)),
+                getattr(parsed, "config_source", None),
+                "error",
+                failure=failure,
+            ),
+            True,
+            interruption.exit_code,
+        )
+    if json_output and operation == "host":
+        return emit_json(_host_error(parsed, failure), interruption.exit_code)
+    print(f"html-publish: {failure.message}", file=sys.stderr)
+    return interruption.exit_code
+
+
+def _host_error(parsed: argparse.Namespace, failure: Failure) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "operation": (
+            "host.route.setup" if parsed.host_action == "route" else f"host.{parsed.host_action}"
+        ),
+        "outcome": "error",
+        "error": {
+            "code": failure.code,
+            "message": failure.message,
+            "next_action": failure.next_action,
+        },
+    }
+
+
+def _host_preview_command(parsed: argparse.Namespace) -> str:
+    """The read-only host preview that shows why a host command failed."""
+    config_flag = ["--config", str(parsed.config)] if parsed.config else []
+    if parsed.host_action == "route":
+        words = ["host", "route", "setup", "--unit-name", parsed.unit_name]
+    elif parsed.host_action == "setup":
+        words = ["host", "setup", "--unit-name", parsed.unit_name, "--port", str(parsed.port)]
+    else:
+        return shlex.join(
+            ["html-publish", "config", "validate", "--role", "publisher", *config_flag]
+        )
+    return shlex.join(["html-publish", *config_flag, "--json", *words])
 
 
 def entrypoint() -> NoReturn:

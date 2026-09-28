@@ -77,6 +77,12 @@ The [reviewed dotfiles installer](https://github.com/pascalandy/dotfiles/blob/e8
 
 The deployment module builds a wheel on `om1` and exports the locked runtime requirements from `uv.lock`. It installs both in a content-addressed virtual environment. The release ID hashes the wheel and requirements bytes. The module writes the publisher configuration and user unit, starts the service, installs the Tailscale route, and runs health checks. Repeating the command with the same wheel and requirements reports `unchanged`. A changed wheel or a lockfile-only change to the exported requirements creates and activates a new application release. `just deploy-om1` remains a repository convenience command without the dotfiles entrypoint's machine and revision checks
 
+To preview an install without changing anything, run the preflight alone from the checkout. The JSON result reports `outcome` `planned`, `release` `null`, and whether install would write the configuration or create the route. Add `-v` to print each step on stderr, or `--debug` to add every command with its timing
+
+```sh
+uv run --frozen python -m html_publish.deploy install --source "$PWD" --dry-run
+```
+
 The installer checks configuration, route ownership, unit state, and pointer shape before creating deployment state or preparing a wheel. A conflicting configuration or route stops the install before activation. It checks those inputs again after preparing the release. Existing routes on ports 443, 8443, and 5173 remain untouched
 
 On activation failure, recovery restores this attempt's unit and configuration bytes and modes, exact application symlinks, and enabled state. This also applies to same-wheel reinstalls. Recovery refuses to overwrite a file, pointer, or route that no longer matches this attempt's writes. It removes only a newly created, still-matching `/html-publish` handler. It never restores a complete Tailscale Serve snapshot
@@ -152,7 +158,7 @@ Run the complete application and route check through the installed application o
 /home/pascal/.local/share/html-publish/current/.venv/bin/html-publish-deploy health
 ```
 
-The JSON result reports the active application release and checks the user service, the exact Tailscale route, the loopback health endpoint, and the HTTPS health endpoint. A failed check returns a nonzero exit status
+The JSON result reports the active application release and checks the user service, the exact Tailscale route, the loopback health endpoint, and the HTTPS health endpoint. The command exits 75 when every failed check is an HTTP probe that could not connect, for example while the restarted service is still starting; rerun it after a short wait. Any other failed check exits 1
 
 For direct host diagnosis, run
 
@@ -215,7 +221,10 @@ to a unique `incoming` directory, and invokes the installed CLI over SSH. Status
 and restore invoke the CLI without SCP. The source artifact stays unchanged
 
 All six commands emit the common JSON envelope. Exit 0 means success, 1 means operational failure,
-and 2 means invalid usage. The client validates the host result's command and caller identity before
+and 2 means invalid usage. Exit 75 means a failure that an identical rerun may clear: SSH exited 255
+on the staging setup step, the deadline expired before the host command started, a read-only result
+was lost, or the host reported `lock_timeout`. A failed `scp` and a lost publish or restore result
+stay exit 1. A client stopped by SIGINT or SIGTERM still writes its JSON result and exits 130 or 143. The client validates the host result's command and caller identity before
 relaying it. `--command-seconds 120`, placed before the command, bounds capture, transport, and
 cleanup with one deadline. Cleanup reserves up to five seconds inside that budget
 
@@ -319,6 +328,8 @@ To select a known installed release, run the deployment module with its release 
 	--release 'sha256-<wheel-and-locked-requirements-digest>'
 ```
 
+Add `--dry-run` to name the release rollback would select without changing a pointer or the service.
+
 Rollback changes the application release pointer and restarts the service. It does not restore publication content or earlier unit and configuration files. A failed rollback restores the exact original application pointers if they still match this attempt's writes. Recovery restart failures remain visible in the error
 
 Return to the reviewed checkout with the same `html-publish-install --source ... --revision ...` command after a rollback
@@ -346,7 +357,8 @@ html-publish --config /absolute/path/publisher.json --json host route setup
 html-publish --config /absolute/path/publisher.json --json host route setup --apply
 ```
 
-`host serve` stops on SIGINT or SIGTERM. `host setup` previews by default. Apply writes a record at
+`host serve` stops serving on SIGINT or SIGTERM and dies from that signal, so systemd records a
+clean stop. It writes its access log only with `-v`. `host setup` previews by default. Apply writes a record at
 `$XDG_STATE_HOME/html-publish/hosts/<unit-name>.json`, or under `~/.local/state` when the variable is
 unset. It writes `<unit-name>.service` under `$XDG_CONFIG_HOME/systemd/user`, or under `~/.config`.
 The default unit name is `html-publish.service`. Use `--unit-name html-publish-<name>` to isolate a

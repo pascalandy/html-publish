@@ -131,6 +131,7 @@ class Verification:
 | Module | Owns |
 | --- | --- |
 | `cli.py` | Arguments, configuration parsing, JSON v1, plain output, and exit codes |
+| `command_line.py` | Shared command-line conventions for the four executables: the help pre-scan and `help <command>`, usage-error format with suggestions, the exit-code table in every help text, stderr log levels, and the signal guard that turns SIGINT and SIGTERM into 130 and 143 |
 | `artifact.py` | Input capture, accepted paths, exact bytes, Git tree identity, and HTML warnings |
 | `markdown.py` | Deterministic Markdown entry selection, source-to-output mapping, rendering, link resolution, template output, and renderer provenance |
 | `store.py` | Paired Git history, runtime layout, the process lock, mutation order, state observation, history, restore, and partial effects |

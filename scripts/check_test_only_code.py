@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _common import ScriptError, run_script
+from _common import Parser, ScriptError, run_script
 from _test_tree import add_root_argument, python_files
 
 EPILOG = """\
@@ -27,9 +27,7 @@ rule:
 
 examples:
   just check --only test-only-code
-  uv run python scripts/check_test_only_code.py --verbose
-
-exit codes: 0 ok, 1 test-only definitions found, 2 bad usage, 130 interrupted"""
+  uv run python scripts/check_test_only_code.py --verbose"""
 
 PACKAGE = "html_publish"
 CALLER_TREES = (PACKAGE, "scripts", ".agents")
@@ -99,7 +97,7 @@ def check(root: Path) -> str:
                 continue
             count += 1
             if name not in callers and name in tested:
-                log.debug("test-only %s:%s", label, name)
+                log.info("test-only %s:%s", label, name)
                 errors.append(
                     f"{label}:{line}: [test-only-code] {name} is used only by tests; "
                     "fix: delete it, or move its test to the boundary a user reaches"
@@ -110,14 +108,16 @@ def check(root: Path) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
+    parser = Parser(
         prog="check_test_only_code.py",
         description="Check that no public product definition exists only for tests",
         epilog=EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     add_root_argument(parser)
-    return run_script(parser, lambda args: check(args.root.resolve()), argv)
+    return run_script(
+        parser, lambda args: check(args.root.resolve()), argv, failure="test-only definitions found"
+    )
 
 
 if __name__ == "__main__":

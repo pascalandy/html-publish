@@ -4,7 +4,7 @@ The installed CLI creates explicit publisher and client configuration, reads and
 
 ## Sub-features
 
-- `config-init` writes one selected config file and leaves an identical file untouched on retry
+- `config-init` writes one selected config file and leaves an identical file untouched on retry; `-n`/`--dry-run` runs every check and writes nothing
 - `config-show` reports effective values and their origins
 - `config-validate` checks structure without initializing publisher state
 - `doctor-local` reports local prerequisites without repair
@@ -24,6 +24,7 @@ Preconditions:
 - Keep the PATH export from SKILL.md Launch in the same shell before client diagnostics so the client finds this instance's installed `html-publish`
 - Keep new config paths under `$INSTANCE`; never replace the generated `$CONFIG`
 
+- **Preview the publisher config.** Run the create command below with `--dry-run` first. Exit 0 with `outcome` `planned`, `effects.config_written` `false`, and no `$INSTANCE/second-publisher.json`
 - **Create an isolated publisher config.** Run `"$CLI" --json config init --role publisher --config "$INSTANCE/second-publisher.json" --archive "$INSTANCE/second-archive.git" --runtime "$INSTANCE/second-runtime" --base-url "$URL/" --allow-http`. Exit 0 with `outcome` `config_written`; repeat the same command and require `unchanged` with identical file bytes and metadata
 - **Inspect without publication.** Run `"$CLI" --json --config "$INSTANCE/second-publisher.json" config show --role publisher`, then `config validate --role publisher` with the same config. Both exit 0 with `outcome` `valid`; show includes `values`, `origins`, and the selected path, while validate creates no archive or runtime
 - **Create a client binding.** Run `"$CLI" --json config init --role client --config "$INSTANCE/client.json" --base-url "$URL/" --target-id loopback --execution local --publisher-config "$CONFIG"`. Exit 0 with `config_written`; `config show` and `config validate` for that client both exit 0

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import logging
 import os
@@ -11,12 +12,13 @@ import shlex
 import signal
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _common import ScriptError, run_script
+from _common import Parser, ScriptError, run_script
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -31,9 +33,7 @@ examples:
   just check
   just check --fast
   just check --list --verbose
-  just check --only test-smells --only e2e-boundary
-
-exit codes: 0 ok, 1 a check failed, 2 bad usage, 130 interrupted"""
+  just check --only test-smells --only e2e-boundary"""
 
 PYTHON = sys.executable
 
@@ -56,9 +56,15 @@ def script(name: str) -> Command:
     return (PYTHON, f"scripts/{name}.py")
 
 
+def takes_verbosity(command: Command) -> bool:
+    """Repository scripts and the E2E runner take -v and --debug; ruff, pyright, and unittest
+    read their own flags, so they never receive ours."""
+    return command[1].startswith("scripts/") or command[1:] == ("-m", "tests.e2e")
+
+
 # Timeouts stay inside the CI job's 20 minutes so the runner, not the job, reports a hang and
-# kills its process group. The isolated and E2E rows take about 50 s and 2 min locally, and
-# about 2.5 times that on the macOS runner
+# kills its process group. The isolated and E2E rows take about 50 s and 3 min locally; the E2E
+# row takes about 6 min on the Linux runner and longer on the macOS one
 CHECKS = [
     Check("format", ((PYTHON, "-m", "ruff", "format", "--check", "."),)),
     Check("lint", ((PYTHON, "-m", "ruff", "check", "."),)),
@@ -74,17 +80,19 @@ CHECKS = [
         ((PYTHON, "-m", "unittest", "discover", "-s", "tests/isolated", "-t", "."),),
         timeout=240,
     ),
-    Check("e2e", ((PYTHON, "-m", "tests.e2e"),), fast=False, timeout=600),
+    Check("e2e", ((PYTHON, "-m", "tests.e2e"),), fast=False, timeout=900),
     Check("e2e-artifacts", (script("check_e2e_artifacts"),), fast=False),
 ]
 
 
 def execute(command: Command, timeout: int, verbose: bool) -> tuple[int, str]:
-    """Run one command in its own process group; kill the whole group when it times out."""
+    """Run one command in its own process group; kill the whole group when it times out or a
+    signal interrupts the runner. A verbose run streams the command's output to stderr, since
+    stdout carries only the runner's result."""
     process = subprocess.Popen(
         command,
         cwd=ROOT,
-        stdout=None if verbose else subprocess.PIPE,
+        stdout=sys.stderr if verbose else subprocess.PIPE,
         stderr=None if verbose else subprocess.STDOUT,
         text=True,
         start_new_session=True,
@@ -92,8 +100,15 @@ def execute(command: Command, timeout: int, verbose: bool) -> tuple[int, str]:
     try:
         output, _ = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGKILL)
-        output, _ = process.communicate()
+        # SIGTERM first, so the command can say where it hung before its group is killed
+        os.killpg(process.pid, signal.SIGTERM)
+        try:
+            output, _ = process.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            output, _ = process.communicate()
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
         return 124, (output or "") + f"\ntimed out after {timeout} s\n"
     except BaseException:
         os.killpg(process.pid, signal.SIGKILL)
@@ -102,11 +117,19 @@ def execute(command: Command, timeout: int, verbose: bool) -> tuple[int, str]:
     return process.returncode, output or ""
 
 
-def passes(check: Check, verbose: bool) -> bool:
+def passes(check: Check) -> bool:
     """Run one check; quiet runs replay a failing command's output on stderr."""
+    verbose = log.isEnabledFor(logging.INFO)
+    forwarded = ("-v",) if verbose else ()
+    if log.isEnabledFor(logging.DEBUG):
+        forwarded += ("--debug",)
     for command in check.commands:
+        if takes_verbosity(command):
+            command = (*command, *forwarded)
         log.info("==> %s: %s", check.name, shlex.join(command))
+        started = time.monotonic()
         code, output = execute(command, check.timeout, verbose)
+        log.debug("==> %s: exit %d after %.1f s", check.name, code, time.monotonic() - started)
         if code != 0:
             if not verbose:
                 print(f"==> {check.name}: {shlex.join(command)}", file=sys.stderr)
@@ -122,12 +145,11 @@ def run(args: argparse.Namespace) -> str:
         if (not args.only or check.name in args.only) and (check.fast or not args.fast)
     ]
     if args.list:
-        lines: list[str] = []
         for check in selected:
-            lines.append(check.name if check.fast else f"{check.name} (full only)")
-            if args.verbose:
-                lines.extend(f"  {shlex.join(command)}" for command in check.commands)
-        return "\n".join(lines)
+            print(check.name if check.fast else f"{check.name} (full only)", flush=True)
+            for command in check.commands:
+                log.info("  %s", shlex.join(command))
+        return ""
     if not selected:
         raise ScriptError("no check selected; fix: drop --fast or pick a check from --list")
 
@@ -135,14 +157,14 @@ def run(args: argparse.Namespace) -> str:
         stamp = datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%SZ")
         os.environ.setdefault("HTML_PUBLISH_E2E_RUN_ID", f"e2e-{stamp}-{os.getpid()}")
 
-    failed = [check.name for check in selected if not passes(check, args.verbose)]
+    failed = [check.name for check in selected if not passes(check)]
     if failed:
         raise ScriptError(*(f"{name} failed; rerun: just check --only {name}" for name in failed))
     return f"ok: {len(selected)} passed"
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
+    parser = Parser(
         prog="just check",
         description="Run the repository verdict: the same checks CI runs",
         epilog=EPILOG,
@@ -159,7 +181,7 @@ def main(argv: list[str] | None = None) -> int:
         "--fast", action="store_true", help="skip the E2E checks (the pre-commit verdict)"
     )
     parser.add_argument("--list", action="store_true", help="print the check names and exit")
-    return run_script(parser, run, argv)
+    return run_script(parser, run, argv, failure="a check failed")
 
 
 if __name__ == "__main__":

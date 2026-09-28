@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _common import ScriptError, run_script
+from _common import Parser, ScriptError, run_script
 from _test_tree import add_root_argument, imported_modules, is_product_module, test_sources
 
 EPILOG = """\
@@ -23,9 +23,7 @@ rule:
 
 examples:
   just check --only e2e-boundary
-  uv run python scripts/check_e2e_boundary.py --verbose
-
-exit codes: 0 ok, 1 boundary errors found, 2 bad usage, 130 interrupted"""
+  uv run python scripts/check_e2e_boundary.py --verbose"""
 
 MOCK_MODULES = frozenset({"mock", "unittest.mock"})
 
@@ -49,7 +47,7 @@ def check(root: Path) -> str:
     sources = [source for source in test_sources(root) if source.bucket == "e2e"]
     errors: list[str] = []
     for source in sources:
-        log.debug("check %s", source.label)
+        log.info("check %s", source.label)
         reported: set[int] = set()
         for node, module in imported_modules(source.tree):
             message = problem(module)
@@ -62,14 +60,16 @@ def check(root: Path) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
+    parser = Parser(
         prog="check_e2e_boundary.py",
         description="Check that E2E tests reach the product only through shipped executables",
         epilog=EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     add_root_argument(parser)
-    return run_script(parser, lambda args: check(args.root.resolve()), argv)
+    return run_script(
+        parser, lambda args: check(args.root.resolve()), argv, failure="boundary errors found"
+    )
 
 
 if __name__ == "__main__":

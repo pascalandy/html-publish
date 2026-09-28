@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
 import secrets
+import shlex
 import shutil
 import signal
 import socket
@@ -19,8 +21,16 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from html_publish import command_line
+from html_publish.discovery import register_command
+
 REPO = Path(__file__).resolve().parents[4]
 RUNS = Path("/tmp/html-publish-verify").resolve()
+RUN_ID = re.compile(r"[A-Za-z0-9_-]+")
+PROG = "instance.sh"
+EXAMPLE_RUN = "first-pub-20260921"
+
+log = logging.getLogger("html_publish.instance")
 
 
 def health(port: int) -> bool:
@@ -131,19 +141,25 @@ def stop(instance: Path) -> None:
         raise ValueError("port still answers after the owner stopped its server")
 
 
-def start(run: Path) -> None:
+def quiet(command: list[str], cwd: Path | None = None) -> None:
+    """Run a setup command and keep its output unless it fails."""
+    log.debug("run %s", shlex.join(command))
+    result = subprocess.run(command, cwd=cwd, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip().splitlines()[-5:]
+        raise ValueError(f"{' '.join(command[:2])} exited {result.returncode}: {' '.join(detail)}")
+
+
+def start(run: Path) -> dict[str, object]:
     instance = run / "instance"
     instance.mkdir(mode=0o700, parents=True)
     artifacts = run / "artifacts"
     artifacts.mkdir(exist_ok=True)
     build = artifacts / "wheel"
-    subprocess.run(["uv", "build", "--wheel", "--out-dir", str(build)], cwd=REPO, check=True)
+    quiet(["uv", "build", "--wheel", "--out-dir", str(build)], cwd=REPO)
     (wheel,) = build.glob("*.whl")
-    subprocess.run(["uv", "venv", "--python", sys.executable, str(instance / "venv")], check=True)
-    subprocess.run(
-        ["uv", "pip", "install", "--python", str(instance / "venv/bin/python"), str(wheel)],
-        check=True,
-    )
+    quiet(["uv", "venv", "--python", sys.executable, str(instance / "venv")])
+    quiet(["uv", "pip", "install", "--python", str(instance / "venv/bin/python"), str(wheel)])
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
@@ -188,70 +204,217 @@ def start(run: Path) -> None:
     else:
         stop(instance)
         raise ValueError(f"server did not become healthy; inspect {instance / 'server.log'}")
-    values = {
-        "REPO_ROOT": REPO,
+    return {
+        "REPO_ROOT": str(REPO),
         "RUN_ID": run.name,
-        "INSTANCE": instance,
-        "CONFIG": config,
+        "INSTANCE": str(instance),
+        "CONFIG": str(config),
         "URL": f"http://127.0.0.1:{port}",
         "PORT": port,
-        "ARTIFACTS": artifacts,
-        "CLI": instance / "venv/bin/html-publish",
+        "ARTIFACTS": str(artifacts),
+        "CLI": str(instance / "venv/bin/html-publish"),
     }
-    for key, value in values.items():
-        print(f"{key}={value}")
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+class Parser(command_line.Parser):
+    exit_codes = (0, 1, 2, 130, 143)
+
+
+def _run_id(value: str) -> str:
+    if not RUN_ID.fullmatch(value):
+        raise argparse.ArgumentTypeError("run_id must use letters, digits, hyphens and underscores")
+    return value
+
+
+COMMANDS = {
+    "start": (
+        "build, install, and serve a private instance",
+        (f"{PROG} start {EXAMPLE_RUN}", f"{PROG} start {EXAMPLE_RUN} --json"),
+        (
+            "builds a wheel and installs it in the instance's virtual environment",
+            "starts a supervisor that owns a loopback server",
+            "writes only under /tmp/html-publish-verify/<run_id>",
+            "prints KEY=value lines, or one JSON object with --json",
+        ),
+    ),
+    "sources": (
+        "write the two standard page fixtures",
+        (f"{PROG} sources {EXAMPLE_RUN}", f"{PROG} sources {EXAMPLE_RUN} --json"),
+        (
+            "rewrites the same two fixture files with the same bytes",
+            "prints PAGE_A= and PAGE_B=, or one JSON object with --json",
+        ),
+    ),
+    "doctor": (
+        "check that the owned server answers and the installed executable runs",
+        (f"{PROG} doctor {EXAMPLE_RUN}", f"{PROG} doctor {EXAMPLE_RUN} --debug"),
+        ("asks the supervisor for health and runs the installed --version", "changes nothing"),
+    ),
+    "offline": (
+        "stop the owned server and keep the instance",
+        (f"{PROG} offline {EXAMPLE_RUN}", f"{PROG} offline {EXAMPLE_RUN} --debug"),
+        ("stops only the server this run's supervisor owns",),
+    ),
+    "stop": (
+        "stop the owned server, remove the instance, and keep the artifacts",
+        (f"{PROG} stop {EXAMPLE_RUN}", f"{PROG} stop {EXAMPLE_RUN} --debug"),
+        (
+            "stops only the server this run's supervisor owns",
+            "prints ARTIFACTS= with the kept evidence directory",
+            "a repeated stop changes nothing",
+        ),
+    ),
+}
+NEXT = {
+    "start": "stop",
+    "sources": "start",
+    "doctor": "stop",
+}
+
+
+def _debug(parser: argparse.ArgumentParser, *, child: bool) -> None:
     parser.add_argument(
-        "command", choices=["start", "sources", "doctor", "offline", "stop", "supervise"]
+        "--debug",
+        action="store_true",
+        default=argparse.SUPPRESS if child else False,
+        help="also print setup commands and tracebacks on stderr (or set INSTANCE_DEBUG=1)",
     )
-    parser.add_argument("run_id")
-    parser.add_argument("--port", type=int)
-    args = parser.parse_args()
-    if not re.fullmatch(r"[A-Za-z0-9_-]+", args.run_id):
-        parser.error("run_id must use letters, digits, hyphens and underscores")
+
+
+def _parser() -> Parser:
+    parser = Parser(
+        prog=PROG,
+        description=__doc__,
+        epilog="Examples:\n  "
+        + "\n  ".join(
+            (
+                f"{PROG} start {EXAMPLE_RUN}",
+                f"{PROG} doctor {EXAMPLE_RUN}",
+                f"{PROG} stop {EXAMPLE_RUN}",
+                f"{PROG} help start",
+            )
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False,
+    )
+    _debug(parser, child=False)
+    commands = parser.add_subparsers(
+        dest="command", required=True, metavar="{" + ",".join([*COMMANDS, "help"]) + "}"
+    )
+    for name, (summary, examples, effects) in COMMANDS.items():
+        command = register_command(commands, name, summary, examples=examples, effects=effects)
+        command.add_argument("run_id", type=_run_id, help="this proof's run ID")
+        if name in {"start", "sources"}:
+            command.add_argument(
+                "--json", action="store_true", help="print one JSON object instead of KEY=value"
+            )
+        _debug(command, child=True)
+    supervise = commands.add_parser("supervise")
+    supervise.add_argument("run_id", type=_run_id)
+    supervise.add_argument("--port", type=int, required=True)
+    command_line.add_help_command(commands, PROG, (f"{PROG} help start", f"{PROG} help stop"))
+    return parser
+
+
+def _emit(values: dict[str, object], as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(values))
+    else:
+        for key, value in values.items():
+            print(f"{key}={value}")
+
+
+def _command(args: argparse.Namespace) -> int:
     run = RUNS / args.run_id
     instance = run / "instance"
-    try:
-        if args.command == "supervise":
-            signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-            supervise(instance, args.port)
-        elif args.command == "start":
-            start(run)
-        elif args.command == "sources":
-            for label in ("A", "B"):
-                path = instance / f"page-{label.lower()}.html"
-                path.write_text(
-                    f"<!doctype html><title>Page {label}</title><h1>Page {label}</h1>\n"
-                )
-                print(f"PAGE_{label}={path}")
-        elif args.command == "doctor":
-            response = communicate(instance, "doctor")
-            if not response.get("healthy"):
-                raise ValueError("owned server is not healthy")
-            config = json.loads((instance / "publisher.json").read_text())
-            if config["archive"] != str(instance / "archive.git") or config["runtime"] != str(
-                instance / "runtime"
-            ):
-                raise ValueError("config paths do not stay inside this instance")
-            subprocess.run([str(instance / "venv/bin/html-publish"), "--version"], check=True)
-            print("OK owner and installed executable match; health endpoint answers")
-        elif not instance.exists() and args.command == "stop":
-            print("OK no instance; nothing to stop")
-        else:
-            stop(instance)
-            if args.command == "stop":
-                shutil.copy2(instance / "server.log", run / "artifacts/server.log")
-                shutil.rmtree(instance)
-                print(f"OK instance removed; artifacts kept at {run / 'artifacts'}")
-            else:
-                print(f"OK server stopped; instance kept at {instance}")
-    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
-        print(f"FAIL server identity does not match or instance unavailable: {error}")
-        return 1
+    if args.command == "supervise":
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+        supervise(instance, args.port)
+    elif args.command == "start":
+        _emit(start(run), args.json)
+    elif args.command == "sources":
+        pages: dict[str, object] = {}
+        for label in ("A", "B"):
+            path = instance / f"page-{label.lower()}.html"
+            path.write_text(f"<!doctype html><title>Page {label}</title><h1>Page {label}</h1>\n")
+            pages[f"PAGE_{label}"] = str(path)
+        _emit(pages, args.json)
+    elif args.command == "doctor":
+        response = communicate(instance, "doctor")
+        if not response.get("healthy"):
+            raise ValueError("owned server is not healthy")
+        config = json.loads((instance / "publisher.json").read_text())
+        if config["archive"] != str(instance / "archive.git") or config["runtime"] != str(
+            instance / "runtime"
+        ):
+            raise ValueError("config paths do not stay inside this instance")
+        quiet([str(instance / "venv/bin/html-publish"), "--version"])
+    elif args.command == "offline":
+        stop(instance)
+    elif instance.exists():
+        stop(instance)
+        shutil.copy2(instance / "server.log", run / "artifacts/server.log")
+        shutil.rmtree(instance)
+        print(f"ARTIFACTS={run / 'artifacts'}")
+    elif (run / "artifacts").is_dir():
+        print(f"ARTIFACTS={run / 'artifacts'}")
     return 0
+
+
+def _main(arguments: list[str]) -> int:
+    """Run one command. With --json, a failure or a signal still prints one JSON object."""
+    as_json = "--json" in command_line.before_separator(arguments)
+    try:
+        return _run(arguments, as_json)
+    except KeyboardInterrupt as error:
+        if not as_json:
+            raise
+        print(f"{PROG}: interrupted", file=sys.stderr)
+        _emit({"error": {"code": "interrupted", "message": "a signal stopped the command"}}, True)
+        return command_line.interruption_exit(error)
+
+
+def _run(arguments: list[str], as_json: bool) -> int:
+    parser = _parser()
+    try:
+        args = command_line.parse(parser, arguments)
+        if args is None:
+            return 0
+    except command_line.UsageError as error:
+        sys.stderr.write(command_line.usage_text(error, parser, arguments))
+        return 2
+    command_line.configure_logging(
+        PROG, verbose=False, debug=args.debug or command_line.debug_requested(PROG, arguments)
+    )
+    try:
+        return _command(args)
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        what = (
+            f"{args.command} failed"
+            if args.command in {"start", "sources"}
+            else "server identity does not match or instance unavailable"
+        )
+        fix = NEXT.get(args.command)
+        next_command = f"{PROG} {fix} {args.run_id}" if fix else f"{PROG} start <fresh-run-id>"
+        print(f"{PROG}: {what}: {error}", file=sys.stderr)
+        print(f"next: {next_command}", file=sys.stderr)
+        if as_json:
+            _emit(
+                {
+                    "error": {
+                        "code": "failed",
+                        "message": f"{what}: {error}",
+                        "next": next_command,
+                    }
+                },
+                True,
+            )
+        return 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    return command_line.run(PROG, arguments, lambda: _main(arguments))
 
 
 if __name__ == "__main__":

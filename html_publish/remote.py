@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import logging
 import math
 import os
 import re
@@ -11,15 +12,15 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from types import FrameType
-from typing import Literal, NoReturn, cast
+from typing import Literal, cast
 from urllib.parse import urlparse
 
-from html_publish import __version__
+from html_publish import __version__, command_line
 from html_publish.artifact import capture, capture_source
 from html_publish.cli import ReportMode, bound_report_text, emit_json, report_dict, usage_report
 from html_publish.configuration import ClientConfig, read_document, selected_path
@@ -52,11 +53,11 @@ NAME_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 HOST_PATTERN = re.compile(r"[A-Za-z0-9_.@-]+\Z")
 REMOTE_PATH_PATTERN = re.compile(r"/[A-Za-z0-9._/-]+\Z")
 
-ExitCode = Literal[0, 1, 2]
+ExitCode = Literal[0, 1, 2, 75]
+SIGNAL_EXITS = frozenset({130, 143})
+TEMPORARY = 75
 
-
-class UsageFailure(Exception):
-    pass
+log = logging.getLogger("html_publish.remote")
 
 
 class CommandExpired(Exception):
@@ -69,9 +70,8 @@ class ProtocolFailure(Exception):
     pass
 
 
-class Parser(argparse.ArgumentParser):
-    def error(self, message: str) -> NoReturn:
-        raise UsageFailure(message)
+class Parser(command_line.Parser):
+    exit_codes = (0, 1, 2, 75, 130, 143)
 
 
 @dataclass(frozen=True)
@@ -156,7 +156,7 @@ Request = ArtifactRequest | StatusRequest | VerifyRequest | HistoryRequest | Res
 @dataclass(frozen=True)
 class Invocation:
     payload: dict[str, object]
-    exit_code: ExitCode
+    exit_code: int
     cleanup_allowed: bool
 
 
@@ -182,21 +182,32 @@ def _remote_path(value: str) -> PurePosixPath:
 
 
 def _connect_timeout(value: str) -> int:
-    parsed = int(value)
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            "connect timeout must be an integer between 1 and 300 seconds"
+        ) from error
     if parsed < 1 or parsed > 300:
         raise argparse.ArgumentTypeError("connect timeout must be between 1 and 300 seconds")
     return parsed
 
 
 def _positive_seconds(value: str) -> float:
-    parsed = float(value)
+    try:
+        parsed = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("command seconds must be a positive number") from error
     if not math.isfinite(parsed) or parsed <= 0:
         raise argparse.ArgumentTypeError("command seconds must be positive")
     return parsed
 
 
 def _positive_limit(value: str) -> int:
-    parsed = int(value)
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("limit must be an integer between 1 and 100") from error
     if parsed < 1 or parsed > 100:
         raise argparse.ArgumentTypeError("limit must be between 1 and 100")
     return parsed
@@ -234,6 +245,7 @@ def _globals(parser: argparse.ArgumentParser, version: str, *, child: bool = Fal
         help="private host directory for plan and publish uploads (required without client config)",
     )
     parser.add_argument(
+        "-c",
         "--config",
         type=Path,
         default=default(None),
@@ -257,7 +269,21 @@ def _globals(parser: argparse.ArgumentParser, version: str, *, child: bool = Fal
         "--json",
         action="store_true",
         default=default(True),
-        help="write one JSON object to stdout (default for remote operations)",
+        help="write one JSON object to stdout (always on: remote results are JSON)",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        default=default(False),
+        help="print one line per transport step on stderr",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        default=default(False),
+        help="also print timings, ssh and scp commands, and tracebacks on stderr "
+        "(or set HTML_PUBLISH_REMOTE_DEBUG=1)",
     )
     parser.add_argument(
         "--version", action="version", version=version, help="show installed version"
@@ -274,6 +300,19 @@ def _parser(json_version: bool = False) -> Parser:
         prog="html-publish-remote",
         description="Run the six publisher operations through SSH. "
         "Publication results are JSON by default.",
+        epilog="Examples:\n  "
+        + "\n  ".join(
+            (
+                "html-publish-remote --config client.json status --name release-notes",
+                "html-publish-remote --config client.json publish --name release-notes "
+                "--source ./page.html --expected-revision REVISION",
+                "html-publish-remote --host user@host --remote-executable /usr/bin/html-publish "
+                "--remote-config /srv/publisher.json --target https://host.example/pages/ "
+                "--incoming-root /srv/incoming verify --name release-notes",
+                "html-publish-remote help publish",
+            )
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         allow_abbrev=False,
     )
     _globals(parser, version)
@@ -290,6 +329,9 @@ def _parser(json_version: bool = False) -> Parser:
             examples=(
                 f"html-publish-remote --config client.json {operation} "
                 "--name release-notes --source ./page.html",
+                f"html-publish-remote --config client.json {operation} --name guide "
+                "--source ./docs --format markdown --expected-revision REVISION "
+                "--expected-record-revision RECORD",
             ),
             effects=("uploads a private source copy", "reads host state")
             if operation == "plan"
@@ -384,7 +426,10 @@ def _parser(json_version: bool = False) -> Parser:
         commands,
         "verify",
         "check selected files and host HTTP delivery",
-        examples=("html-publish-remote --config client.json verify --name release-notes",),
+        examples=(
+            "html-publish-remote --config client.json verify --name release-notes",
+            "html-publish-remote --config client.json verify --name release-notes --report summary",
+        ),
         effects=("reads saved bytes and host delivery", "does not activate"),
     )
     verify.add_argument("--name", required=True, type=_name, help="publication name")
@@ -430,6 +475,8 @@ def _parser(json_version: bool = False) -> Parser:
         examples=(
             "html-publish-remote --config client.json restore --name release-notes "
             "--archive-commit COMMIT --expected-revision REVISION",
+            "html-publish-remote --config client.json restore --name release-notes "
+            "--archive-commit COMMIT --expected-revision REVISION --request-id attempt-002",
         ),
         effects=(
             "may append archive history",
@@ -455,10 +502,18 @@ def _parser(json_version: bool = False) -> Parser:
         commands,
         "schema",
         "print parser-derived command discovery as JSON",
-        examples=("html-publish-remote schema",),
+        examples=(
+            "html-publish-remote schema",
+            "html-publish-remote schema | jq '.commands[].name'",
+        ),
         effects=("reads command definitions only",),
     )
     _globals(schema, version, child=True)
+    command_line.add_help_command(
+        commands,
+        "html-publish-remote",
+        ("html-publish-remote help publish", "html-publish-remote help status"),
+    )
     return parser
 
 
@@ -503,8 +558,9 @@ def _parse(arguments: list[str]) -> tuple[RemoteSettings, Request]:
                 "Selected client config lacks remote destination fields: " + ", ".join(missing),
                 "fix_config",
             )
-        raise UsageFailure(
-            "Remote destination requires " + ", ".join(missing) + " or an explicit client config"
+        raise command_line.UsageError(
+            "Remote destination requires " + ", ".join(missing) + " or an explicit client config",
+            add=["--config", "<client-config>"],
         )
     settings = RemoteSettings(
         cast(str, effective["host"]),
@@ -572,7 +628,9 @@ def _parse(arguments: list[str]) -> tuple[RemoteSettings, Request]:
         or expected_record_revision is not None
         or expected_render_profile_id is not None
     ):
-        raise UsageFailure("Markdown options require --format markdown")
+        raise command_line.UsageError(
+            "Markdown options require --format markdown", add=["--format", "markdown"]
+        )
     return settings, ArtifactRequest(
         operation,
         name,
@@ -588,13 +646,14 @@ def _parse(arguments: list[str]) -> tuple[RemoteSettings, Request]:
 
 
 def _operation(arguments: list[str]) -> Operation | None:
-    for value in arguments:
+    for value in command_line.before_separator(arguments):
         if value in {"plan", "publish", "status", "verify", "history", "restore"}:
             return cast(Operation, value)
     return None
 
 
 def _argument_value(arguments: list[str], option: str) -> str | None:
+    arguments = command_line.before_separator(arguments)
     for index in range(len(arguments) - 1, -1, -1):
         value = arguments[index]
         if value.startswith(option + "="):
@@ -715,20 +774,23 @@ def _terminate_group(process: subprocess.Popen[bytes]) -> None:
 
 
 def _run(argv: list[str], deadline: Deadline) -> subprocess.CompletedProcess[bytes]:
-    def cancel(_signum: int, _frame: FrameType | None) -> NoReturn:
-        raise KeyboardInterrupt
+    """Run one transport command in its own process group within `deadline`.
 
+    A signal reaches this process as command_line.Interrupted; the group is killed and the
+    interruption propagates, so each caller keeps its JSON handoff and exits 130 or 143.
+    """
     try:
         timeout = deadline.remaining()
     except PublishError as error:
         raise CommandExpired from error
+    log.debug("run %s", shlex.join(argv))
+    started = time.monotonic()
     process = subprocess.Popen(
         argv,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         start_new_session=True,
     )
-    previous = signal.signal(signal.SIGTERM, cancel)
     try:
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as error:
@@ -737,9 +799,8 @@ def _run(argv: list[str], deadline: Deadline) -> subprocess.CompletedProcess[byt
     except BaseException:
         _terminate_group(process)
         raise
-    finally:
-        signal.signal(signal.SIGTERM, previous)
     _terminate_group(process)
+    log.debug("%s exit %d after %.3f s", argv[0], process.returncode, time.monotonic() - started)
     return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
 
 
@@ -1093,7 +1154,7 @@ def _validate_host_payload(
     }
     if not required.issubset(payload):
         raise ProtocolFailure("The host result is missing common envelope fields")
-    if exit_code not in {0, 1, 2}:
+    if exit_code not in {0, 1, 2, 75, *SIGNAL_EXITS}:
         raise ProtocolFailure(f"The host returned unsupported exit code {exit_code}")
     if type(payload.get("schema_version")) is not int or payload.get("schema_version") != 1:
         raise ProtocolFailure("The host result has an unsupported schema version")
@@ -1208,7 +1269,7 @@ def _validate_host_payload(
     error = payload.get("error")
     if exit_code == 0 and (outcome == "error" or error is not None):
         raise ProtocolFailure("The host success exit does not agree with its result")
-    if exit_code in {1, 2} and (
+    if exit_code in {1, 2, 75, *SIGNAL_EXITS} and (
         (outcome != "error" and not (request.operation == "status" and outcome == "observed"))
         or not isinstance(error, dict)
     ):
@@ -1234,6 +1295,16 @@ def _validate_host_payload(
         raise ProtocolFailure("The host usage failure returned operational exit 1")
     if exit_code == 2 and error_values.get("phase") != "usage":
         raise ProtocolFailure("The host exit 2 does not describe invalid usage")
+    if exit_code == 75 and (
+        outcome != "error"
+        or error_values.get("code") != "lock_timeout"
+        or any(effect_values[key] is not False for key in ("archive_advanced", "activated"))
+    ):
+        raise ProtocolFailure("The host exit 75 does not describe a lock timeout without effects")
+    if exit_code in SIGNAL_EXITS and (
+        outcome != "error" or error_values.get("code") != "interrupted"
+    ):
+        raise ProtocolFailure("The host signal exit does not describe an interruption")
     if exit_code == 0 and request.operation in {"publish", "restore", "verify"}:
         if verification["result"] != "passed":
             raise ProtocolFailure("The successful host command has not passed verification")
@@ -1282,7 +1353,56 @@ def _validate_host_payload(
                 and payload["requested_record_revision"] != payload["archived_record_revision"]
             ):
                 raise ProtocolFailure("The successful host result does not archive its record")
+    if exit_code in SIGNAL_EXITS:
+        return 1
     return cast(ExitCode, exit_code)
+
+
+def _host_interrupted(payload: dict[str, object], request: Request) -> dict[str, object]:
+    """A host result for a host process that a signal ended: the client itself was not
+    signalled, so it exits 1, reports unknown mutation effects, and asks for inspection."""
+    updated = dict(payload)
+    if request.operation in {"publish", "restore"}:
+        updated["effects"] = {"archive_advanced": None, "activated": None}
+    error = dict(cast(dict[str, object], payload["error"]))
+    action = cast(dict[str, object], error["next_action"])
+    error["next_action"] = {**action, "kind": "inspect"}
+    updated["error"] = error
+    return updated
+
+
+def _interrupted(payload: dict[str, object], request: Request, detail: str) -> dict[str, object]:
+    """The handoff of a command a signal ended. Every fact it already knew stays, and the error
+    becomes `interrupted`, the only code a consumer accepts with exit 130 or 143; an error it
+    replaces stays readable as `superseded_error`."""
+    mutating = request.operation in {"publish", "restore"}
+    updated = dict(payload)
+    previous = payload.get("error")
+    if isinstance(previous, dict):
+        updated["superseded_error"] = previous
+    error: dict[str, object] = {
+        "code": "interrupted",
+        "phase": "cancel",
+        "message": detail,
+        "next_action": {
+            "kind": "inspect" if mutating else "retry",
+            "required_inputs": ["name", "request_id", "expected_revision"]
+            if mutating
+            else ["name"],
+        },
+    }
+    updated["outcome"] = "error"
+    updated["error"] = error
+    report = payload.get("report")
+    if isinstance(report, dict):
+        typed_report = cast(dict[str, object], report)
+        mode = typed_report.get("mode")
+        text = typed_report.get("text")
+        if mode in ("detail", "summary") and isinstance(text, dict):
+            counts = bound_report_text(error, "message", mode)
+            if counts is not None:
+                cast(dict[str, object], text)["/error/message"] = counts
+    return updated
 
 
 def _retained_transport(staging: PurePosixPath | None, detail: str) -> dict[str, object]:
@@ -1298,6 +1418,8 @@ def _invocation_loss(
     staging: PurePosixPath | None,
     detail: str,
 ) -> Invocation:
+    """SSH lost the host result. A lost mutation has unknown effects and exits 1; a lost
+    read-only result changed nothing, so rerunning is safe and the exit is 75."""
     mutating = request.operation in {"publish", "restore"}
     failure = Failure(
         "publication_outcome_unknown" if mutating else "transport_failure",
@@ -1313,7 +1435,7 @@ def _invocation_loss(
         Effects(None, None) if mutating else Effects(),
         details=_retained_transport(staging, detail),
     )
-    return Invocation(payload, 1, False)
+    return Invocation(payload, 1 if mutating else TEMPORARY, False)
 
 
 def _protocol_failure(
@@ -1352,15 +1474,22 @@ def _invoke(
     remote_source: PurePosixPath | None = None,
 ) -> Invocation:
     remote_command = shlex.join(_remote_arguments(settings, request, remote_source))
+    log.info("run %s on %s", request.operation, settings.host)
     try:
         result = _ssh(settings, remote_command, deadline)
     except CommandExpired as error:
         if not error.started:
             failure = Failure("command_timeout", "invoke", str(error), "retry")
-            return Invocation(_failure_payload(settings, request, failure), 1, True)
+            return Invocation(_failure_payload(settings, request, failure), TEMPORARY, True)
         return _invocation_loss(settings, request, staging, "The command deadline expired")
-    except KeyboardInterrupt:
-        return _invocation_loss(settings, request, staging, "The caller cancelled the invocation")
+    except KeyboardInterrupt as error:
+        detail = "The caller cancelled the invocation"
+        loss = _invocation_loss(settings, request, staging, detail)
+        return Invocation(
+            _interrupted(loss.payload, request, detail),
+            command_line.interruption_exit(error),
+            loss.cleanup_allowed,
+        )
     except OSError as error:
         failure = Failure(
             "transport_failure",
@@ -1371,6 +1500,7 @@ def _invoke(
         )
         return Invocation(_failure_payload(settings, request, failure), 1, True)
     _write_stderr(result.stderr, request.report)
+    log.info("host exited %d", result.returncode)
     if result.returncode == 255:
         return _invocation_loss(settings, request, staging, "SSH exited 255")
     try:
@@ -1378,6 +1508,8 @@ def _invoke(
         exit_code = _validate_host_payload(payload, result.returncode, settings, request)
     except ProtocolFailure as error:
         return _protocol_failure(settings, request, staging, str(error))
+    if result.returncode in SIGNAL_EXITS:
+        payload = _host_interrupted(payload, request)
     if (
         request.report == "summary"
         and len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
@@ -1394,18 +1526,23 @@ def _cleanup(
     staging: PurePosixPath,
     deadline: Deadline,
     mode: ReportMode = "detail",
-) -> str | None:
+) -> tuple[str | None, int | None]:
+    """Remove incoming staging; return why cleanup failed, if it did, and the 130 or 143 exit
+    of a signal that stopped it, so the caller keeps its JSON handoff and exits for the signal."""
     command = shlex.join(["rm", "-rf", "--", str(staging)])
+    log.info("remove staging %s on %s", staging, settings.host)
     try:
         result = _ssh(settings, command, deadline)
-    except (CommandExpired, KeyboardInterrupt):
-        return "The command deadline expired before cleanup completed"
+    except CommandExpired:
+        return "The command deadline expired before cleanup completed", None
+    except KeyboardInterrupt as error:
+        return "The caller cancelled cleanup", command_line.interruption_exit(error)
     except OSError as error:
-        return f"Cleanup could not start: {error}"
+        return f"Cleanup could not start: {error}", None
     _write_stderr(result.stderr, mode)
     if result.returncode != 0:
-        return f"Cleanup exited {result.returncode}"
-    return None
+        return f"Cleanup exited {result.returncode}", None
+    return None, None
 
 
 def _add_cleanup_warning(
@@ -1485,26 +1622,43 @@ def _run_artifact(
                     remote_source /= request.source.name
             else:
                 captured = capture(request.source, workspace, "sha1", limits, deadline)
+            log.info("captured %s", request.source)
             transport_deadline = _transport_deadline(deadline, settings.command_seconds)
+
+            def abandon(detail: str, exit_code: int) -> int:
+                """Report a transfer that failed before invocation, after removing staging."""
+                payload = _transfer_failure(settings, request, detail)
+                cleanup_error, cancelled = _cleanup(settings, staging, deadline, request.report)
+                if cleanup_error is not None:
+                    payload = _add_cleanup_warning(payload, staging, cleanup_error)
+                exit_code = cancelled or exit_code
+                if exit_code in SIGNAL_EXITS:
+                    cancelled_detail = "The caller cancelled cleanup" if cancelled else detail
+                    payload = _interrupted(payload, request, cancelled_detail)
+                return emit_json(payload, exit_code)
+
             mkdir = (
                 shlex.join(["umask", "077"]) + " && " + shlex.join(["mkdir", "--", str(staging)])
             )
+            log.info("create staging %s on %s", staging, settings.host)
             try:
                 setup = _ssh(settings, mkdir, transport_deadline)
-            except (CommandExpired, OSError, KeyboardInterrupt) as error:
-                payload = _transfer_failure(settings, request, str(error))
-                cleanup_error = _cleanup(settings, staging, deadline, request.report)
-                if cleanup_error is not None:
-                    payload = _add_cleanup_warning(payload, staging, cleanup_error)
-                return emit_json(payload, 1)
+            except CommandExpired as error:
+                return abandon(str(error), TEMPORARY)
+            except OSError as error:
+                return abandon(str(error), 1)
+            except KeyboardInterrupt as error:
+                return abandon(
+                    "The caller cancelled the transfer", command_line.interruption_exit(error)
+                )
             _write_stderr(setup.stderr, request.report)
             if setup.returncode != 0:
-                payload = _transfer_failure(settings, request, f"setup exited {setup.returncode}")
-                cleanup_error = _cleanup(settings, staging, deadline, request.report)
-                if cleanup_error is not None:
-                    payload = _add_cleanup_warning(payload, staging, cleanup_error)
-                return emit_json(payload, 1)
+                return abandon(
+                    f"setup exited {setup.returncode}",
+                    TEMPORARY if setup.returncode == 255 else 1,
+                )
             destination = f"{settings.host}:{staging}/"
+            log.info("upload %s to %s", captured.root, destination)
             try:
                 transfer = _run(
                     [
@@ -1517,19 +1671,17 @@ def _run_artifact(
                     ],
                     transport_deadline,
                 )
-            except (CommandExpired, PublishError, OSError, KeyboardInterrupt) as error:
-                payload = _transfer_failure(settings, request, str(error))
-                cleanup_error = _cleanup(settings, staging, deadline, request.report)
-                if cleanup_error is not None:
-                    payload = _add_cleanup_warning(payload, staging, cleanup_error)
-                return emit_json(payload, 1)
+            except (CommandExpired, PublishError) as error:
+                return abandon(str(error) or "The command deadline expired", TEMPORARY)
+            except OSError as error:
+                return abandon(str(error), 1)
+            except KeyboardInterrupt as error:
+                return abandon(
+                    "The caller cancelled the transfer", command_line.interruption_exit(error)
+                )
             _write_stderr(transfer.stderr, request.report)
             if transfer.returncode != 0:
-                payload = _transfer_failure(settings, request, f"scp exited {transfer.returncode}")
-                cleanup_error = _cleanup(settings, staging, deadline, request.report)
-                if cleanup_error is not None:
-                    payload = _add_cleanup_warning(payload, staging, cleanup_error)
-                return emit_json(payload, 1)
+                return abandon(f"scp exited {transfer.returncode}", 1)
             invocation = _invoke(
                 settings,
                 request,
@@ -1538,11 +1690,16 @@ def _run_artifact(
                 remote_source,
             )
             payload = invocation.payload
+            exit_code = invocation.exit_code
             if invocation.cleanup_allowed:
-                cleanup_error = _cleanup(settings, staging, deadline, request.report)
+                cleanup_error, cancelled = _cleanup(settings, staging, deadline, request.report)
                 if cleanup_error is not None:
                     payload = _add_cleanup_warning(payload, staging, cleanup_error)
-            return emit_json(payload, invocation.exit_code)
+                if cancelled:
+                    detail = "The caller cancelled cleanup after the host result"
+                    payload = _interrupted(payload, request, detail)
+                    exit_code = cancelled
+            return emit_json(payload, exit_code)
     except (OSError, PublishError) as error:
         failure = (
             error.failure
@@ -1554,21 +1711,59 @@ def _run_artifact(
 
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
+    return command_line.run("html-publish-remote", arguments, lambda: _main(arguments))
+
+
+def _main(arguments: list[str]) -> int:
+    parser = _parser("--json" in command_line.before_separator(arguments))
     try:
-        parser = _parser("--json" in arguments)
-        parsed = parser.parse_args(arguments)
+        return _run_main(parser, arguments)
+    except KeyboardInterrupt as error:
+        failure = Failure(
+            "interrupted",
+            "cancel",
+            "The caller cancelled the command before it reached the host",
+            "retry",
+        )
+        return emit_json(_usage_payload(arguments, failure), command_line.interruption_exit(error))
+
+
+def _run_main(parser: Parser, arguments: list[str]) -> int:
+    """Parse, then run one request. A signal before the request exists reaches `_main`, which
+    still writes one JSON handoff from the command line's own identity."""
+    try:
+        parsed = command_line.parse(parser, arguments)
+        if parsed is None:
+            return 0
+        command_line.configure_logging(
+            "html-publish-remote",
+            verbose=parsed.verbose,
+            debug=parsed.debug or command_line.debug_requested("html-publish-remote", arguments),
+        )
         if parsed.operation == "schema":
             return emit_json(command_schema(parser, "html-publish-remote"), 0)
         settings, request = _parse(arguments)
-    except UsageFailure as error:
+    except command_line.UsageError as error:
+        sys.stderr.write(command_line.usage_text(error, parser, arguments))
         failure = Failure("invalid_usage", "usage", str(error), "fix_arguments")
         return emit_json(_usage_payload(arguments, failure), 2)
     except PublishError as error:
         return emit_json(_usage_payload(arguments, error.failure), 1)
     deadline = Deadline.start(settings.command_seconds)
-    if isinstance(request, ArtifactRequest):
-        return _run_artifact(settings, request, deadline)
-    invocation = _invoke(settings, request, deadline)
+    try:
+        if isinstance(request, ArtifactRequest):
+            return _run_artifact(settings, request, deadline)
+        invocation = _invoke(settings, request, deadline)
+    except KeyboardInterrupt as error:
+        failure = Failure(
+            "interrupted",
+            "cancel",
+            "The caller cancelled the command before it reached the host",
+            "retry",
+        )
+        return emit_json(
+            _failure_payload(settings, request, failure), command_line.interruption_exit(error)
+        )
     return emit_json(invocation.payload, invocation.exit_code)
 
 

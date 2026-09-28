@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import json
+import logging
 import os
 import stat
 import tempfile
@@ -53,6 +54,9 @@ ARCHIVE_REF = "refs/heads/published"
 _PublishingOperation = Literal["publish", "restore"]
 _DIFF_CAP_BYTES = 64 * 1024
 _PublicationDecision = Literal["create", "update", "unchanged", "record"]
+
+
+log = logging.getLogger(__name__)
 
 
 def _fsync_directory(path: Path) -> None:
@@ -319,12 +323,19 @@ class PublicationStore:
             self.config.limits.lock_seconds,
             self.deadline.remaining(),
         )
+        waiting = False
         try:
             while True:
                 try:
                     fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     break
                 except BlockingIOError:
+                    if not waiting:
+                        waiting = True
+                        log.info(
+                            "waiting for the publication lock, up to %.1f s",
+                            lock_deadline - time.monotonic(),
+                        )
                     if time.monotonic() >= lock_deadline:
                         raise PublishError(
                             "lock_timeout",
@@ -750,6 +761,7 @@ class PublicationStore:
             .decode()
             .strip()
         )
+        log.info("archive %s as commit %s", name, commit)
         zero = "0" * (40 if self.config.object_format == "sha1" else 64)
         _git.command(
             self.config.archive,
@@ -765,8 +777,10 @@ class PublicationStore:
     def _materialize(self, site: StoredSite) -> Path:
         release = self.config.runtime / "releases" / str(site.revision)
         if release.exists() or release.is_symlink():
+            log.info("reuse release %s after validating it", site.revision)
             self._validate_release(release, site)
             return release
+        log.info("export release %s", site.revision)
         stage = self.config.runtime / "staging" / f"release-{uuid.uuid4().hex}"
         stage.mkdir(mode=0o700)
         try:
@@ -830,6 +844,7 @@ class PublicationStore:
         workspace: Path,
         object_format: str,
     ) -> PreparedPublication:
+        log.info("capture %s as %s", source, input_format)
         if input_format == "markdown":
             return prepare_markdown(
                 source,
@@ -865,6 +880,7 @@ class PublicationStore:
         site: StoredSite,
         removed: tuple[str, ...] = (),
     ) -> Verification:
+        log.info("verify %s at %s", revision, publication_url(self.config.base_url, name))
         try:
             return verify(
                 self.config.base_url,
@@ -923,6 +939,7 @@ class PublicationStore:
                         decision.next_action,
                         decision.required_inputs,
                     )
+                log.info("%s %s: %s", operation, name, decision)
                 previous_paths: set[str] = set()
                 if (
                     decision == "update"
@@ -1024,6 +1041,7 @@ class PublicationStore:
                 release = self._materialize(saved.site)
                 staged_link = self.config.runtime / "staging" / f"link-{uuid.uuid4().hex}"
                 public_link = self.config.runtime / "public" / str(name)
+                log.info("select release %s for %s", saved.site.revision, name)
                 os.symlink(f"../releases/{saved.site.revision}", staged_link)
                 _fsync_directory(staged_link.parent)
                 try:
@@ -1407,6 +1425,7 @@ class PublicationStore:
         after: str | None,
         diff_revision: str | None,
     ) -> Report:
+        log.info("read the archive history of %s", name)
         try:
             commits = self._page_commits(name)
             if after is not None:
@@ -1767,6 +1786,7 @@ class PublicationStore:
         limit: int,
         host_check: bool = False,
     ) -> Report:
+        log.info("observe %s", name if name is not None else "every publication")
         try:
             with self._lock(create=False):
                 staging = self._staging_usage()

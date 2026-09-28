@@ -15,7 +15,14 @@ The six publisher commands and the artifact commands report different error shap
 command errors carry a stable `code`, the `phase` that failed, a message, and a structured
 `next_action` with `kind` and `required_inputs`. Artifact handoffs carry `{code, message,
 next_action}`, where `next_action` is a plain string. Exit 0 is success, 1 is operational
-failure, 2 is invalid usage.
+failure, 2 is invalid usage, and 130 or 143 means SIGINT or SIGTERM stopped the command.
+
+Exit 75 is a temporary failure: rerunning the same command is safe and may succeed once the
+cause clears. It comes from `lock_timeout` on a publisher command, `receipt_busy` on any artifact
+command, `artifact retry` after the publisher reports `lock_timeout`, and remote transport failures
+before the host command starts or a lost read-only remote result. `artifact publish` and `artifact
+restore` keep exit 1 after a publisher `lock_timeout` and set `next_action` to `retry`: resend the
+frozen attempt with `artifact retry`, not a new publish.
 
 Publisher command error codes:
 
@@ -28,8 +35,9 @@ Publisher command error codes:
 | `capture_failure` | Capture failed before any mutation | Retry the original input |
 | `target_mismatch` | Target differs from the configured identity | Restore the intended target; never silently rebind |
 | `revision_conflict` | Live content differs from the expectation | Review, then publish with a reviewed revision |
-| `lock_timeout` | Another command holds the publication lock | Retry after the holder finishes |
+| `lock_timeout` | Another command holds the publication lock (exit 75) | Retry after the holder finishes |
 | `command_timeout` | The command exceeded its time budget | Retry; a lost result stays uncertain until inspected |
+| `interrupted` | SIGINT or SIGTERM stopped the command (exit 130 or 143); publish and restore report unknown effects | Run `status`, then an identical retry |
 | `delivery_failure` | Delivery verification failed or probed a degraded route | Verify; see interruption states below |
 | `export` failures | Saved export is missing, corrupt, or malformed | Stop; see degraded state below |
 
@@ -38,11 +46,11 @@ Artifact handoff error codes:
 | Code | Meaning | Action |
 | --- | --- | --- |
 | `receipt_missing` | The receipt directory does not exist | Rebind with `--adopt` after inspection |
-| `receipt_busy` | Another command holds the receipt lock | Retry after the holder finishes |
+| `receipt_busy` | Another command holds the receipt lock (exit 75) | Retry after the holder finishes |
 | `receipt_exists` | A receipt already exists for a `--new` binding | Reuse it, or choose a new publication name |
 | `receipt_persistence_failed` | A host result exists but the receipt did not persist | Keep the reported paths; retry after inspection |
 | `delivery_failed` | Activation was proven, but delivery verification or persistence did not complete | Retry the frozen attempt |
-| `interrupted` | A scoped cancellation stopped the command | Retry the same input and expectation |
+| `interrupted` | SIGINT or SIGTERM stopped the command (exit 130 or 143) | Run `artifact status`, then `artifact retry` |
 | `publisher_timeout` | The remote publisher did not finish in budget | The attempt is uncertain; inspect status, then retry |
 | `publisher_output_limit` | Host output exceeded the protocol bound | Treat as uncertain; inspect status |
 | `publisher_process_group_unknown` | Cleanup of the transport process group is unproven | The attempt stays unresolved; inspect before retrying |

@@ -19,7 +19,7 @@ There is no third bucket. If a test fits neither, do not write it
 
 A test is a `test*` method of a `unittest.TestCase` subclass in a `test_*.py` module. unittest never runs a module-level `test*` function, so its failures would stay hidden. `test-layout` rejects one in either bucket, and the artifact audit rejects one under `tests/e2e/` on its own
 
-An E2E test takes its faults from outside the product: a shim on `PATH`, a `sitecustomize.py`, or a loopback server that stalls or lies. A fault that patches product code makes the test isolated. The one exception is the installed receipt lifecycle in `tests/e2e/test_artifact_installed.py`: its launcher patches receipt persistence inside the installed wheel, because no outside fault reaches that write. Do not add a second one
+An E2E test takes its faults from outside the product: a shim on `PATH`, a `sitecustomize.py`, or a loopback server that stalls or lies. The signal tests in `tests/e2e/test_cli_contract.py` use a `sitecustomize.py` that blocks one named process right after `parse_args` and writes its PID to a ready file, so they signal a process at a known point without a timer. A fault that patches product code makes the test isolated. The one exception is the installed receipt lifecycle in `tests/e2e/test_artifact_installed.py`: its launcher patches receipt persistence inside the installed wheel, because no outside fault reaches that write. Do not add a second one
 
 ## Before adding a test
 
@@ -82,4 +82,4 @@ Rule 1 has no direct check, because no script can tell when a test was written. 
 
 ## Hooks
 
-Run `lefthook install` once per clone. Before each commit, lefthook runs `just check --fast`, which skips the two E2E rows. Before each push, it runs `just check`. Both hooks check the working tree, including unstaged edits. The full verdict takes about 3 minutes, so give an agent's shell call a 15-minute timeout
+Run `lefthook install` once per clone. Before each commit, lefthook runs `just check --fast`, which skips the two E2E rows. Before each push, it runs `just check`. A passing verdict prints nothing; `just check -v` streams every check. A check that runs out of time gets SIGTERM, then SIGKILL 10 s later, and the E2E runner names the test it was running. Both hooks check the working tree, including unstaged edits. The full verdict takes about 3 minutes, so give an agent's shell call a 15-minute timeout

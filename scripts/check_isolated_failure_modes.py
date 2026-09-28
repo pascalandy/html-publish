@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _common import ScriptError, run_script
+from _common import Parser, ScriptError, run_script
 from _test_tree import SourceFile, add_root_argument, test_functions, test_sources
 
 EPILOG = """\
@@ -31,9 +31,7 @@ rule:
 
 examples:
   just check --only isolated-failure-modes
-  uv run python scripts/check_isolated_failure_modes.py --verbose
-
-exit codes: 0 ok, 1 failure-list errors found, 2 bad usage, 130 interrupted"""
+  uv run python scripts/check_isolated_failure_modes.py --verbose"""
 
 HEADING = "Failure modes:"
 ENTRY_RE = re.compile(r"^\s*(F[1-9][0-9]*)[:.]\s+\S")
@@ -107,7 +105,7 @@ def check(root: Path) -> str:
     errors: list[str] = []
     tests = 0
     for source in modules:
-        log.debug("check %s", source.label)
+        log.info("check %s", source.label)
         count, problems = check_module(source)
         tests += count
         errors.extend(problems)
@@ -117,14 +115,16 @@ def check(root: Path) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
+    parser = Parser(
         prog="check_isolated_failure_modes.py",
         description="Check that isolated test modules start from a failure list and cover it",
         epilog=EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     add_root_argument(parser)
-    return run_script(parser, lambda args: check(args.root.resolve()), argv)
+    return run_script(
+        parser, lambda args: check(args.root.resolve()), argv, failure="failure-list errors found"
+    )
 
 
 if __name__ == "__main__":

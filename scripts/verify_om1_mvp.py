@@ -1,20 +1,38 @@
 #!/usr/bin/env python3
+"""Verify the controlled om1 html-publish MVP end to end through html-publish-remote."""
+
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import logging
 import os
 import shlex
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import NoReturn, cast
+from typing import cast
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from _common import Parser, ScriptError, TemporaryFailure, run_script
+
+EPILOG = """\
+Publishes A, updates to B, proves a stale update of C fails with revision_conflict,
+then fetches the stable URL with an old If-Modified-Since. The JSON evidence goes to
+stdout. A remote step that exits 75 ends the run with exit 75.
+
+examples:
+  uv run python scripts/verify_om1_mvp.py
+  uv run python scripts/verify_om1_mvp.py --remote-command "html-publish-remote -c client.json" -v
+  uv run python scripts/verify_om1_mvp.py --name om1-mvp-rerun --timeout 60"""
 
 DEFAULT_REMOTE_COMMAND = "html-publish-remote"
 DEFAULT_NAME = "om1-deployment-mvp"
@@ -23,13 +41,11 @@ MAX_TIMEOUT = 300
 OLD_IF_MODIFIED_SINCE = "Thu, 01 Jan 1970 00:00:00 GMT"
 
 
-class VerificationFailure(Exception):
+log = logging.getLogger("verify-om1-mvp")
+
+
+class VerificationFailure(ScriptError):
     pass
-
-
-class Parser(argparse.ArgumentParser):
-    def error(self, message: str) -> NoReturn:
-        raise VerificationFailure(message)
 
 
 @dataclass(frozen=True)
@@ -61,11 +77,46 @@ def _bounded_timeout(value: str) -> int:
     return timeout
 
 
+def _command(value: str) -> tuple[str, ...]:
+    command = tuple(shlex.split(value))
+    if not command:
+        raise argparse.ArgumentTypeError("remote command must not be empty")
+    return command
+
+
+def _name(value: str) -> str:
+    if not value:
+        raise argparse.ArgumentTypeError("name must not be empty")
+    return value
+
+
 def _parser() -> Parser:
-    parser = Parser(description="Verify the controlled om1 html-publish MVP end to end")
-    parser.add_argument("--remote-command", default=DEFAULT_REMOTE_COMMAND)
-    parser.add_argument("--name", default=DEFAULT_NAME)
-    parser.add_argument("--timeout", type=_bounded_timeout, default=DEFAULT_TIMEOUT)
+    parser = Parser(
+        prog="verify_om1_mvp.py",
+        description=__doc__,
+        epilog=EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False,
+    )
+    parser.add_argument(
+        "--remote-command",
+        type=_command,
+        default=(DEFAULT_REMOTE_COMMAND,),
+        help=f"remote executable and its options (default: {DEFAULT_REMOTE_COMMAND})",
+    )
+    parser.add_argument(
+        "--name",
+        type=_name,
+        default=DEFAULT_NAME,
+        help=f"publication name (default: {DEFAULT_NAME})",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=_bounded_timeout,
+        default=DEFAULT_TIMEOUT,
+        help=f"seconds per remote step and HTTP fetch, 1 to {MAX_TIMEOUT} "
+        f"(default: {DEFAULT_TIMEOUT})",
+    )
     return parser
 
 
@@ -103,6 +154,8 @@ def _remote(
     *,
     expect_success: bool = True,
 ) -> RemoteResult:
+    log.info("%s: %s", step, shlex.join(arguments))
+    started = time.monotonic()
     try:
         result = subprocess.run(
             [*command, *arguments],
@@ -116,10 +169,16 @@ def _remote(
     except OSError as error:
         raise VerificationFailure(f"{step} could not start the remote command: {error}") from error
 
+    log.debug("%s exit %d after %.3f s", step, result.returncode, time.monotonic() - started)
     if not result.stdout.strip():
         detail = result.stderr.strip() or f"exit {result.returncode}"
         raise VerificationFailure(f"{step} returned no JSON output: {detail}")
     payload = _json_object(result.stdout, step)
+    if result.returncode == 75:
+        code = _error_code(payload) or "temporary_failure"
+        raise TemporaryFailure(
+            f"{step} reported {code} (exit 75); fix: rerun the verification once it clears"
+        )
     if expect_success and result.returncode != 0:
         code = _error_code(payload) or "unknown_error"
         raise VerificationFailure(f"{step} failed with {code} (exit {result.returncode})")
@@ -209,6 +268,7 @@ def _stable_url(results: tuple[RemoteResult, ...]) -> str:
 
 
 def _fetch(url: str, expected_content: bytes, timeout: int) -> dict[str, object]:
+    log.info("fetch %s with an old If-Modified-Since", url)
     request = urllib.request.Request(
         url,
         headers={"If-Modified-Since": OLD_IF_MODIFIED_SINCE},
@@ -339,42 +399,41 @@ def _verify(
     }
 
 
-def main(argv: list[str] | None = None) -> int:
-    try:
-        parsed = _parser().parse_args(argv)
-        remote_command = cast(str, parsed.remote_command)
-        name = cast(str, parsed.name)
-        timeout = cast(int, parsed.timeout)
-        command = tuple(shlex.split(remote_command))
-        if not command:
-            raise VerificationFailure("remote command must not be empty")
-        if not name:
-            raise VerificationFailure("name must not be empty")
+def run(parsed: argparse.Namespace) -> str:
+    command = cast(tuple[str, ...], parsed.remote_command)
+    name = cast(str, parsed.name)
+    timeout = cast(int, parsed.timeout)
+    with tempfile.TemporaryDirectory(prefix="html-publish-om1-mvp-") as temporary:
+        artifacts = _write_sources(Path(temporary))
+        before = _hashes(artifacts)
+        failure: ScriptError | None = None
+        evidence: dict[str, object] | None = None
+        try:
+            evidence = _verify(command, name, timeout, artifacts)
+        except ScriptError as error:
+            failure = error
+        after = _hashes(artifacts)
+        preserved = before == after and all(
+            before[artifact.label] == artifact.sha256 for artifact in artifacts
+        )
+        if not preserved:
+            raise VerificationFailure("a source artifact changed during verification")
+        if failure is not None:
+            raise failure
+        assert evidence is not None
+        evidence["source_hash_preservation"] = {"verified": True, "sha256": before}
+        print(json.dumps(evidence, ensure_ascii=False, separators=(",", ":")))
+    return f"ok: {name} passed at {evidence['url']}"
 
-        with tempfile.TemporaryDirectory(prefix="html-publish-om1-mvp-") as temporary:
-            artifacts = _write_sources(Path(temporary))
-            before = _hashes(artifacts)
-            failure: VerificationFailure | None = None
-            evidence: dict[str, object] | None = None
-            try:
-                evidence = _verify(command, name, timeout, artifacts)
-            except VerificationFailure as error:
-                failure = error
-            after = _hashes(artifacts)
-            preserved = before == after and all(
-                before[artifact.label] == artifact.sha256 for artifact in artifacts
-            )
-            if not preserved:
-                raise VerificationFailure("a source artifact changed during verification")
-            if failure is not None:
-                raise failure
-            assert evidence is not None
-            evidence["source_hash_preservation"] = {"verified": True, "sha256": before}
-            print(json.dumps(evidence, ensure_ascii=False, separators=(",", ":")))
-            return 0
-    except VerificationFailure as error:
-        print(f"om1 MVP verification failed: {error}", file=sys.stderr)
-        return 1
+
+def main(argv: list[str] | None = None) -> int:
+    return run_script(
+        _parser(),
+        run,
+        argv,
+        failure="the verification failed",
+        temporary="a remote step reported a temporary failure",
+    )
 
 
 if __name__ == "__main__":

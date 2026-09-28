@@ -1,26 +1,56 @@
+"""Time `html-publish plan` over 1, 100, and 2,000-file fixtures in both object formats."""
+
 import argparse
 import json
+import logging
 import os
 import platform
 import shlex
 import shutil
 import statistics
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--cli", required=True, type=Path)
-    parser.add_argument("--out", required=True, type=Path)
-    parser.add_argument("--reps", type=int, default=7)
-    parser.add_argument("--workdir", type=Path)
-    args = parser.parse_args()
+from _common import Parser, ScriptError, run_script, write_output
+
+EPILOG = """\
+Each fixture runs one warmup, then --reps timed plans, then one plan with a git
+wrapper on PATH that counts git calls. The JSON report goes to --output.
+
+examples:
+  uv run python scripts/bench_capture.py --cli .venv/bin/html-publish
+  uv run python scripts/bench_capture.py --cli "$WHEEL_VENV/bin/html-publish" -o capture.json -v
+  uv run python scripts/bench_capture.py --cli .venv/bin/html-publish --reps 3 --workdir /var/tmp"""
+
+log = logging.getLogger("bench-capture")
+
+
+def positive_reps(value):
+    try:
+        reps = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("reps must be a positive integer") from error
+    if reps < 1:
+        raise argparse.ArgumentTypeError("reps must be at least 1")
+    return reps
+
+
+def executable(value):
+    path = Path(value)
+    if not path.is_file() or not os.access(path, os.X_OK):
+        raise argparse.ArgumentTypeError(f"{value} is not an executable file")
+    return path
+
+
+def bench(args):
     actual_git = shutil.which("git")
     if actual_git is None:
-        raise RuntimeError("git unavailable")
+        raise ScriptError("git is not on PATH; fix: install git or add it to PATH")
     results = []
     with tempfile.TemporaryDirectory(prefix="html-publish-perf-", dir=args.workdir) as temporary:
         root = Path(temporary)
@@ -81,18 +111,24 @@ def main():
                         "--target",
                         "https://example.invalid/pages/",
                     ]
+                    log.debug("run %s", shlex.join(command))
                     start = time.perf_counter()
-                    completed = subprocess.run(command, capture_output=True, text=True, env=env)
+                    completed = subprocess.run(
+                        command, capture_output=True, text=True, env=env, check=False
+                    )
                     elapsed = time.perf_counter() - start
                     if completed.returncode != 0:
-                        raise RuntimeError(f"plan failed: {completed.stdout} {completed.stderr}")
+                        raise ScriptError(
+                            f"plan exited {completed.returncode}: "
+                            f"{completed.stdout.strip()} {completed.stderr.strip()}"
+                        )
                     payload = json.loads(completed.stdout)
                     if payload["file_count"] != count or payload["prediction"] != "create":
-                        raise RuntimeError(f"unexpected plan: {payload}")
+                        raise ScriptError(f"plan returned an unexpected result: {payload}")
                     if revision is None:
                         revision = payload["requested_revision"]
                     elif revision != payload["requested_revision"]:
-                        raise RuntimeError("revision changed across repetitions")
+                        raise ScriptError("the revision changed across repetitions")
                     if 1 <= attempt <= args.reps:
                         times.append(elapsed)
                     if attempt == args.reps + 1:
@@ -111,7 +147,7 @@ def main():
                     "git_calls": git_calls,
                 }
                 results.append(result)
-                print(json.dumps(result), flush=True)
+                log.info(json.dumps(result))
     report = {
         "platform": platform.platform(),
         "machine": platform.machine(),
@@ -125,8 +161,35 @@ def main():
         "source_cache": "warm after fixture generation and warmup",
         "results": results,
     }
-    args.out.write_text(json.dumps(report, indent=2) + "\n")
+    write_output(args.output, json.dumps(report, indent=2) + "\n")
+    return f"ok: timed {len(results)} fixtures"
+
+
+def main(argv=None):
+    parser = Parser(
+        prog="bench_capture.py",
+        description=__doc__,
+        epilog=EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False,
+    )
+    parser.add_argument(
+        "--cli", required=True, type=executable, help="html-publish executable to time"
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        default="-",
+        help="file for the JSON report; - writes it to stdout (default: -)",
+    )
+    parser.add_argument(
+        "--reps", type=positive_reps, default=7, help="timed runs per fixture (default: 7)"
+    )
+    parser.add_argument(
+        "--workdir", type=Path, help="parent directory for fixtures (default: the temp dir)"
+    )
+    return run_script(parser, bench, argv, failure="a timed plan failed")
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

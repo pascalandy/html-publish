@@ -27,7 +27,7 @@ html-publish skills get core
 just check
 ```
 
-`just check --fast` skips the E2E checks. Run `lefthook install` once per clone to run the fast checks before each commit and the full verdict before each push. [Testing](docs/testing.md) explains the test rules the checks enforce
+`just check` prints nothing when every check passes; `just check -v` streams each check on stderr. `just check --fast` skips the E2E checks. Run `lefthook install` once per clone to run the fast checks before each commit and the full verdict before each push. [Testing](docs/testing.md) explains the test rules the checks enforce
 
 ## Set up a target
 
@@ -62,7 +62,9 @@ The [core guide](html_publish/guides/core.md) owns the full shell patterns for H
 
 ## Help
 
-`html-publish --help` owns command syntax. `html-publish schema` prints parser-derived command discovery as JSON. `html-publish-remote` forwards the six publisher commands over SSH and emits the same versioned JSON
+`html-publish --help` owns command syntax, and `html-publish help <command>` prints the same text as `<command> --help`. `html-publish schema` prints parser-derived command discovery as JSON. `html-publish-remote` forwards the six publisher commands over SSH and emits the same versioned JSON
+
+Every executable follows the [command-line conventions](docs/contract.md#command-line-conventions). A successful command writes only its result to stdout and nothing to stderr. `-v` adds one line per step, `--debug` adds timings and tracebacks, and exit 75 means an identical rerun may succeed
 
 ## Platform boundaries
 

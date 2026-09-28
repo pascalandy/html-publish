@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _common import ScriptError, run_script
+from _common import Parser, ScriptError, run_script
 from _test_tree import (
     BUCKETS,
     add_root_argument,
@@ -31,9 +31,7 @@ rule:
 
 examples:
   just check --only test-layout
-  uv run python scripts/check_test_layout.py --verbose
-
-exit codes: 0 ok, 1 layout errors found, 2 bad usage, 130 interrupted"""
+  uv run python scripts/check_test_layout.py --verbose"""
 
 SKIPPED_TREES = frozenset({"tests", ".venv", "venv", "build", "dist", "node_modules"})
 FIX_BUCKET = (
@@ -69,7 +67,7 @@ def check(root: Path) -> str:
 
     for source in sources:
         name = source.path.name
-        log.debug("check %s", source.label)
+        log.info("check %s", source.label)
         if source.bucket is None:
             if source.label != "tests/__init__.py":
                 errors.append(
@@ -103,14 +101,16 @@ def check(root: Path) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
+    parser = Parser(
         prog="check_test_layout.py",
         description="Check that every test lives in tests/e2e/ or tests/isolated/",
         epilog=EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     add_root_argument(parser)
-    return run_script(parser, lambda args: check(args.root.resolve()), argv)
+    return run_script(
+        parser, lambda args: check(args.root.resolve()), argv, failure="layout errors found"
+    )
 
 
 if __name__ == "__main__":

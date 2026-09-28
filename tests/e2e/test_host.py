@@ -496,7 +496,7 @@ sys.exit(64)
             yield plan
         finally:
             server.send_signal(signal.SIGTERM)
-            self.assertEqual(server.wait(timeout=5), 0)
+            self.assertEqual(server.wait(timeout=5), -signal.SIGTERM)
 
     def seed_route_record(
         self,
@@ -1689,7 +1689,7 @@ sys.exit(64)
                 self.assertEqual(response.read(), b"<h1>updated host page</h1>\n")
         finally:
             server.send_signal(signal.SIGTERM)
-            self.assertEqual(server.wait(timeout=5), 0)
+            self.assertEqual(server.wait(timeout=5), -signal.SIGTERM)
             if server.stderr:
                 server.stderr.close()
 
@@ -1744,7 +1744,7 @@ sys.exit(64)
             starter.join(timeout=3)
             for server in servers:
                 server.send_signal(signal.SIGTERM)
-                self.assertEqual(server.wait(timeout=5), 0)
+                self.assertEqual(server.wait(timeout=5), -signal.SIGTERM)
             self.env.pop("FAKE_START_MODE")
 
     def test_service_apply_rejects_redirected_health(self) -> None:
