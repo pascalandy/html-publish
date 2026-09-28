@@ -4,6 +4,7 @@ import argparse
 import contextlib
 import hashlib
 import json
+import logging
 import os
 import shutil
 import signal
@@ -32,6 +33,9 @@ SERVE_PATH = "/html-publish"
 UNIT_NAME = "html-publish.service"
 COMMAND_TIMEOUT_SECONDS = 120.0
 COMMAND_TERMINATE_SECONDS = 2.0
+UNREACHABLE = "cannot connect: "
+
+log = logging.getLogger("html_publish.deploy")
 
 
 class DeployError(Exception):
@@ -120,6 +124,8 @@ def run_command(
     *,
     timeout_seconds: float = COMMAND_TIMEOUT_SECONDS,
 ) -> CommandResult:
+    log.debug("run %s", " ".join(argv))
+    started = time.monotonic()
     with tempfile.TemporaryFile(mode="w+") as output, tempfile.TemporaryFile(mode="w+") as errors:
         try:
             process = subprocess.Popen(
@@ -150,6 +156,7 @@ def run_command(
         output.seek(0)
         errors.seek(0)
         stdout, stderr = output.read(), errors.read()
+    log.debug("%s exit %d after %.3f s", argv[0], process.returncode, time.monotonic() - started)
     detail = stderr.strip() or stdout.strip() or "no diagnostic output"
     if timed_out:
         raise DeployError(
@@ -180,7 +187,7 @@ def probe_health(url: str) -> tuple[bool, str]:
             if status not in {502, 503}:
                 return False, last_detail
         except (OSError, urllib.error.URLError) as error:
-            last_detail = str(error)
+            last_detail = f"{UNREACHABLE}{error}"
         else:
             if status not in {502, 503}:
                 return status == 200, f"HTTP {status}"
@@ -506,6 +513,7 @@ def _release_id(path: Path | None, releases: Path) -> str | None:
 def health(
     layout: Layout, runner: Runner = run_command, probe: Probe = probe_health
 ) -> dict[str, object]:
+    log.info("check the current release, service, route, and health endpoints")
     current_target = _symlink_target(layout.current)
     release = _release_id(current_target, layout.releases)
     checks = [
@@ -531,6 +539,8 @@ def health(
     checks.append(Check("loopback", loopback_ok, loopback_detail))
     https_ok, https_detail = probe(f"{layout.base_url}_html-publish-health")
     checks.append(Check("https", https_ok, https_detail))
+    for check in checks:
+        log.info("%s: %s (%s)", check.name, "ok" if check.ok else "failed", check.detail)
     return {
         "operation": "health",
         "healthy": all(check.ok for check in checks),
@@ -538,6 +548,20 @@ def health(
         "base_url": layout.base_url,
         "checks": [asdict(check) for check in checks],
     }
+
+
+def only_unreachable(report: dict[str, object]) -> bool:
+    """Whether every failed health check is an HTTP probe that could not connect: a
+    temporary failure, since the service may still be starting."""
+    failed = [
+        check
+        for check in cast(list[dict[str, object]], report["checks"])
+        if check["ok"] is not True
+    ]
+    return bool(failed) and all(
+        check["name"] in {"loopback", "https"} and str(check["detail"]).startswith(UNREACHABLE)
+        for check in failed
+    )
 
 
 def _restore_owned_file(path: Path, expected: FileState, original: FileState) -> None:
@@ -676,16 +700,34 @@ def install(
     source: Path,
     runner: Runner = run_command,
     probe: Probe = probe_health,
+    *,
+    dry_run: bool = False,
 ) -> dict[str, object]:
+    log.info("check the existing publisher config and Tailscale route")
     config_needed = _preflight_config(layout)
     original_route = _preflight_route(layout, runner)
     snapshot = _installation_snapshot(layout, runner)
+    if dry_run:
+        return {
+            "operation": "install",
+            "outcome": "planned",
+            "release": None,
+            "previous": _release_id(_symlink_target(layout.current), layout.releases),
+            "base_url": layout.base_url,
+            "health": None,
+            "preflight": {
+                "config": "write" if config_needed else "keep",
+                "route": "create" if original_route == "absent" else "keep",
+                "unit_file_state": snapshot.unit_file_state,
+            },
+        }
     layout.state_root.mkdir(parents=True, exist_ok=True)
     layout.incoming.mkdir(exist_ok=True)
     layout.releases.mkdir(exist_ok=True)
 
     with tempfile.TemporaryDirectory(prefix="html-publish-wheel-") as directory:
         resolved_source = source.resolve()
+        log.info("build a wheel from %s", resolved_source)
         wheel = _build_wheel(resolved_source, runner, Path(directory))
         requirements = Path(directory) / "requirements.txt"
         runner(
@@ -704,6 +746,7 @@ def install(
                 str(requirements),
             )
         )
+        log.info("install the release into %s", layout.releases)
         release = _install_release(layout, wheel, requirements, runner)
 
     if _installation_snapshot(layout, runner) != snapshot:
@@ -729,6 +772,7 @@ def install(
             expected_pointers = PointerPair(snapshot.pointers.current, str(release))
             _atomic_symlink(layout.previous, release)
         unit_written = True
+        log.info("select release %s and restart %s", release.name, UNIT_NAME)
         _atomic_write(layout.unit, _unit_content(layout), 0o644)
         runner(("systemctl", "--user", "daemon-reload"))
         runner(("systemctl", "--user", "enable", "--now", UNIT_NAME))
@@ -737,6 +781,7 @@ def install(
             refreshed_route_state = _preflight_route(layout, runner)
             if refreshed_route_state == "absent":
                 route_created = True
+                log.info("create the Tailscale Serve route %s", SERVE_PATH)
                 _create_route(layout, runner)
                 if _route_state(layout, _serve_payload(runner)) != "exact":
                     raise DeployError("Tailscale Serve did not install the requested route")
@@ -771,6 +816,8 @@ def rollback(
     release_id: str | None,
     runner: Runner = run_command,
     probe: Probe = probe_health,
+    *,
+    dry_run: bool = False,
 ) -> dict[str, object]:
     original = _pointer_pair(layout)
     original_current = _symlink_target(layout.current)
@@ -783,6 +830,16 @@ def rollback(
     if target.parent.resolve() != layout.releases.resolve() or not (target / ".ready").is_file():
         raise DeployError(f"Release is not installed: {release_id or target.name}")
     pointers_changed = target.resolve() != original_current.resolve()
+    if dry_run:
+        return {
+            "operation": "rollback",
+            "outcome": "planned",
+            "release": target.name,
+            "previous": original_current.name,
+            "base_url": layout.base_url,
+            "health": None,
+        }
+    log.info("select release %s and restart %s", target.name, UNIT_NAME)
     expected_pointers: PointerPair | None = None
     try:
         if pointers_changed:
@@ -821,7 +878,7 @@ def rollback(
 
 
 class Parser(command_line.Parser):
-    exit_codes = (0, 1, 2, 130, 143)
+    exit_codes = (0, 1, 2, 75, 130, 143)
 
 
 def _globals(parser: argparse.ArgumentParser, *, child: bool = False) -> None:
@@ -850,10 +907,33 @@ def _globals(parser: argparse.ArgumentParser, *, child: bool = False) -> None:
         help="systemd user unit path (default: $XDG_CONFIG_HOME/systemd/user/html-publish.service)",
     )
     parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        default=argparse.SUPPRESS if child else False,
+        help="print one line per step on stderr",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        default=argparse.SUPPRESS if child else False,
+        help="also print every command, timings, and tracebacks on stderr "
+        "(or set HTML_PUBLISH_DEPLOY_DEBUG=1)",
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"html-publish-deploy {__version__}",
         help="show installed version",
+    )
+
+
+def _dry_run(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "-n",
+        "--dry-run",
+        action="store_true",
+        help="run the preflight checks and report outcome planned without changing anything",
     )
 
 
@@ -881,6 +961,7 @@ def _parser() -> Parser:
         "build and activate a source checkout",
         examples=(
             "html-publish-deploy install --source .",
+            "html-publish-deploy install --source . --dry-run",
             "html-publish-deploy install --source ~/projects/html-publish "
             "--state-root ~/.local/share/html-publish",
         ),
@@ -896,6 +977,7 @@ def _parser() -> Parser:
         default=Path.cwd(),
         help="source checkout to build (default: the current directory)",
     )
+    _dry_run(install_parser)
     _globals(install_parser, child=True)
     health_parser = register_command(
         commands,
@@ -905,7 +987,11 @@ def _parser() -> Parser:
             "html-publish-deploy health",
             "html-publish-deploy health | jq '.checks[] | select(.ok | not)'",
         ),
-        effects=("reads service, route, and HTTP state", "changes nothing"),
+        effects=(
+            "reads service, route, and HTTP state",
+            "changes nothing",
+            "exits 75 when only the HTTP probes cannot connect yet",
+        ),
     )
     _globals(health_parser, child=True)
     rollback_parser = register_command(
@@ -915,6 +1001,7 @@ def _parser() -> Parser:
         examples=(
             "html-publish-deploy rollback",
             "html-publish-deploy rollback --release RELEASE",
+            "html-publish-deploy rollback -n",
         ),
         effects=(
             "swaps the current and previous release pointers",
@@ -922,6 +1009,7 @@ def _parser() -> Parser:
         ),
     )
     rollback_parser.add_argument("--release", help="release ID; defaults to previous")
+    _dry_run(rollback_parser)
     _globals(rollback_parser, child=True)
     command_line.add_help_command(
         commands,
@@ -952,6 +1040,11 @@ def _main(command: list[str], runner: Runner, probe: Probe) -> int:
     except command_line.UsageError as error:
         sys.stderr.write(command_line.usage_text(error, parser, command))
         return 2
+    command_line.configure_logging(
+        "html-publish-deploy",
+        verbose=arguments.verbose,
+        debug=arguments.debug or command_line.debug_requested("html-publish-deploy", command),
+    )
     try:
         layout = Layout(
             arguments.state_root or data_root() / "html-publish",
@@ -985,14 +1078,14 @@ def _main(command: list[str], runner: Runner, probe: Probe) -> int:
         for signum in previous_handlers:
             signal.signal(signum, cancel)
         if arguments.operation == "install":
-            payload = install(layout, arguments.source, runner, probe)
+            payload = install(layout, arguments.source, runner, probe, dry_run=arguments.dry_run)
         elif arguments.operation == "rollback":
-            payload = rollback(layout, arguments.release, runner, probe)
+            payload = rollback(layout, arguments.release, runner, probe, dry_run=arguments.dry_run)
         else:
             payload = health(layout, runner, probe)
             if not payload["healthy"]:
                 print(json.dumps(payload, sort_keys=True))
-                return 1
+                return 75 if only_unreachable(payload) else 1
     except (DeployError, DeployCancelled) as error:
         print(
             json.dumps(

@@ -1779,13 +1779,24 @@ def _main(arguments: list[str]) -> int:
         config_path, _ = selected_path("publisher", parsed.config)
         if parsed.operation == "host":
             from html_publish.host import HostError, apply, make_spec, preview
-            from html_publish.server import ServerConfig, serve
+            from html_publish.server import BindError, ServerConfig, serve
 
             config_path = config_path.absolute()
             try:
                 config = load_config(config_path)
                 if parsed.host_action == "serve":
-                    return serve(ServerConfig(config.runtime / "public", parsed.bind, parsed.port))
+                    try:
+                        return serve(
+                            ServerConfig(config.runtime / "public", parsed.bind, parsed.port)
+                        )
+                    except BindError as error:
+                        failure = Failure("bind_failed", "serve", str(error), "choose_port")
+                        if parsed.json:
+                            return emit_json(_host_error(parsed, failure), 1)
+                        print(f"html-publish: {error}", file=sys.stderr)
+                        fixed = _with_option(arguments, "--port", "<port>")
+                        print(f"next: {shlex.join(['html-publish', *fixed])}", file=sys.stderr)
+                        return 1
                 if parsed.host_action == "route":
                     from html_publish.host_route import apply as route_apply
                     from html_publish.host_route import preview as route_preview

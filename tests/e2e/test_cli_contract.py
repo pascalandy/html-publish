@@ -338,7 +338,7 @@ INSTALLED = (
     Installed(
         "html-publish-deploy",
         "html_publish.deploy",
-        (0, 1, 2, 130, 143),
+        (0, 1, 2, 75, 130, 143),
         schema=False,
         commands=(("install",), ("health",), ("rollback",), ("help",)),
     ),
@@ -1165,6 +1165,228 @@ class RemoteContractTest(PublisherFixture):
         for command in forwarded:
             self.assertNotIn(" -v", command)
             self.assertNotIn("--debug", command)
+
+
+SYSTEMCTL_SHIM = """\
+import os
+import signal
+import sys
+from pathlib import Path
+
+arguments = sys.argv[1:]
+if "is-active" in arguments:
+    if os.environ.get("HP_SYSTEMCTL_BLOCK"):
+        ready = Path(os.environ["HP_SYSTEMCTL_BLOCK"])
+        ready.with_suffix(".tmp").write_text(str(os.getpid()))
+        ready.with_suffix(".tmp").rename(ready)
+        while True:
+            signal.pause()
+    print(os.environ.get("HP_SERVICE_STATE", "active"))
+elif "--property=UnitFileState" in arguments:
+    print("enabled")
+"""
+TAILSCALE_SHIM = """\
+import json
+
+print(json.dumps({
+    "TCP": {"8444": {"HTTPS": True}},
+    "Web": {
+        "om1.donkey-arcturus.ts.net:8444": {
+            "Handlers": {"/html-publish": {"Proxy": "http://127.0.0.1:4177"}}
+        }
+    },
+}))
+"""
+
+
+class ServerContractTest(PublisherFixture):
+    """html-publish-server, and the bind error it shares with html-publish host serve."""
+
+    def server(self, port: int, *arguments: str) -> subprocess.Popen[bytes]:
+        process = subprocess.Popen(
+            [
+                PYTHON,
+                "-m",
+                "html_publish.server",
+                "--directory",
+                str(self.runtime / "public"),
+                "--port",
+                str(port),
+                *arguments,
+            ],
+            cwd=self.root,
+            env=self.env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.addCleanup(stop_bytes, process)
+        return process
+
+    def test_the_access_log_needs_verbose_and_a_signal_ends_the_server(self) -> None:
+        (self.runtime / "public").mkdir(parents=True)
+        for level, signal_number in (((), signal.SIGINT), (("-v",), signal.SIGTERM)):
+            with self.subTest(level=level, signal=signal_number.name):
+                port = unused_port()
+                process = self.server(port, *level)
+                wait_for_health(process, port)
+                process.send_signal(signal_number)
+                stdout, stderr = process.communicate(timeout=30)
+                self.assertEqual(process.returncode, -signal_number, stderr)
+                self.assertEqual(stdout, b"")
+                if level:
+                    self.assertIn(b"html-publish-server: serving ", stderr)
+                    self.assertIn(b'"GET /_html-publish-health HTTP/1.1" 200', stderr)
+                else:
+                    self.assertEqual(stderr, b"")
+
+    def test_a_busy_port_is_one_line_and_a_next_command(self) -> None:
+        with socket.socket() as busy:
+            busy.bind(("127.0.0.1", 0))
+            busy.listen()
+            port = busy.getsockname()[1]
+            server = self.server(port)
+            stdout, stderr = server.communicate(timeout=30)
+            host = self.cli("host", "serve", "--port", str(port))
+        busy_error = rf"cannot listen on 127\.0\.0\.1:{port}: \[Errno \d+\] Address already in use"
+        self.assertEqual((server.returncode, stdout), (1, b""))
+        failure, next_line = stderr.decode().splitlines()
+        self.assertRegex(failure, rf"^html-publish-server: {busy_error}$")
+        self.assertEqual(
+            next_line,
+            f"next: html-publish-server --directory {self.runtime / 'public'} "
+            "--bind 127.0.0.1 --port '<port>'",
+        )
+        self.assertEqual((host.returncode, host.stdout), (1, ""))
+        failure, next_line = host.stderr.splitlines()
+        self.assertRegex(failure, rf"^html-publish: {busy_error}$")
+        self.assertEqual(
+            next_line, f"next: html-publish --config {self.config} host serve --port '<port>'"
+        )
+
+
+class DeployContractTest(unittest.TestCase):
+    """html-publish-deploy against systemctl and tailscale shims and a closed proxy port."""
+
+    def setUp(self) -> None:
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="hp-deploy-")))
+        shims = self.root / "shims"
+        shims.mkdir()
+        for name, body in (("systemctl", SYSTEMCTL_SHIM), ("tailscale", TAILSCALE_SHIM)):
+            (shims / name).write_text(f"#!{PYTHON}\n{body}", encoding="utf-8")
+            (shims / name).chmod(0o755)
+        self.state = self.root / "state"
+        for release in ("sha256-a", "sha256-b"):
+            (self.state / "app-releases" / release).mkdir(parents=True)
+            (self.state / "app-releases" / release / ".ready").write_text(release)
+        (self.state / "current").symlink_to(self.state / "app-releases" / "sha256-a")
+        (self.state / "previous").symlink_to(self.state / "app-releases" / "sha256-b")
+        closed = f"http://127.0.0.1:{unused_port()}"
+        self.env = {
+            **ENVIRONMENT,
+            "PATH": f"{shims}{os.pathsep}{ENVIRONMENT['PATH']}",
+            "XDG_CONFIG_HOME": str(self.root / "config"),
+            "XDG_DATA_HOME": str(self.root / "data"),
+            "http_proxy": closed,
+            "https_proxy": closed,
+            "HTTP_PROXY": closed,
+            "HTTPS_PROXY": closed,
+            "no_proxy": "",
+            "NO_PROXY": "",
+        }
+        self.layout = [
+            "--state-root",
+            str(self.state),
+            "--config",
+            str(self.root / "publisher.json"),
+            "--unit",
+            str(self.root / "html-publish.service"),
+        ]
+
+    def deploy(
+        self, *arguments: str, env: Mapping[str, str] | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [PYTHON, "-m", "html_publish.deploy", *self.layout, *arguments],
+            cwd=self.root,
+            env={**self.env, **(env or {})},
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+    def test_deploy_exit_codes(self) -> None:
+        planned = self.deploy("install", "--source", str(ROOT), "-n")
+        self.assertEqual((planned.returncode, planned.stderr), (0, ""), planned.stdout)
+        install = json_object(planned.stdout)
+        self.assertEqual(
+            (install["outcome"], install["release"], install["previous"]),
+            ("planned", None, "sha256-a"),
+        )
+        self.assertEqual(
+            install["preflight"],
+            {"config": "write", "route": "keep", "unit_file_state": "enabled"},
+        )
+        self.assertFalse((self.root / "publisher.json").exists())
+        rollback = self.deploy("rollback", "--dry-run")
+        self.assertEqual((rollback.returncode, rollback.stderr), (0, ""))
+        self.assertEqual(
+            {key: json_object(rollback.stdout)[key] for key in ("outcome", "release", "previous")},
+            {"outcome": "planned", "release": "sha256-b", "previous": "sha256-a"},
+        )
+        self.assertEqual(
+            os.readlink(self.state / "current"), str(self.state / "app-releases" / "sha256-a")
+        )
+        missing = self.deploy("rollback", "--release", "sha256-missing")
+        self.assertEqual((missing.returncode, missing.stdout), (1, ""))
+        self.assertEqual(json_object(missing.stderr)["outcome"], "error")
+        unreachable = self.deploy("health")
+        self.assertEqual(unreachable.returncode, 75, unreachable.stdout + unreachable.stderr)
+        failed = {
+            str(check["name"]): str(check["detail"])
+            for check in cast(list[dict[str, object]], json_object(unreachable.stdout)["checks"])
+            if check["ok"] is not True
+        }
+        self.assertEqual(set(failed), {"loopback", "https"})
+        self.assertTrue(all(detail.startswith("cannot connect: ") for detail in failed.values()))
+        stopped = self.deploy("health", env={"HP_SERVICE_STATE": "failed"})
+        self.assertEqual(stopped.returncode, 1, stopped.stdout + stopped.stderr)
+
+    def test_deploy_signals_while_a_command_runs(self) -> None:
+        for signal_number, code in ((signal.SIGINT, 130), (signal.SIGTERM, 143)):
+            with self.subTest(signal=signal_number.name):
+                ready = self.root / f"systemctl-{signal_number.name}.ready"
+                process = subprocess.Popen(
+                    [PYTHON, "-m", "html_publish.deploy", *self.layout, "health"],
+                    cwd=self.root,
+                    env={**self.env, "HP_SYSTEMCTL_BLOCK": str(ready)},
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                self.addCleanup(stop_bytes, process)
+                command = wait_for_ready(process, ready)
+                process.send_signal(signal_number)
+                stdout, stderr = process.communicate(timeout=30)
+                self.assertEqual((process.returncode, stdout), (code, b""), stderr)
+                self.assertEqual(
+                    json_object(stderr.decode())["error"],
+                    f"Deployment cancelled by {signal_number.name}",
+                )
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(command, 0)
+
+    def test_verbosity_changes_only_stderr(self) -> None:
+        arguments = ("install", "--source", str(ROOT), "--dry-run")
+        default = self.deploy(*arguments)
+        verbose = self.deploy(*arguments, "-v")
+        debug = self.deploy("--debug", *arguments)
+        self.assertEqual((default.returncode, default.stderr), (0, ""))
+        for level in (verbose, debug):
+            self.assertEqual((level.returncode, level.stdout), (0, default.stdout))
+        self.assertEqual(
+            verbose.stderr,
+            "html-publish-deploy: check the existing publisher config and Tailscale route\n",
+        )
+        self.assertRegex(debug.stderr, r"\+\d+\.\d{3}s run tailscale serve status --json\n")
 
 
 @contextlib.contextmanager

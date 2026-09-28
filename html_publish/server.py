@@ -6,6 +6,7 @@ import http.server
 import io
 import logging
 import os
+import shlex
 import signal
 import socket
 import socketserver
@@ -222,6 +223,14 @@ def _parser() -> Parser:
         "--port", default=8000, type=_port, help="listen port, 0 to 65535 (default: %(default)s)"
     )
     parser.add_argument(
+        "-v", "--verbose", action="store_true", help="print the access log on stderr"
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="also print tracebacks on stderr (or set HTML_PUBLISH_SERVER_DEBUG=1)",
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"html-publish-server {__version__}",
@@ -232,6 +241,11 @@ def _parser() -> Parser:
 
 def _parse_args(parser: Parser, argv: Sequence[str]) -> ServerConfig:
     arguments = parser.parse_args(argv)
+    command_line.configure_logging(
+        "html-publish-server",
+        verbose=arguments.verbose,
+        debug=arguments.debug or command_line.debug_requested("html-publish-server", argv),
+    )
 
     directory = arguments.directory
     if not isinstance(directory, Path):
@@ -243,10 +257,18 @@ def _parse_args(parser: Parser, argv: Sequence[str]) -> ServerConfig:
     return ServerConfig(directory, bind, port)
 
 
+class BindError(Exception):
+    """The listen address could not be bound."""
+
+
 def serve(config: ServerConfig) -> int:
     """Serve until SIGINT or SIGTERM, close the socket, then die from that signal."""
     handler = functools.partial(PublicationRequestHandler, directory=str(config.directory))
-    server = PublicationHTTPServer((config.bind, config.port), handler)
+    try:
+        server = PublicationHTTPServer((config.bind, config.port), handler)
+    except OSError as error:
+        raise BindError(f"cannot listen on {config.bind}:{config.port}: {error}") from error
+    log.info("serving %s on http://%s:%d/", config.directory, config.bind, server.server_port)
     previous = {name: signal.getsignal(name) for name in (signal.SIGINT, signal.SIGTERM)}
     received: list[int] = []
 
@@ -295,7 +317,21 @@ def _main(arguments: list[str]) -> int:
     except command_line.UsageError as error:
         sys.stderr.write(command_line.usage_text(error, parser, arguments))
         return 2
-    return serve(config)
+    try:
+        return serve(config)
+    except BindError as error:
+        print(f"html-publish-server: {error}", file=sys.stderr)
+        fixed = [
+            "html-publish-server",
+            "--directory",
+            str(config.directory),
+            "--bind",
+            config.bind,
+            "--port",
+            "<port>",
+        ]
+        print(f"next: {shlex.join(fixed)}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
