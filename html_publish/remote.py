@@ -54,7 +54,7 @@ HOST_PATTERN = re.compile(r"[A-Za-z0-9_.@-]+\Z")
 REMOTE_PATH_PATTERN = re.compile(r"/[A-Za-z0-9._/-]+\Z")
 
 ExitCode = Literal[0, 1, 2, 75]
-HOST_SIGNAL_EXITS = frozenset({130, 143})
+SIGNAL_EXITS = frozenset({130, 143})
 TEMPORARY = 75
 
 log = logging.getLogger("html_publish.remote")
@@ -1154,7 +1154,7 @@ def _validate_host_payload(
     }
     if not required.issubset(payload):
         raise ProtocolFailure("The host result is missing common envelope fields")
-    if exit_code not in {0, 1, 2, 75, *HOST_SIGNAL_EXITS}:
+    if exit_code not in {0, 1, 2, 75, *SIGNAL_EXITS}:
         raise ProtocolFailure(f"The host returned unsupported exit code {exit_code}")
     if type(payload.get("schema_version")) is not int or payload.get("schema_version") != 1:
         raise ProtocolFailure("The host result has an unsupported schema version")
@@ -1269,7 +1269,7 @@ def _validate_host_payload(
     error = payload.get("error")
     if exit_code == 0 and (outcome == "error" or error is not None):
         raise ProtocolFailure("The host success exit does not agree with its result")
-    if exit_code in {1, 2, 75, *HOST_SIGNAL_EXITS} and (
+    if exit_code in {1, 2, 75, *SIGNAL_EXITS} and (
         (outcome != "error" and not (request.operation == "status" and outcome == "observed"))
         or not isinstance(error, dict)
     ):
@@ -1301,7 +1301,7 @@ def _validate_host_payload(
         or any(effect_values[key] is not False for key in ("archive_advanced", "activated"))
     ):
         raise ProtocolFailure("The host exit 75 does not describe a lock timeout without effects")
-    if exit_code in HOST_SIGNAL_EXITS and (
+    if exit_code in SIGNAL_EXITS and (
         outcome != "error" or error_values.get("code") != "interrupted"
     ):
         raise ProtocolFailure("The host signal exit does not describe an interruption")
@@ -1353,7 +1353,7 @@ def _validate_host_payload(
                 and payload["requested_record_revision"] != payload["archived_record_revision"]
             ):
                 raise ProtocolFailure("The successful host result does not archive its record")
-    if exit_code in HOST_SIGNAL_EXITS:
+    if exit_code in SIGNAL_EXITS:
         return 1
     return cast(ExitCode, exit_code)
 
@@ -1368,6 +1368,40 @@ def _host_interrupted(payload: dict[str, object], request: Request) -> dict[str,
     action = cast(dict[str, object], error["next_action"])
     error["next_action"] = {**action, "kind": "inspect"}
     updated["error"] = error
+    return updated
+
+
+def _interrupted(payload: dict[str, object], request: Request, detail: str) -> dict[str, object]:
+    """The handoff of a command a signal ended. Every fact it already knew stays, and the error
+    becomes `interrupted`, the only code a consumer accepts with exit 130 or 143; an error it
+    replaces stays readable as `superseded_error`."""
+    mutating = request.operation in {"publish", "restore"}
+    updated = dict(payload)
+    previous = payload.get("error")
+    if isinstance(previous, dict):
+        updated["superseded_error"] = previous
+    error: dict[str, object] = {
+        "code": "interrupted",
+        "phase": "cancel",
+        "message": detail,
+        "next_action": {
+            "kind": "inspect" if mutating else "retry",
+            "required_inputs": ["name", "request_id", "expected_revision"]
+            if mutating
+            else ["name"],
+        },
+    }
+    updated["outcome"] = "error"
+    updated["error"] = error
+    report = payload.get("report")
+    if isinstance(report, dict):
+        typed_report = cast(dict[str, object], report)
+        mode = typed_report.get("mode")
+        text = typed_report.get("text")
+        if mode in ("detail", "summary") and isinstance(text, dict):
+            counts = bound_report_text(error, "message", mode)
+            if counts is not None:
+                cast(dict[str, object], text)["/error/message"] = counts
     return updated
 
 
@@ -1449,8 +1483,13 @@ def _invoke(
             return Invocation(_failure_payload(settings, request, failure), TEMPORARY, True)
         return _invocation_loss(settings, request, staging, "The command deadline expired")
     except KeyboardInterrupt as error:
-        loss = _invocation_loss(settings, request, staging, "The caller cancelled the invocation")
-        return Invocation(loss.payload, command_line.interruption_exit(error), loss.cleanup_allowed)
+        detail = "The caller cancelled the invocation"
+        loss = _invocation_loss(settings, request, staging, detail)
+        return Invocation(
+            _interrupted(loss.payload, request, detail),
+            command_line.interruption_exit(error),
+            loss.cleanup_allowed,
+        )
     except OSError as error:
         failure = Failure(
             "transport_failure",
@@ -1469,7 +1508,7 @@ def _invoke(
         exit_code = _validate_host_payload(payload, result.returncode, settings, request)
     except ProtocolFailure as error:
         return _protocol_failure(settings, request, staging, str(error))
-    if result.returncode in HOST_SIGNAL_EXITS:
+    if result.returncode in SIGNAL_EXITS:
         payload = _host_interrupted(payload, request)
     if (
         request.report == "summary"
@@ -1592,7 +1631,11 @@ def _run_artifact(
                 cleanup_error, cancelled = _cleanup(settings, staging, deadline, request.report)
                 if cleanup_error is not None:
                     payload = _add_cleanup_warning(payload, staging, cleanup_error)
-                return emit_json(payload, cancelled or exit_code)
+                exit_code = cancelled or exit_code
+                if exit_code in SIGNAL_EXITS:
+                    cancelled_detail = "The caller cancelled cleanup" if cancelled else detail
+                    payload = _interrupted(payload, request, cancelled_detail)
+                return emit_json(payload, exit_code)
 
             mkdir = (
                 shlex.join(["umask", "077"]) + " && " + shlex.join(["mkdir", "--", str(staging)])
@@ -1652,7 +1695,10 @@ def _run_artifact(
                 cleanup_error, cancelled = _cleanup(settings, staging, deadline, request.report)
                 if cleanup_error is not None:
                     payload = _add_cleanup_warning(payload, staging, cleanup_error)
-                exit_code = cancelled or exit_code
+                if cancelled:
+                    detail = "The caller cancelled cleanup after the host result"
+                    payload = _interrupted(payload, request, detail)
+                    exit_code = cancelled
             return emit_json(payload, exit_code)
     except (OSError, PublishError) as error:
         failure = (

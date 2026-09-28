@@ -1052,13 +1052,80 @@ class RemoteContractTest(PublisherFixture):
                 stdout, stderr = process.communicate(timeout=60)
                 self.assertEqual(process.returncode, code, stderr)
                 payload = json_object(stdout.decode())
-                self.assertEqual(payload["outcome"], "published")
+                self.assertEqual(handoff_error(stdout)["code"], "interrupted")
+                self.assertEqual(
+                    (
+                        payload["effects"],
+                        cast(dict[str, object], payload["verification"])["result"],
+                    ),
+                    ({"archive_advanced": True, "activated": True}, "passed"),
+                )
+                self.assertNotIn("superseded_error", payload)
                 self.assertEqual(
                     cast(dict[str, object], payload["transport"])["detail"],
                     "The caller cancelled cleanup",
                 )
                 with self.assertRaises(ProcessLookupError):
                     os.kill(transport, 0)
+
+    def test_the_receipt_inspects_after_its_remote_publisher_is_cancelled(self) -> None:
+        client = self.root / "remote-client.json"
+        client.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "target": {"id": "contract", "base_url": self.base_url},
+                    "execution": {
+                        "kind": "remote",
+                        "command": [PYTHON, "-m", "html_publish.remote"],
+                        "host": "fixture",
+                        "remote_executable": self.destination[3],
+                        "remote_config": str(self.config),
+                        "incoming_root": self.destination[-1],
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        artifact = [PYTHON, "-m", "html_publish", "--config", str(client), "artifact"]
+        source = self.root / "receipt-page.html"
+        source.write_text("<!doctype html><h1>receipt</h1>\n", encoding="utf-8")
+        ready = self.root / "receipt-cleanup.ready"
+        process = subprocess.Popen(
+            [*artifact, "publish", str(source), "--new", "receipt-page"],
+            cwd=self.root,
+            env={**self.env, "HP_SSH_BLOCK_CLEANUP": str(ready)},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.addCleanup(stop_process, process)
+        transport = wait_for_ready(process, ready)
+        remote = int(
+            subprocess.run(
+                ["ps", "-o", "ppid=", "-p", str(transport)],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+        )
+        os.kill(remote, signal.SIGTERM)
+        stdout, stderr = process.communicate(timeout=60)
+        self.assertEqual(process.returncode, 1, stderr)
+        handoff = json_object(stdout.decode())
+        self.assertEqual((handoff["outcome"], handoff["pending_state"]), ("uncertain", "uncertain"))
+        publisher = cast(dict[str, object], handoff["publisher"])
+        self.assertEqual((publisher["exit_code"], publisher["error_code"]), (143, "interrupted"))
+        retried = subprocess.run(
+            [*artifact, "retry", "--receipt", f"{source}.publish"],
+            cwd=self.root,
+            env=self.env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(retried.returncode, 0, retried.stdout + retried.stderr)
+        completed = json_object(retried.stdout)
+        self.assertEqual((completed["outcome"], completed["publisher_calls"]), ("completed", 2))
 
     def test_a_local_cancel_keeps_the_json_handoff(self) -> None:
         for signal_number, code in ((signal.SIGINT, 130), (signal.SIGTERM, 143)):
@@ -1086,7 +1153,9 @@ class RemoteContractTest(PublisherFixture):
                 self.assertEqual(process.returncode, code, stderr)
                 self.assertNotIn(b"Traceback", stderr)
                 payload = json_object(stdout.decode())
-                self.assertEqual(handoff_error(stdout)["code"], "transport_failure")
+                self.assertEqual(handoff_error(stdout)["code"], "interrupted")
+                superseded = cast(dict[str, object], payload["superseded_error"])
+                self.assertEqual(superseded["code"], "transport_failure")
                 self.assertEqual(
                     cast(dict[str, object], payload["transport"])["detail"],
                     "The caller cancelled the invocation",

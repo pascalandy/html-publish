@@ -512,7 +512,9 @@ restore result stays exit 1 with unknown effects. The client accepts host exit 7
 outcome `error`, false effects, and code `lock_timeout`, and then exits 75. It accepts host exit
 130 or 143 only with outcome `error` and code `interrupted`, and then exits 1 with unknown effects
 and `next_action` `inspect`, because the host process, not the client, received the signal. When
-the client itself is interrupted, it still writes its JSON handoff and exits 130 or 143.
+the client itself is interrupted, it still writes its JSON handoff and exits 130 or 143. That
+handoff keeps every fact the client already knew, such as a validated host result, reports code
+`interrupted`, and keeps any error it replaces as `superseded_error`.
 
 The installed `html-publish artifact` group owns caller receipts. `artifact publish` creates a
 named association with `--new` or deliberately adopts one with `--adopt` and a reviewed revision;
