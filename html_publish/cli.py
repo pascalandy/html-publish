@@ -49,6 +49,7 @@ from html_publish.model import (
     Selection,
     Verification,
 )
+from html_publish.receipt import parse_attempt_id
 from html_publish.store import PublicationStore
 
 NAME_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
@@ -84,6 +85,7 @@ def bound_report_text(
 
 def _requested_report_mode(arguments: list[str]) -> ReportMode:
     selected: str | None = None
+    arguments = command_line.before_separator(arguments)
     for index, value in enumerate(arguments):
         if value == "--report":
             selected = arguments[index + 1] if index + 1 < len(arguments) else None
@@ -137,19 +139,6 @@ def _revision(value: str) -> str:
     return value
 
 
-def _attempt_id(value: str) -> str:
-    if (
-        not value
-        or len(value) > 128
-        or value in {".", ".."}
-        or any(ord(char) < 32 or ord(char) == 127 or char in "/\\" for char in value)
-    ):
-        raise argparse.ArgumentTypeError(
-            "attempt ID must be a safe identifier of 1 to 128 characters"
-        )
-    return value
-
-
 def _positive_int(value: str) -> int:
     try:
         parsed = int(value)
@@ -158,26 +147,6 @@ def _positive_int(value: str) -> int:
     if parsed < 1 or parsed > 100:
         raise argparse.ArgumentTypeError("value must be between 1 and 100")
     return parsed
-
-
-def _port(value: str, lowest: int) -> int:
-    try:
-        parsed = int(value)
-    except ValueError as error:
-        raise argparse.ArgumentTypeError(
-            f"port must be an integer from {lowest} to 65535"
-        ) from error
-    if not lowest <= parsed <= 65535:
-        raise argparse.ArgumentTypeError(f"port must be from {lowest} to 65535")
-    return parsed
-
-
-def _listen_port(value: str) -> int:
-    return _port(value, 0)
-
-
-def _service_port(value: str) -> int:
-    return _port(value, 1)
 
 
 def _positive_seconds(value: str) -> float:
@@ -558,7 +527,7 @@ def _parser(json_version: bool = False) -> Parser:
     )
     artifact_publish.add_argument(
         "--replaces-attempt",
-        type=_attempt_id,
+        type=parse_attempt_id,
         help="stored conflicting attempt ID; requires --reviewed-revision",
     )
     artifact_publish.add_argument(
@@ -627,7 +596,7 @@ def _parser(json_version: bool = False) -> Parser:
     )
     artifact_restore.add_argument(
         "--replaces-attempt",
-        type=_attempt_id,
+        type=parse_attempt_id,
         help="stored conflicting attempt ID; requires --reviewed-revision",
     )
     _globals(artifact_restore, version)
@@ -746,7 +715,10 @@ def _parser(json_version: bool = False) -> Parser:
         "--bind", default="127.0.0.1", help="listen address (non-loopback exposes HTTP)"
     )
     serve_command.add_argument(
-        "--port", type=_listen_port, default=4177, help="listen port, 0 to 65535 (default: 4177)"
+        "--port",
+        type=command_line.port(0),
+        default=4177,
+        help="listen port, 0 to 65535 (default: 4177)",
     )
     _globals(serve_command, version)
     setup_command = register_command(
@@ -770,7 +742,7 @@ def _parser(json_version: bool = False) -> Parser:
     )
     setup_command.add_argument(
         "--port",
-        type=_service_port,
+        type=command_line.port(1),
         default=4177,
         help="IPv4 loopback port, 1 to 65535 (default: 4177)",
     )
@@ -1736,16 +1708,13 @@ def main(argv: list[str] | None = None) -> int:
 
 def _main(arguments: list[str]) -> int:
     started_at = time.monotonic()
-    json_output = "--json" in arguments
+    json_output = "--json" in command_line.before_separator(arguments)
     parsed = argparse.Namespace()
     config: Config | None = None
     parser = _parser(json_output)
     try:
-        help_parser = command_line.requested_help(parser, arguments)
-        if help_parser is not None:
-            print(help_parser.format_help(), end="")
+        if command_line.parse(parser, arguments, parsed) is None:
             return 0
-        parser.parse_args(arguments, namespace=parsed)
         command_line.configure_logging(
             "html-publish",
             verbose=parsed.verbose,

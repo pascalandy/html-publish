@@ -646,13 +646,14 @@ def _parse(arguments: list[str]) -> tuple[RemoteSettings, Request]:
 
 
 def _operation(arguments: list[str]) -> Operation | None:
-    for value in arguments:
+    for value in command_line.before_separator(arguments):
         if value in {"plan", "publish", "status", "verify", "history", "restore"}:
             return cast(Operation, value)
     return None
 
 
 def _argument_value(arguments: list[str], option: str) -> str | None:
+    arguments = command_line.before_separator(arguments)
     for index in range(len(arguments) - 1, -1, -1):
         value = arguments[index]
         if value.startswith(option + "="):
@@ -801,10 +802,6 @@ def _run(argv: list[str], deadline: Deadline) -> subprocess.CompletedProcess[byt
     _terminate_group(process)
     log.debug("%s exit %d after %.3f s", argv[0], process.returncode, time.monotonic() - started)
     return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
-
-
-def _cancel_exit(error: KeyboardInterrupt) -> int:
-    return error.exit_code if isinstance(error, command_line.Interrupted) else 130
 
 
 def _write_stderr(data: bytes, mode: ReportMode = "detail") -> None:
@@ -1453,7 +1450,7 @@ def _invoke(
         return _invocation_loss(settings, request, staging, "The command deadline expired")
     except KeyboardInterrupt as error:
         loss = _invocation_loss(settings, request, staging, "The caller cancelled the invocation")
-        return Invocation(loss.payload, _cancel_exit(error), loss.cleanup_allowed)
+        return Invocation(loss.payload, command_line.interruption_exit(error), loss.cleanup_allowed)
     except OSError as error:
         failure = Failure(
             "transport_failure",
@@ -1604,7 +1601,9 @@ def _run_artifact(
             except OSError as error:
                 return abandon(str(error), 1)
             except KeyboardInterrupt as error:
-                return abandon("The caller cancelled the transfer", _cancel_exit(error))
+                return abandon(
+                    "The caller cancelled the transfer", command_line.interruption_exit(error)
+                )
             _write_stderr(setup.stderr, request.report)
             if setup.returncode != 0:
                 return abandon(
@@ -1630,7 +1629,9 @@ def _run_artifact(
             except OSError as error:
                 return abandon(str(error), 1)
             except KeyboardInterrupt as error:
-                return abandon("The caller cancelled the transfer", _cancel_exit(error))
+                return abandon(
+                    "The caller cancelled the transfer", command_line.interruption_exit(error)
+                )
             _write_stderr(transfer.stderr, request.report)
             if transfer.returncode != 0:
                 return abandon(f"scp exited {transfer.returncode}", 1)
@@ -1662,13 +1663,11 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _main(arguments: list[str]) -> int:
-    parser = _parser("--json" in arguments)
+    parser = _parser("--json" in command_line.before_separator(arguments))
     try:
-        help_parser = command_line.requested_help(parser, arguments)
-        if help_parser is not None:
-            print(help_parser.format_help(), end="")
+        parsed = command_line.parse(parser, arguments)
+        if parsed is None:
             return 0
-        parsed = parser.parse_args(arguments)
         command_line.configure_logging(
             "html-publish-remote",
             verbose=parsed.verbose,
@@ -1695,7 +1694,9 @@ def _main(arguments: list[str]) -> int:
             "The caller cancelled the command before it reached the host",
             "retry",
         )
-        return emit_json(_failure_payload(settings, request, failure), _cancel_exit(error))
+        return emit_json(
+            _failure_payload(settings, request, failure), command_line.interruption_exit(error)
+        )
     return emit_json(invocation.payload, invocation.exit_code)
 
 

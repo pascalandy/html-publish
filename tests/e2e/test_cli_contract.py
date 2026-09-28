@@ -29,17 +29,31 @@ import urllib.request
 from collections.abc import Generator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 ROOT = Path(__file__).resolve().parents[2]
 PYTHON = sys.executable
 READY_SECONDS = 30
-BLOCK_HOOK = """\
-import argparse
+PARKING = """\
 import os
 import signal
 import sys
 from pathlib import Path
+
+
+def pause_when_ready(variable):
+    ready = Path(os.environ[variable])
+    ready.with_suffix(".tmp").write_text(str(os.getpid()))
+    ready.with_suffix(".tmp").rename(ready)
+    while True:
+        signal.pause()
+
+
+"""
+BLOCK_HOOK = (
+    PARKING
+    + """\
+import argparse
 
 _parse_args = argparse.ArgumentParser.parse_args
 _blocked = []
@@ -50,16 +64,14 @@ def _parse_then_block(self, *args, **kwargs):
     target = os.environ.get("HP_CONTRACT_BLOCK", "")
     if target and not _blocked and sys.argv and sys.argv[0].endswith(target):
         _blocked.append(True)
-        ready = Path(os.environ["HP_CONTRACT_READY"])
-        ready.with_suffix(".tmp").write_text(str(os.getpid()))
-        ready.with_suffix(".tmp").rename(ready)
-        while True:
-            signal.pause()
+        pause_when_ready("HP_CONTRACT_READY")
     return result
 
 
 argparse.ArgumentParser.parse_args = _parse_then_block
 """
+)
+SLEEPER = PARKING + 'pause_when_ready("HP_CONTRACT_READY")\n'
 CHECK_SCRIPTS = (
     "check_test_layout",
     "check_e2e_boundary",
@@ -119,9 +131,6 @@ class ScriptContractTest(unittest.TestCase):
             path = self.root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
-        self.hook = self.root / "hook"
-        self.hook.mkdir()
-        (self.hook / "sitecustomize.py").write_text(BLOCK_HOOK, encoding="utf-8")
 
     def run_script(
         self,
@@ -227,27 +236,29 @@ class ScriptContractTest(unittest.TestCase):
         for script in check_scripts(self.root):
             for signal_number, code in ((signal.SIGINT, 130), (signal.SIGTERM, 143)):
                 with self.subTest(script=script.name, signal=signal_number.name):
-                    process, _ = self.blocked(script.path, [script.path, *(script.success or ())])
+                    process, _ = start_blocked(
+                        self, [PYTHON, script.path, *(script.success or ())], script.path
+                    )
                     process.send_signal(signal_number)
                     stdout, stderr = process.communicate(timeout=30)
-                    self.assertEqual(process.returncode, code, stderr)
-                    self.assertNotIn("Traceback", stderr)
-                    self.assertEqual(stdout, "")
+                    self.assertEqual((process.returncode, stdout), (code, b""), stderr)
+                    self.assertNotIn(b"Traceback", stderr)
 
     def test_the_runner_stops_its_child_process_group_on_a_signal(self) -> None:
         fixture = self.runner_fixture()
         for signal_number, code in ((signal.SIGINT, 130), (signal.SIGTERM, 143)):
             with self.subTest(signal=signal_number.name):
-                process, child = self.blocked(
+                process, child = start_blocked(
+                    self,
+                    [PYTHON, "scripts/check.py", "--only", "test-layout"],
                     "check_test_layout.py",
-                    ["scripts/check.py", "--only", "test-layout"],
                     cwd=fixture,
                 )
                 self.addCleanup(kill_group, child)
                 process.send_signal(signal_number)
                 _, stderr = process.communicate(timeout=30)
                 self.assertEqual(process.returncode, code, stderr)
-                self.assertNotIn("Traceback", stderr)
+                self.assertNotIn(b"Traceback", stderr)
                 with self.assertRaises(ProcessLookupError):
                     os.killpg(child, 0)
 
@@ -283,38 +294,11 @@ class ScriptContractTest(unittest.TestCase):
     def runner_fixture(self) -> Path:
         """A copy of the rule scripts over the fixture tree, so the runner checks only it."""
         fixture = self.root / "checkout"
-        shutil.copytree(self.root, fixture, ignore=shutil.ignore_patterns("hook", "checkout"))
+        shutil.copytree(self.root, fixture, ignore=shutil.ignore_patterns("checkout"))
         (fixture / "scripts").mkdir()
         for name in RUNNER_SCRIPTS:
             shutil.copy2(ROOT / "scripts" / name, fixture / "scripts" / name)
         return fixture
-
-    def blocked(
-        self, target: str, arguments: Sequence[str], cwd: Path = ROOT
-    ) -> tuple[subprocess.Popen[str], int]:
-        """Start a process that blocks `target` after parsing; return it and the blocked PID."""
-        ready = self.root / f"ready-{time.monotonic_ns()}"
-        process = subprocess.Popen(
-            [PYTHON, *arguments],
-            cwd=cwd,
-            env={
-                **ENVIRONMENT,
-                "PYTHONPATH": str(self.hook),
-                "HP_CONTRACT_BLOCK": target,
-                "HP_CONTRACT_READY": str(ready),
-            },
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        self.addCleanup(stop, process)
-        deadline = time.monotonic() + READY_SECONDS
-        while not ready.exists():
-            if process.poll() is not None or time.monotonic() > deadline:
-                stdout, stderr = process.communicate(timeout=30)
-                self.fail(f"{target} never blocked: {process.returncode} {stdout} {stderr}")
-            time.sleep(0.02)
-        return process, int(ready.read_text())
 
 
 @dataclass(frozen=True)
@@ -349,13 +333,7 @@ INSTALLED = (
 class InstalledContractTest(unittest.TestCase):
     def setUp(self) -> None:
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="hp-installed-")))
-        self.env = {
-            **ENVIRONMENT,
-            **{
-                variable: str(self.root / variable.lower())
-                for variable in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME")
-            },
-        }
+        self.env = isolated_environment(self.root)
         self.config = self.root / "publisher.json"
         self.config.write_text(
             json.dumps(
@@ -540,6 +518,8 @@ class InstalledContractTest(unittest.TestCase):
                 ended = self.run_installed(executable, "--", "--help")
                 self.assertEqual(ended.returncode, 2, ended.stdout)
                 self.assertNotIn("usage: ", ended.stdout)
+        plain = self.run_installed(INSTALLED[0], "--config", config, "status", "--", "--json")
+        self.assertEqual((plain.returncode, plain.stdout), (2, ""), plain.stderr)
 
     def assert_exit_codes(self, executable: Installed, help_text: str) -> None:
         listed = re.search(r"^Exit codes:\n((?:  .*\n)+)", help_text, re.MULTILINE)
@@ -554,18 +534,6 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
         pass
 
 
-SLEEPING_PUBLISHER = """\
-import os
-import signal
-import sys
-from pathlib import Path
-
-ready = Path(os.environ["HP_CONTRACT_READY"])
-ready.with_suffix(".tmp").write_text(str(os.getpid()))
-ready.with_suffix(".tmp").rename(ready)
-while True:
-    signal.pause()
-"""
 NOISY_PUBLISHER = """\
 import os
 import sys
@@ -575,12 +543,9 @@ if any(key.startswith("HTML_PUBLISH") and key.endswith("_DEBUG") for key in os.e
     sys.stderr.flush()
 os.execv(sys.executable, [sys.executable, "-m", "html_publish", *sys.argv[1:]])
 """
-SSH_SHIM = """\
-import os
-import signal
-import sys
-from pathlib import Path
-
+SSH_SHIM = (
+    PARKING
+    + """\
 command = sys.argv[-1]
 invoke = " --json " in command
 if os.environ.get("HP_SSH_LOG"):
@@ -590,13 +555,10 @@ failing = os.environ.get("HP_SSH_FAIL")
 if (failing == "setup" and "mkdir" in command) or (failing == "invoke" and invoke):
     sys.exit(255)
 if os.environ.get("HP_SSH_BLOCK") and invoke:
-    ready = Path(os.environ["HP_SSH_BLOCK"])
-    ready.with_suffix(".tmp").write_text(str(os.getpid()))
-    ready.with_suffix(".tmp").rename(ready)
-    while True:
-        signal.pause()
+    pause_when_ready("HP_SSH_BLOCK")
 os.execvp("sh", ["sh", "-c", command])
 """
+)
 SCP_SHIM = """\
 import os
 import shutil
@@ -619,14 +581,7 @@ class PublisherFixture(unittest.TestCase):
 
     def setUp(self) -> None:
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="hp-publisher-")))
-        self.env = {
-            **ENVIRONMENT,
-            **{
-                variable: str(self.root / variable.lower())
-                for variable in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME")
-            },
-        }
-        self.env.pop("HTML_PUBLISH_DEBUG", None)
+        self.env = isolated_environment(self.root)
         self.runtime = self.root / "runtime"
         handler = functools.partial(QuietHandler, directory=str(self.runtime / "public"))
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
@@ -719,7 +674,7 @@ class PublisherFixture(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        self.addCleanup(stop_bytes, process)
+        self.addCleanup(stop_process, process)
         return process
 
     def publish_arguments(self, name: str = "page", source: Path | None = None) -> list[str]:
@@ -896,7 +851,7 @@ class PublisherContractTest(PublisherFixture):
             self.artifact(client, "publish", str(self.page), "--new", "page").returncode, 0
         )
         sleeper = self.root / "sleeping_publisher.py"
-        sleeper.write_text(SLEEPING_PUBLISHER, encoding="utf-8")
+        sleeper.write_text(SLEEPER, encoding="utf-8")
         for signal_number, code in ((signal.SIGINT, 130), (signal.SIGTERM, 143)):
             with self.subTest(wait="receipt lock", signal=signal_number.name):
                 with held(receipt / "lock"):
@@ -954,73 +909,6 @@ class PublisherContractTest(PublisherFixture):
         )
         self.assertEqual(status.returncode, 0, status.stdout + status.stderr)
         self.assertEqual(json_object(status.stdout)["outcome"], "observed")
-
-    def test_remote_passes_host_lock_timeouts_and_reports_host_interruptions(self) -> None:
-        self.assertEqual(self.cli(*self.publish_arguments()).returncode, 0)
-        shims = self.root / "shims"
-        shims.mkdir()
-        for name, body in (("ssh", SSH_SHIM), ("scp", SCP_SHIM)):
-            (shims / name).write_text(f"#!{PYTHON}\n{body}", encoding="utf-8")
-            (shims / name).chmod(0o755)
-        host = self.root / "host-publish"
-        host.write_text(f'#!/bin/sh\nexec {PYTHON} -m html_publish "$@"\n', encoding="utf-8")
-        host.chmod(0o755)
-        incoming = self.root / "incoming"
-        incoming.mkdir()
-        remote = [
-            PYTHON,
-            "-m",
-            "html_publish.remote",
-            "--host",
-            "fixture",
-            "--remote-executable",
-            str(host),
-            "--remote-config",
-            str(self.config),
-            "--target",
-            self.base_url,
-            "--incoming-root",
-            str(incoming),
-        ]
-        env = {**self.env, "PATH": f"{shims}{os.pathsep}{self.env['PATH']}"}
-        self.write_config(lock_seconds=0.2)
-        with held(self.runtime / ".publish.lock"):
-            waited = subprocess.run(
-                [*remote, "status", "--name", "page"],
-                cwd=self.root,
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-        self.assertEqual(waited.returncode, 75, waited.stdout + waited.stderr)
-        self.assertEqual(handoff_error(waited)["code"], "lock_timeout")
-        update = self.root / "update.html"
-        update.write_text("<!doctype html><h1>update</h1>\n", encoding="utf-8")
-        ready = self.root / "host.ready"
-        (self.root / "hook").mkdir()
-        (self.root / "hook" / "sitecustomize.py").write_text(BLOCK_HOOK, encoding="utf-8")
-        process = subprocess.Popen(
-            [*remote, "publish", "--name", "page", "--source", str(update)],
-            cwd=self.root,
-            env={
-                **env,
-                "PYTHONPATH": str(self.root / "hook"),
-                "HP_CONTRACT_BLOCK": "html_publish/__main__.py",
-                "HP_CONTRACT_READY": str(ready),
-            },
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        self.addCleanup(stop_bytes, process)
-        os.kill(wait_for_ready(process, ready), signal.SIGTERM)
-        stdout, stderr = process.communicate(timeout=60)
-        self.assertEqual(process.returncode, 1, stderr)
-        payload = json_object(stdout.decode())
-        error = cast(dict[str, object], payload["error"])
-        self.assertEqual(error["code"], "interrupted")
-        self.assertEqual(cast(dict[str, object], error["next_action"])["kind"], "inspect")
-        self.assertEqual(payload["effects"], {"archive_advanced": None, "activated": None})
 
 
 class RemoteContractTest(PublisherFixture):
@@ -1133,7 +1021,7 @@ class RemoteContractTest(PublisherFixture):
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                 )
-                self.addCleanup(stop_bytes, process)
+                self.addCleanup(stop_process, process)
                 transport = wait_for_ready(process, ready)
                 process.send_signal(signal_number)
                 stdout, stderr = process.communicate(timeout=30)
@@ -1148,6 +1036,33 @@ class RemoteContractTest(PublisherFixture):
                 with self.assertRaises(ProcessLookupError):
                     os.kill(transport, 0)
 
+    def test_host_lock_timeouts_pass_through_and_host_interruptions_need_inspection(
+        self,
+    ) -> None:
+        self.write_config(lock_seconds=0.2)
+        with held(self.runtime / ".publish.lock"):
+            waited = self.remote("status", "--name", "page")
+        self.assertEqual(waited.returncode, 75, waited.stdout + waited.stderr)
+        self.assertEqual(handoff_error(waited)["code"], "lock_timeout")
+        update = self.root / "update.html"
+        update.write_text("<!doctype html><h1>update</h1>\n", encoding="utf-8")
+        publish = ["publish", "--name", "page", "--source", str(update)]
+        process, host = start_blocked(
+            self,
+            [PYTHON, "-m", "html_publish.remote", *self.destination, *publish],
+            "html_publish/__main__.py",
+            cwd=self.root,
+            env=self.env,
+        )
+        os.kill(host, signal.SIGTERM)
+        stdout, stderr = process.communicate(timeout=60)
+        self.assertEqual(process.returncode, 1, stderr)
+        payload = json_object(stdout.decode())
+        error = cast(dict[str, object], payload["error"])
+        self.assertEqual(error["code"], "interrupted")
+        self.assertEqual(cast(dict[str, object], error["next_action"])["kind"], "inspect")
+        self.assertEqual(payload["effects"], {"archive_advanced": None, "activated": None})
+
     def test_verify_om1_mvp_passes_through_the_real_remote_publisher_and_server(self) -> None:
         port = unused_port()
         public = self.root / "mvp-runtime" / "public"
@@ -1158,7 +1073,7 @@ class RemoteContractTest(PublisherFixture):
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        self.addCleanup(stop_bytes, server)
+        self.addCleanup(stop_process, server)
         wait_for_health(server, port)
         base = f"http://127.0.0.1:{port}/"
         config = self.root / "mvp-publisher.json"
@@ -1221,24 +1136,18 @@ class RemoteContractTest(PublisherFixture):
             self.assertNotIn("--debug", command)
 
 
-SYSTEMCTL_SHIM = """\
-import os
-import signal
-import sys
-from pathlib import Path
-
+SYSTEMCTL_SHIM = (
+    PARKING
+    + """\
 arguments = sys.argv[1:]
 if "is-active" in arguments:
     if os.environ.get("HP_SYSTEMCTL_BLOCK"):
-        ready = Path(os.environ["HP_SYSTEMCTL_BLOCK"])
-        ready.with_suffix(".tmp").write_text(str(os.getpid()))
-        ready.with_suffix(".tmp").rename(ready)
-        while True:
-            signal.pause()
+        pause_when_ready("HP_SYSTEMCTL_BLOCK")
     print(os.environ.get("HP_SERVICE_STATE", "active"))
 elif "--property=UnitFileState" in arguments:
     print("enabled")
 """
+)
 TAILSCALE_SHIM = """\
 import json
 
@@ -1273,7 +1182,7 @@ class ServerContractTest(PublisherFixture):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        self.addCleanup(stop_bytes, process)
+        self.addCleanup(stop_process, process)
         return process
 
     def test_the_access_log_needs_verbose_and_a_signal_ends_the_server(self) -> None:
@@ -1336,10 +1245,8 @@ class DeployContractTest(unittest.TestCase):
         (self.state / "previous").symlink_to(self.state / "app-releases" / "sha256-b")
         closed = f"http://127.0.0.1:{unused_port()}"
         self.env = {
-            **ENVIRONMENT,
+            **isolated_environment(self.root),
             "PATH": f"{shims}{os.pathsep}{ENVIRONMENT['PATH']}",
-            "XDG_CONFIG_HOME": str(self.root / "config"),
-            "XDG_DATA_HOME": str(self.root / "data"),
             "http_proxy": closed,
             "https_proxy": closed,
             "HTTP_PROXY": closed,
@@ -1416,7 +1323,7 @@ class DeployContractTest(unittest.TestCase):
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                 )
-                self.addCleanup(stop_bytes, process)
+                self.addCleanup(stop_process, process)
                 command = wait_for_ready(process, ready)
                 process.send_signal(signal_number)
                 stdout, stderr = process.communicate(timeout=30)
@@ -1462,17 +1369,6 @@ import sys
 print(json.dumps({"outcome": "error", "error": {"code": "%s"}}))
 sys.exit(%d)
 """
-SLEEPING_REMOTE = """\
-import os
-import signal
-from pathlib import Path
-
-ready = Path(os.environ["HP_CONTRACT_READY"])
-ready.with_suffix(".tmp").write_text(str(os.getpid()))
-ready.with_suffix(".tmp").rename(ready)
-while True:
-    signal.pause()
-"""
 INSTANCE = ROOT / ".agents/skills/verify-html-publish/scripts/instance.sh"
 SYSTEMD = "scripts/verify-host-systemd.sh"
 
@@ -1482,9 +1378,6 @@ class OtherScriptsContractTest(unittest.TestCase):
 
     def setUp(self) -> None:
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="hp-scripts-")))
-        self.hook = self.root / "hook"
-        self.hook.mkdir()
-        (self.hook / "sitecustomize.py").write_text(BLOCK_HOOK, encoding="utf-8")
         self.cli = str(Path(PYTHON).with_name("html-publish"))
 
     def run_command(
@@ -1508,24 +1401,9 @@ class OtherScriptsContractTest(unittest.TestCase):
         cwd: Path = ROOT,
         env: Mapping[str, str] | None = None,
     ) -> tuple[int, bytes, bytes, int]:
-        """Run `command`, block `target` after it parses, signal it, and return
+        """Block `target` after it parses, signal it, and return
         (exit code, stdout, stderr, blocked PID)."""
-        ready = self.root / f"ready-{time.monotonic_ns()}"
-        process = subprocess.Popen(
-            list(command),
-            cwd=cwd,
-            env={
-                **ENVIRONMENT,
-                **(env or {}),
-                "PYTHONPATH": str(self.hook),
-                "HP_CONTRACT_BLOCK": target,
-                "HP_CONTRACT_READY": str(ready),
-            },
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        self.addCleanup(stop_bytes, process)
-        blocked = wait_for_ready(process, ready)
+        process, blocked = start_blocked(self, command, target, cwd=cwd, env=env)
         os.kill(blocked, signal_number)
         stdout, stderr = process.communicate(timeout=60)
         return process.returncode, stdout, stderr, blocked
@@ -1628,7 +1506,7 @@ class OtherScriptsContractTest(unittest.TestCase):
         self.assertEqual((busy.returncode, busy.stdout), (75, ""), busy.stderr)
         self.assertIn("status-initial reported lock_timeout (exit 75)", busy.stderr)
         sleeping = self.root / "sleeping-remote.py"
-        sleeping.write_text(SLEEPING_REMOTE, encoding="utf-8")
+        sleeping.write_text(SLEEPER, encoding="utf-8")
         for signal_number, code in ((signal.SIGINT, 130), (signal.SIGTERM, 143)):
             with self.subTest(signal=signal_number.name):
                 ready = self.root / f"remote-{signal_number.name}.ready"
@@ -1639,7 +1517,7 @@ class OtherScriptsContractTest(unittest.TestCase):
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                 )
-                self.addCleanup(stop_bytes, process)
+                self.addCleanup(stop_process, process)
                 remote = wait_for_ready(process, ready)
                 process.send_signal(signal_number)
                 stdout, stderr = process.communicate(timeout=60)
@@ -1842,16 +1720,53 @@ def handoff_error(result: subprocess.CompletedProcess[str] | bytes) -> dict[str,
     return cast(dict[str, object], json_object(text)["error"])
 
 
-def stop_bytes(process: subprocess.Popen[bytes]) -> None:
+def stop_process(process: subprocess.Popen[Any]) -> None:
     if process.poll() is None:
         process.kill()
         process.communicate(timeout=30)
 
 
-def stop(process: subprocess.Popen[str]) -> None:
-    if process.poll() is None:
-        process.kill()
-        process.communicate(timeout=30)
+def isolated_environment(root: Path) -> dict[str, str]:
+    """This environment with XDG directories under `root` and no debug switches, so no user
+    config, state, or verbosity leaks into a command under test."""
+    environment = {
+        key: value
+        for key, value in ENVIRONMENT.items()
+        if not (key.startswith("HTML_PUBLISH") and key.endswith("_DEBUG"))
+    }
+    for variable in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"):
+        environment[variable] = str(root / variable.lower())
+    return environment
+
+
+def start_blocked(
+    test: unittest.TestCase,
+    command: Sequence[str],
+    target: str,
+    *,
+    cwd: Path = ROOT,
+    env: Mapping[str, str] | None = None,
+) -> tuple[subprocess.Popen[bytes], int]:
+    """Start `command` with the BLOCK_HOOK parking the process whose argv[0] ends with
+    `target` right after it parses; return the started process and the parked PID."""
+    scratch = Path(test.enterContext(tempfile.TemporaryDirectory(prefix="hp-blocked-")))
+    (scratch / "sitecustomize.py").write_text(BLOCK_HOOK, encoding="utf-8")
+    ready = scratch / "ready"
+    process = subprocess.Popen(
+        list(command),
+        cwd=cwd,
+        env={
+            **ENVIRONMENT,
+            **(env or {}),
+            "PYTHONPATH": str(scratch),
+            "HP_CONTRACT_BLOCK": target,
+            "HP_CONTRACT_READY": str(ready),
+        },
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    test.addCleanup(stop_process, process)
+    return process, wait_for_ready(process, ready)
 
 
 def kill_group(group: int) -> None:

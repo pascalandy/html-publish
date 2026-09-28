@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import secrets
+import shlex
 import shutil
 import signal
 import socket
@@ -142,7 +143,7 @@ def stop(instance: Path) -> None:
 
 def quiet(command: list[str], cwd: Path | None = None) -> None:
     """Run a setup command and keep its output unless it fails."""
-    log.debug("run %s", " ".join(command))
+    log.debug("run %s", shlex.join(command))
     result = subprocess.run(command, cwd=cwd, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip().splitlines()[-5:]
@@ -363,11 +364,9 @@ def _command(args: argparse.Namespace) -> int:
 def _main(arguments: list[str]) -> int:
     parser = _parser()
     try:
-        help_parser = command_line.requested_help(parser, arguments)
-        if help_parser is not None:
-            print(help_parser.format_help(), end="")
+        args = command_line.parse(parser, arguments)
+        if args is None:
             return 0
-        args = parser.parse_args(arguments)
     except command_line.UsageError as error:
         sys.stderr.write(command_line.usage_text(error, parser, arguments))
         return 2
@@ -377,10 +376,12 @@ def _main(arguments: list[str]) -> int:
     try:
         return _command(args)
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
-        print(
-            f"{PROG}: server identity does not match or instance unavailable: {error}",
-            file=sys.stderr,
+        what = (
+            f"{args.command} failed"
+            if args.command in {"start", "sources"}
+            else "server identity does not match or instance unavailable"
         )
+        print(f"{PROG}: {what}: {error}", file=sys.stderr)
         fix = NEXT.get(args.command)
         print(
             f"next: {PROG} {fix} {args.run_id}" if fix else f"next: {PROG} start <fresh-run-id>",

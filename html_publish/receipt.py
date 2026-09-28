@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import selectors
+import shlex
 import shutil
 import signal
 import stat
@@ -251,7 +252,8 @@ def _optional_revision(value: object, label: str) -> str | None:
     return value
 
 
-def _attempt_id(value: str) -> str:
+def parse_attempt_id(value: str) -> str:
+    """An attempt ID that is safe as one receipt path component; the artifact parser uses it too."""
     if (
         not value
         or len(value) > 128
@@ -268,7 +270,7 @@ def _stored_attempt_id(value: object, label: str) -> str:
     if not isinstance(value, str):
         raise ReceiptFailure("invalid_state", f"{label} is invalid", "inspect")
     try:
-        return _attempt_id(value)
+        return parse_attempt_id(value)
     except argparse.ArgumentTypeError as error:
         raise ReceiptFailure("invalid_state", f"{label} is invalid", "inspect") from error
 
@@ -1205,7 +1207,7 @@ def _run_process(command: Sequence[str], seconds: float, output_bytes: int) -> P
     previous_handlers = {
         number: signal.signal(number, cancel) for number in (signal.SIGTERM, signal.SIGINT)
     }
-    log.debug("run publisher: %s", " ".join(command))
+    log.debug("run publisher: %s", shlex.join(command))
     try:
         try:
             process = subprocess.Popen(
@@ -2655,7 +2657,7 @@ def run(parsed: argparse.Namespace, config_path: Path, started_at: float | None 
                 next_action="inspect_receipt",
             )
         )
-        return error.exit_code if isinstance(error, command_line.Interrupted) else 130
+        return command_line.interruption_exit(error)
 
 
 def usage_error(action: str, message: str) -> int:

@@ -91,6 +91,50 @@ class Parser(argparse.ArgumentParser):
         return f"{super().format_help().rstrip()}\n\nExit codes:\n{codes}\n"
 
 
+def port(lowest: int) -> Callable[[str], int]:
+    """A parse type for a TCP port from `lowest` to 65535."""
+
+    def port(value: str) -> int:
+        try:
+            parsed = int(value)
+        except ValueError as error:
+            raise argparse.ArgumentTypeError(
+                f"port must be an integer from {lowest} to 65535"
+            ) from error
+        if not lowest <= parsed <= 65535:
+            raise argparse.ArgumentTypeError(f"port must be from {lowest} to 65535")
+        return parsed
+
+    return port
+
+
+def before_separator(arguments: Sequence[str]) -> list[str]:
+    """The words before `--`, where options can appear; pre-scans read only these."""
+    words = list(arguments)
+    return words[: words.index("--")] if "--" in words else words
+
+
+def parse(
+    parser: argparse.ArgumentParser,
+    arguments: Sequence[str],
+    namespace: argparse.Namespace | None = None,
+) -> argparse.Namespace | None:
+    """Print the help `arguments` ask for and return None, or parse them.
+
+    A rejected command line raises UsageError; see `usage_text`.
+    """
+    help_parser = requested_help(parser, arguments)
+    if help_parser is not None:
+        print(help_parser.format_help(), end="")
+        return None
+    return parser.parse_args(arguments, namespace)
+
+
+def interruption_exit(error: KeyboardInterrupt) -> int:
+    """130 for SIGINT, 143 for SIGTERM; a KeyboardInterrupt without a signal counts as SIGINT."""
+    return error.exit_code if isinstance(error, Interrupted) else 130
+
+
 def add_help_command(commands: Any, prog: str, examples: tuple[str, ...]) -> None:
     """Register `help [COMMAND...]`, which prints the same text as `COMMAND --help`."""
     from html_publish.discovery import register_command
@@ -363,8 +407,7 @@ def debug_variable(prog: str) -> str:
 
 
 def debug_requested(prog: str, arguments: Sequence[str]) -> bool:
-    options = arguments[: list(arguments).index("--")] if "--" in arguments else arguments
-    return "--debug" in options or os.environ.get(debug_variable(prog)) == "1"
+    return "--debug" in before_separator(arguments) or os.environ.get(debug_variable(prog)) == "1"
 
 
 class _Formatter(logging.Formatter):
@@ -426,4 +469,4 @@ def run(prog: str, arguments: Sequence[str], body: Callable[[], int]) -> int:
                 return 1
         except KeyboardInterrupt as error:
             print(f"{prog}: interrupted", file=sys.stderr)
-            return error.exit_code if isinstance(error, Interrupted) else 130
+            return interruption_exit(error)

@@ -17,7 +17,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
-from typing import BinaryIO, NoReturn
+from typing import BinaryIO, NoReturn, cast
 
 from html_publish import __version__, command_line
 
@@ -158,16 +158,6 @@ class PublicationRequestHandler(http.server.SimpleHTTPRequestHandler):
         return resolved == release or resolved.is_relative_to(release)
 
 
-def _port(value: str) -> int:
-    try:
-        port = int(value)
-    except ValueError as error:
-        raise argparse.ArgumentTypeError("port must be an integer from 0 to 65535") from error
-    if not 0 <= port <= 65535:
-        raise argparse.ArgumentTypeError("port must be between 0 and 65535")
-    return port
-
-
 def _directory(value: str) -> Path:
     directory = Path(os.path.abspath(value))
     if sys.platform == "darwin" and len(directory.parts) > 1:
@@ -220,7 +210,10 @@ def _parser() -> Parser:
     )
     parser.add_argument("--bind", default="127.0.0.1", help="listen address (default: %(default)s)")
     parser.add_argument(
-        "--port", default=8000, type=_port, help="listen port, 0 to 65535 (default: %(default)s)"
+        "--port",
+        default=8000,
+        type=command_line.port(0),
+        help="listen port, 0 to 65535 (default: %(default)s)",
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="print the access log on stderr"
@@ -239,22 +232,15 @@ def _parser() -> Parser:
     return parser
 
 
-def _parse_args(parser: Parser, argv: Sequence[str]) -> ServerConfig:
-    arguments = parser.parse_args(argv)
+def _server_config(arguments: argparse.Namespace, argv: Sequence[str]) -> ServerConfig:
     command_line.configure_logging(
         "html-publish-server",
         verbose=arguments.verbose,
         debug=arguments.debug or command_line.debug_requested("html-publish-server", argv),
     )
-
-    directory = arguments.directory
-    if not isinstance(directory, Path):
-        parser.error("directory must be a path")
-    bind = arguments.bind
-    port = arguments.port
-    if not isinstance(bind, str) or not isinstance(port, int):
-        parser.error("invalid server address")
-    return ServerConfig(directory, bind, port)
+    return ServerConfig(
+        cast(Path, arguments.directory), cast(str, arguments.bind), cast(int, arguments.port)
+    )
 
 
 class BindError(Exception):
@@ -309,11 +295,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _main(arguments: list[str]) -> int:
     parser = _parser()
     try:
-        help_parser = command_line.requested_help(parser, arguments)
-        if help_parser is not None:
-            print(help_parser.format_help(), end="")
+        parsed = command_line.parse(parser, arguments)
+        if parsed is None:
             return 0
-        config = _parse_args(parser, arguments)
+        config = _server_config(parsed, arguments)
     except command_line.UsageError as error:
         sys.stderr.write(command_line.usage_text(error, parser, arguments))
         return 2

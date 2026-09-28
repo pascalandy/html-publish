@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import shlex
 import shutil
 import signal
 import stat
@@ -124,7 +125,7 @@ def run_command(
     *,
     timeout_seconds: float = COMMAND_TIMEOUT_SECONDS,
 ) -> CommandResult:
-    log.debug("run %s", " ".join(argv))
+    log.debug("run %s", shlex.join(argv))
     started = time.monotonic()
     with tempfile.TemporaryFile(mode="w+") as output, tempfile.TemporaryFile(mode="w+") as errors:
         try:
@@ -1032,11 +1033,9 @@ def main(
 def _main(command: list[str], runner: Runner, probe: Probe) -> int:
     parser = _parser()
     try:
-        help_parser = command_line.requested_help(parser, command)
-        if help_parser is not None:
-            print(help_parser.format_help(), end="")
+        arguments = command_line.parse(parser, command)
+        if arguments is None:
             return 0
-        arguments = parser.parse_args(command)
     except command_line.UsageError as error:
         sys.stderr.write(command_line.usage_text(error, parser, command))
         return 2
