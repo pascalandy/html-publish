@@ -895,6 +895,7 @@ def _globals(parser: argparse.ArgumentParser, *, child: bool = False) -> None:
         help="deployment state directory (default: $XDG_DATA_HOME/html-publish)",
     )
     parser.add_argument(
+        "-c",
         "--config",
         type=Path,
         default=default(),

@@ -1353,6 +1353,31 @@ class ServerContractTest(PublisherFixture):
             next_line, f"next: html-publish --config {self.config} host serve --port '<port>'"
         )
 
+    def test_a_mistyped_required_flag_is_respelled_in_the_next_command(self) -> None:
+        public = str(self.runtime / "public")
+        server = subprocess.run(
+            [PYTHON, "-m", "html_publish.server", "--diretory", public, "--prot", "8080"],
+            cwd=self.root,
+            env=self.env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual((server.returncode, server.stdout), (2, ""))
+        self.assertEqual(
+            server.stderr.splitlines()[-3:],
+            [
+                "did you mean '--directory'?",
+                f"next: html-publish-server --directory {public} --port 8080",
+                "run 'html-publish-server --help' for details",
+            ],
+        )
+        publisher = self.cli("verify", "--nmae", "page")
+        self.assertEqual((publisher.returncode, publisher.stdout), (2, ""))
+        self.assertIn(
+            f"next: html-publish --config {self.config} verify --name page\n", publisher.stderr
+        )
+
 
 class DeployContractTest(unittest.TestCase):
     """html-publish-deploy against systemctl and tailscale shims and a closed proxy port."""
@@ -1438,6 +1463,40 @@ class DeployContractTest(unittest.TestCase):
         self.assertTrue(all(detail.startswith("cannot connect: ") for detail in failed.values()))
         stopped = self.deploy("health", env={"HP_SERVICE_STATE": "failed"})
         self.assertEqual(stopped.returncode, 1, stopped.stdout + stopped.stderr)
+
+    def test_c_is_config_before_and_after_the_command(self) -> None:
+        unreadable = str(self.root / "unreadable.json")
+        Path(unreadable).write_text("not json", encoding="utf-8")
+        layout = (
+            "--state-root",
+            str(self.state),
+            "--unit",
+            str(self.root / "html-publish.service"),
+        )
+        install = ("install", "--source", str(ROOT), "-n")
+        results = [
+            subprocess.run(
+                [PYTHON, "-m", "html_publish.deploy", *layout, *arguments],
+                cwd=self.root,
+                env=self.env,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            for arguments in (
+                ("--config", unreadable, *install),
+                ("-c", unreadable, *install),
+                (*install, "-c", unreadable),
+            )
+        ]
+        expected = results[0]
+        self.assertEqual(expected.returncode, 1, expected.stderr)
+        self.assertIn("Existing publisher config is unreadable", expected.stdout + expected.stderr)
+        for result in results[1:]:
+            self.assertEqual(
+                (result.returncode, result.stdout, result.stderr),
+                (expected.returncode, expected.stdout, expected.stderr),
+            )
 
     def test_deploy_signals_while_a_command_runs(self) -> None:
         for signal_number, code in ((signal.SIGINT, 130), (signal.SIGTERM, 143)):

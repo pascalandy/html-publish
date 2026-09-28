@@ -307,6 +307,33 @@ def _append(arguments: list[str], words: Sequence[str]) -> list[str]:
     return [*arguments, *words]
 
 
+def _respelled(
+    arguments: list[str], parsers: Sequence[argparse.ArgumentParser], unknown: set[str]
+) -> tuple[list[str], str | None]:
+    """`arguments` with each `unknown` long option respelled as the closest known one, or
+    dropped when none is close, and the first respelling."""
+    options = [
+        flag
+        for parser in parsers
+        for flag in parser._option_string_actions
+        if flag.startswith("--")
+    ]
+    corrected: list[str] = []
+    suggestion: str | None = None
+    keep_value = False
+    for argument in arguments:
+        base, equals, value = argument.partition("=")
+        if keep_value or (argument not in unknown and base not in unknown):
+            corrected.append(argument)
+            keep_value = False
+        elif base.startswith("--") and (match_flag := _suggestion(base, options)):
+            suggestion = suggestion or match_flag
+            corrected.append(f"{match_flag}{equals}{value}")
+            action = _option(parsers, match_flag)
+            keep_value = not equals and action is not None and action.nargs != 0
+    return corrected, suggestion
+
+
 def _corrected(
     error: UsageError, arguments: list[str], parsers: Sequence[argparse.ArgumentParser]
 ) -> tuple[list[str] | None, str | None]:
@@ -315,37 +342,26 @@ def _corrected(
     if error.add or error.drop:
         return _append(_without(arguments, parsers, error.drop), error.add), None
     if match := _REQUIRED.fullmatch(message):
+        # argparse reports a missing required option before an unknown one, so a mistyped
+        # required flag reads as missing; respell unknown options first
+        options = before_separator(arguments)
+        known = {flag for parser in parsers for flag in parser._option_string_actions}
+        unknown = {word.split("=", 1)[0] for word in options if word.startswith("--")} - known
+        respelled, suggestion = _respelled(options, parsers, unknown)
+        corrected = [*respelled, *arguments[len(options) :]]
         missing: list[str] = []
         for name in match["names"].split(", "):
             if name.startswith("-"):
                 flags = name.split("/")
+                if any(word.split("=", 1)[0] in flags for word in respelled):
+                    continue
                 action = _option(parsers, flags[-1])
                 missing += [flags[-1], _placeholder(action, flags[-1])]
             else:
                 missing.append(_placeholder(_positional(parsers, name), name))
-        return _append(arguments, missing), None
+        return _append(corrected, missing), suggestion
     if match := _UNRECOGNIZED.fullmatch(message):
-        unknown = set(match["tokens"].split(" "))
-        options = [
-            flag
-            for parser in parsers
-            for flag in parser._option_string_actions
-            if flag.startswith("--")
-        ]
-        corrected: list[str] = []
-        suggestion: str | None = None
-        keep_value = False
-        for argument in arguments:
-            base, equals, value = argument.partition("=")
-            if keep_value or (argument not in unknown and base not in unknown):
-                corrected.append(argument)
-                keep_value = False
-            elif base.startswith("--") and (match_flag := _suggestion(base, options)):
-                suggestion = suggestion or match_flag
-                corrected.append(f"{match_flag}{equals}{value}")
-                action = _option(parsers, match_flag)
-                keep_value = not equals and action is not None and action.nargs != 0
-        return corrected, suggestion
+        return _respelled(arguments, parsers, set(match["tokens"].split(" ")))
     match = _ARGUMENT.fullmatch(message)
     if match is None:
         return None, None
