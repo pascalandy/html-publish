@@ -310,17 +310,19 @@ An orphaned Git ref lock is reported in the `archive_failure` message and is nev
 
 The archive is the only copy of every saved page version. A daily job outside the publisher pushes its `published` branch to the private GitHub repository `pascalandy/html-publish-archive`. The dotfiles repository owns the job and installs it on `om1` only: the `pascalandy-html-publish-backup` user timer and service, and the `html-publish-backup` script. The publisher never pushes, and the archive keeps no remote configuration
 
+Status on 2026-09-28: the job is written and tested in the dotfiles repository, but it is not deployed on `om1`, and the GitHub repository does not exist yet. Until the first push succeeds, the archive has no remote copy. The remaining proof is a timer-driven push whose tip matches the archive, and a [restore drill](evidence/backup/2026-09-28-restore-drill.md) run with `--source git@github.com:pascalandy/html-publish-archive.git`
+
 The job runs this push. It ignores global and system Git configuration, disables hooks, and fails instead of prompting for SSH input:
 
 ```sh
-GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
 	GIT_SSH_COMMAND='/usr/bin/ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes -i /home/pascal/.ssh/id_ed25519' \
 	/usr/bin/git -c core.hooksPath=/dev/null \
 	--git-dir /home/pascal/.local/share/html-publish/archive.git \
-	push git@github.com:pascalandy/html-publish-archive.git refs/heads/published:refs/heads/published
+	push --porcelain git@github.com:pascalandy/html-publish-archive.git refs/heads/published:refs/heads/published
 ```
 
-The branch only moves forward, so the push never needs force. A push with nothing new reports that everything is up to date. If GitHub rejects a push as non-fast-forward, the archive or the backup was replaced. Stop and compare both histories. Never force-push or rewrite either history
+The job logs the tip it pushes, then Git's result for the branch: `[new branch]` on the first push, the old and new commits on an update, and `[up to date]` when nothing changed. The branch only moves forward, so the push never needs force. If GitHub rejects a push as non-fast-forward, the archive or the backup was replaced. Stop and compare both histories. Never force-push or rewrite either history
 
 To back up right after an important publication, start the job and compare both branch tips:
 
@@ -335,7 +337,7 @@ git --git-dir /home/pascal/.local/share/html-publish/archive.git rev-parse publi
 
 The backup holds the full `published` history, with every `site/` tree and every private `record/` tree. It does not hold the runtime, the publisher and client configurations, receipts, the application releases, or the host and route records. A restore rebuilds the runtime from the archive. The [install procedure](#install-or-upgrade) rebuilds the application and its configuration
 
-A daily push means up to one day of publications exists only on `om1`. A failed push raises no alert, so read the job's journal to confirm the last run
+While daily pushes succeed, up to one day of publications exists only on `om1`. A failed push extends that window until the next successful push. It raises no alert, so read the job's journal to confirm the last run
 
 GitHub warns about files larger than 50 MiB and rejects files larger than 100 MiB. The archive already holds one file of about 51 MiB. The publisher's default `max_bytes` input limit is 100 MiB, so no captured file can exceed the GitHub limit. If you raise `max_bytes`, one larger file blocks every later push, because the archive history is never rewritten
 
@@ -391,7 +393,7 @@ Return to the reviewed checkout with the same `html-publish-install --source ...
 - User linger was enabled separately on 2026-09-22 after the installed preservation checks. A later user reboot produced [bounded postboot startup and delivery evidence](evidence/deployment/2026-09-22-om1-installed.md#successful-postboot-checks-after-user-reboot). The [expired recorder attempt](evidence/deployment/2026-09-22-om1-installed.md#expired-recorder-attempt) captured neither the outage nor the recovery
 - A lost SSH connection can leave its private `incoming` directory for operator inspection. The client deadline cannot prove that remote publication stopped
 - Application rollback changes the application release pointer; it does not restore publication content. Publication restore is available through the installed CLI
-- The [remote backup](#remote-backup) runs daily, so up to one day of publications exists only on `om1`. A failed push raises no alert
+- The [remote backup](#remote-backup) is not deployed yet. Once deployed, it runs daily, so up to one day of publications exists only on `om1` while pushes succeed. A failed push raises no alert
 - The browser and second-device fault matrices remain deferred. Browser and second-device success transitions are recorded. Controlled SSH and SCP fixtures cover transport failures and timeouts, and separate private stores cover installed-executable faults
 - The workflow is a controlled private MVP and is not production-ready
 
