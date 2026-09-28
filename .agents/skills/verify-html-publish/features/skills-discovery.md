@@ -26,7 +26,7 @@ Preconditions: a started instance with `CLI` exported from `instance.sh start`, 
 - Plain read. Run `"$CLI" skills get core`. Expect exit 0 and stdout starting with `# Core guide`.
 - JSON read. Run `"$CLI" skills get recovery --json`. Expect exit 0 and one object with `schema_version` `1`, `name` `"recovery"`, and `content` starting with `# Recovery guide`.
 - Unknown name, JSON. Run `"$CLI" --json skills get nope`. Expect exit 2, `outcome` `"error"`, `operation` `"usage"`, and `error.code` `"invalid_usage"`.
-- Unknown name, plain. Run `"$CLI" skills get nope`. Expect exit 2, empty stdout, and one diagnostic line on stderr.
+- Unknown name, plain. Run `"$CLI" skills get nope`. Expect exit 2, empty stdout, and a stderr diagnostic that shows the usage, names the invalid choice, and ends with `run 'html-publish skills get --help' for details`.
 - No configuration. Run `"$CLI" skills list --config /nonexistent/x.json`. Expect exit 0.
 - Remote boundary. Run `"$CLI_DIR/html-publish-remote" skills get core`. Expect exit 2 with `operation` `"usage"` and `error.code` `"invalid_usage"`.
 

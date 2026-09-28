@@ -9,6 +9,7 @@
 - `remote-protocol` preserves a validated host result and rejects malformed or mismatched reports
 - `remote-uncertainty` retains incoming staging and reports unknown mutation effects after a lost result
 - `remote-deadline` bounds local capture, transport, and cleanup under one command budget
+- `remote-exit` exits 75 for failures that a rerun may clear, such as SSH exit 255 before invocation or a lost read-only result, and 130 or 143 with its JSON handoff when cancelled
 
 ## How to get to it (user POV)
 
@@ -23,9 +24,9 @@ Preconditions:
 - Export `CLI` from a doctor-checked installed-wheel instance and set `REMOTE="${CLI%/*}/html-publish-remote"`
 - Controlled fixture coverage uses fake `ssh` and `scp`; a real route additionally needs an authenticated disposable SSH host and its matching publisher config, not `om1`
 
-- **Discover the remote boundary.** Run `"$REMOTE" schema` and require six publisher operations plus `schema`, with no `skills` group. Run `"$REMOTE" --json --version` and require the installed version
+- **Discover the remote boundary.** Run `"$REMOTE" schema` and require six publisher operations plus `schema` and `help`, with no `skills` group. Run `"$REMOTE" --json --version` and require the installed version
 - **Reject incomplete transport.** Run `env XDG_CONFIG_HOME="$INSTANCE/empty-config" "$REMOTE" status --name release-notes`. Require exit 2 with `error.code` `invalid_usage` before SSH or SCP is called
-- **Drive controlled forwarding.** Run `uv run python -m unittest -v tests.isolated.test_remote`. The test fixture drives the real remote module with controlled `ssh` and `scp` processes. Require forwarding of all six operations, private source capture for plan and publish, no upload for read operations or restore, valid host-result projection, and retained staging on uncertain mutation results
+- **Drive controlled forwarding.** Run `uv run python -m unittest -v tests.isolated.test_remote`. The test fixture drives the real remote module with controlled `ssh` and `scp` processes. Require forwarding of all six operations, private source capture for plan and publish, no upload for read operations or restore, valid host-result projection, and retained staging on uncertain mutation results. `uv run python -m unittest -v tests.e2e.test_cli_contract.RemoteContractTest` owns the exit codes 75, 130, and 143
 - **Classify the external route.** Attempt `"$REMOTE" --host 127.0.0.1 --remote-executable "$CLI" --remote-config "$CONFIG" --target "$URL/" --incoming-root "$INSTANCE/incoming" --command-seconds 5 status --name release-notes`. If local SSH transport fails, record `verified-unreachable` for authenticated SSH, naming the attempted loopback route and missing SSH server or credentials. Keep the controlled fixture result separate from external delivery evidence
 - **Proof.** Save commands, JSON output, exit codes, transport records, and any unreachable prerequisite under `$ARTIFACTS/remote-forwarding-<run_id>.txt`
 

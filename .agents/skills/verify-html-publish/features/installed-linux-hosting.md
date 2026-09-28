@@ -6,7 +6,7 @@ changes one owned Tailscale Serve path and records the result.
 
 ## Sub-features
 
-- `host-foreground` serves new and updated literal page bytes over loopback by default and exits on SIGTERM.
+- `host-foreground` serves new and updated literal page bytes over loopback by default, logs access lines only with `-v`, and dies from SIGTERM after it stops serving.
 - `host-preview` reports selected paths and unit text without writing a host record or unit.
 - `host-route-setup` previews the selected private route, prerequisites, ownership, blockers, and proposed effects without writes.
 - `host-route-apply` changes one scoped Serve path, preserves pending attempts across uncertainty, and makes verified repeats without another Serve write.
