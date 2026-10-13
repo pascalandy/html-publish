@@ -128,9 +128,10 @@ class PublicationRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     def _requested_part(self, size: int) -> range | None:
         values = self.headers.get_all("Range") or []
-        # No ETag is sent, and two revisions can share an mtime, so Last-Modified is weak.
-        # RFC 9110 section 13.1.5 then evaluates every If-Range as false.
-        if len(values) != 1 or "If-Range" in self.headers:
+        # RFC 9110 section 14.2 defines Range for GET alone, so HEAD ignores it. No ETag is
+        # sent, and two revisions can share an mtime, so Last-Modified is weak. Section 13.1.5
+        # then evaluates every If-Range as false.
+        if self.command != "GET" or len(values) != 1 or "If-Range" in self.headers:
             return None
         return _byte_range(values[0], size)
 

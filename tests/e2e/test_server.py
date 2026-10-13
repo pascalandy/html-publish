@@ -103,6 +103,14 @@ class PublicationServerTest(unittest.TestCase):
         finally:
             connection.close()
 
+    def assert_head_ignores_range(self, path: str, value: str, size: int) -> None:
+        status, headers, body = self.request(path, {"Range": value}, method="HEAD")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Length"], str(size))
+        self.assertEqual(headers["Accept-Ranges"], "bytes")
+        self.assertNotIn("Content-Range", headers)
+        self.assertEqual(body, b"")
+
     def select(self, release: str) -> None:
         staged = self.runtime / f"selection-{release}"
         os.symlink(f"../releases/{release}", staged)
@@ -214,7 +222,7 @@ class PublicationServerTest(unittest.TestCase):
         self.assertEqual(second_headers["Cache-Control"], "no-store")
         self.assertEqual(second_body, b"page B")
 
-    def test_single_byte_range_returns_partial_content_for_get_and_head(self) -> None:
+    def test_single_byte_range_returns_partial_content_to_get_only(self) -> None:
         audio = bytes(range(256)) * 4
         release = self.releases / "revision-a"
         release.mkdir()
@@ -236,18 +244,16 @@ class PublicationServerTest(unittest.TestCase):
             ("bytes=-5000", 0, 1023),
             ("Bytes=5-5", 5, 5),
         ):
-            for method in ("GET", "HEAD"):
-                with self.subTest(range=value, method=method):
-                    status, headers, body = self.request(
-                        "/report/audio.mp3", {"Range": value}, method=method
-                    )
-                    self.assertEqual(status, 206)
-                    self.assertEqual(headers["Content-Range"], f"bytes {first}-{last}/1024")
-                    self.assertEqual(headers["Content-Length"], str(last - first + 1))
-                    self.assertEqual(headers["Content-type"], "audio/mpeg")
-                    self.assertEqual(headers["Accept-Ranges"], "bytes")
-                    self.assertEqual(headers["Cache-Control"], "no-store")
-                    self.assertEqual(body, audio[first : last + 1] if method == "GET" else b"")
+            with self.subTest(range=value):
+                status, headers, body = self.request("/report/audio.mp3", {"Range": value})
+                self.assertEqual(status, 206)
+                self.assertEqual(headers["Content-Range"], f"bytes {first}-{last}/1024")
+                self.assertEqual(headers["Content-Length"], str(last - first + 1))
+                self.assertEqual(headers["Content-type"], "audio/mpeg")
+                self.assertEqual(headers["Accept-Ranges"], "bytes")
+                self.assertEqual(headers["Cache-Control"], "no-store")
+                self.assertEqual(body, audio[first : last + 1])
+                self.assert_head_ignores_range("/report/audio.mp3", value, len(audio))
 
     def test_unsatisfiable_byte_range_returns_416_with_the_complete_length(self) -> None:
         release = self.releases / "revision-a"
@@ -263,13 +269,13 @@ class PublicationServerTest(unittest.TestCase):
             ("/report/audio.mp3", "bytes=-0", 1024),
             ("/report/empty.txt", "bytes=0-", 0),
         ):
-            for method in ("GET", "HEAD"):
-                with self.subTest(path=path, range=value, method=method):
-                    status, headers, body = self.request(path, {"Range": value}, method=method)
-                    self.assertEqual(status, 416)
-                    self.assertEqual(headers["Content-Range"], f"bytes */{size}")
-                    self.assertEqual(headers["Cache-Control"], "no-store")
-                    self.assertEqual(body, b"")
+            with self.subTest(path=path, range=value):
+                status, headers, body = self.request(path, {"Range": value})
+                self.assertEqual(status, 416)
+                self.assertEqual(headers["Content-Range"], f"bytes */{size}")
+                self.assertEqual(headers["Cache-Control"], "no-store")
+                self.assertEqual(body, b"")
+                self.assert_head_ignores_range(path, value, size)
 
     def test_ignored_byte_ranges_return_the_whole_current_file(self) -> None:
         timestamp = 1_700_000_000
