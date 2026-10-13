@@ -6,6 +6,7 @@ import http.server
 import io
 import logging
 import os
+import re
 import shlex
 import signal
 import socket
@@ -17,20 +18,18 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
-from typing import BinaryIO, NoReturn, cast
+from typing import TYPE_CHECKING, BinaryIO, NoReturn, cast
 
 from html_publish import __version__, command_line
 
-_CONDITIONAL_HEADERS = (
-    "If-Match",
-    "If-Modified-Since",
-    "If-None-Match",
-    "If-Range",
-    "If-Unmodified-Since",
-)
+if TYPE_CHECKING:
+    from _typeshed import WriteableBuffer
+
 log = logging.getLogger("html_publish.server")
 _HEALTH_PATH = "/_html-publish-health"
 _HEALTH_BODY = b"ok\n"
+_INDEX_PAGES = ("index.html", "index.htm")
+_SINGLE_BYTE_RANGE = re.compile(r"bytes=(?:([0-9]+)-([0-9]*)|-([0-9]+))", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -70,10 +69,6 @@ class PublicationRequestHandler(http.server.SimpleHTTPRequestHandler):
         """Access and error lines are step detail: stderr shows them only with --verbose."""
         log.info("%s %s", self.address_string(), format % args)
 
-    def list_directory(self, path: str | os.PathLike[str]) -> io.BytesIO | None:
-        self.send_error(404, "File not found")
-        return None
-
     def send_head(self) -> io.BytesIO | BinaryIO | None:
         if self.path == _HEALTH_PATH:
             self.send_response(200)
@@ -88,18 +83,56 @@ class PublicationRequestHandler(http.server.SimpleHTTPRequestHandler):
         if self._redirect_directory():
             return None
 
-        removed_headers: dict[str, list[str]] = {}
-        for name in _CONDITIONAL_HEADERS:
-            values = self.headers.get_all(name)
-            if values:
-                removed_headers[name] = values
-                del self.headers[name]
+        path = self.translate_path(self.path)
+        if os.path.isdir(path):
+            for name in _INDEX_PAGES:
+                if os.path.isfile(os.path.join(path, name)):
+                    path = os.path.join(path, name)
+                    break
+        if path.endswith("/"):
+            self.send_error(404, "File not found")
+            return None
         try:
-            return super().send_head()
-        finally:
-            for name, values in removed_headers.items():
-                for value in values:
-                    self.headers.add_header(name, value)
+            file = open(path, "rb")  # noqa: SIM115
+        except OSError:
+            self.send_error(404, "File not found")
+            return None
+        try:
+            return self._send_file(file, self.guess_type(path))
+        except BaseException:
+            file.close()
+            raise
+
+    def _send_file(self, file: BinaryIO, content_type: str) -> BinaryIO | None:
+        metadata = os.fstat(file.fileno())
+        part = self._requested_part(metadata.st_size)
+        if part is not None and not part:
+            self.send_response(416)
+            self.send_header("Content-Range", f"bytes */{metadata.st_size}")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            file.close()
+            return None
+        self.send_response(200 if part is None else 206)
+        self.send_header("Content-type", content_type)
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Last-Modified", self.date_time_string(metadata.st_mtime))
+        if part is None:
+            self.send_header("Content-Length", str(metadata.st_size))
+            self.end_headers()
+            return file
+        self.send_header("Content-Range", f"bytes {part.start}-{part[-1]}/{metadata.st_size}")
+        self.send_header("Content-Length", str(len(part)))
+        self.end_headers()
+        return io.BufferedReader(_FilePart(file, part))
+
+    def _requested_part(self, size: int) -> range | None:
+        values = self.headers.get_all("Range") or []
+        # No ETag is sent, and two revisions can share an mtime, so Last-Modified is weak.
+        # RFC 9110 section 13.1.5 then evaluates every If-Range as false.
+        if len(values) != 1 or "If-Range" in self.headers:
+            return None
+        return _byte_range(values[0], size)
 
     def _redirect_directory(self) -> bool:
         url = urllib.parse.urlsplit(self.path)
@@ -156,6 +189,54 @@ class PublicationRequestHandler(http.server.SimpleHTTPRequestHandler):
         if selection_target != release:
             return False
         return resolved == release or resolved.is_relative_to(release)
+
+
+def _byte_range(value: str, size: int) -> range | None:
+    """Select the bytes that one `Range` value asks for in a file of `size` bytes.
+
+    An empty range is unsatisfiable. None means serve the whole file, because the value is
+    malformed, names several ranges, or asks for the suffix of an empty file, which no 206 carries.
+    """
+    match = _SINGLE_BYTE_RANGE.fullmatch(value.strip())
+    if match is None:
+        return None
+    first, last, suffix = match.groups()
+    try:
+        if suffix is not None:
+            length = int(suffix)
+            if length and not size:
+                return None
+            return range(max(size - length, 0), size)
+        start = int(first)
+        if not last:
+            return range(start, size)
+        end = int(last)
+    except ValueError:
+        # int() refuses a numeral longer than sys.get_int_max_str_digits().
+        return None
+    return None if end < start else range(start, min(end + 1, size))
+
+
+class _FilePart(io.RawIOBase):
+    def __init__(self, file: BinaryIO, part: range) -> None:
+        super().__init__()
+        self._file = file
+        self._remaining = len(part)
+        file.seek(part.start)
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: WriteableBuffer, /) -> int:
+        view = memoryview(buffer).cast("B")
+        data = self._file.read(min(len(view), self._remaining))
+        view[: len(data)] = data
+        self._remaining -= len(data)
+        return len(data)
+
+    def close(self) -> None:
+        self._file.close()
+        super().close()
 
 
 def _directory(value: str) -> Path:
