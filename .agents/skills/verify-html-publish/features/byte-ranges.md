@@ -6,7 +6,7 @@ A browser plays and seeks a published audio asset by asking for one byte range a
 
 - `range-partial` answers one satisfiable byte range of a nonempty file on GET with `206`, its `Content-Range` and `Content-Length`, and the exact source bytes.
 - `range-unsatisfiable` answers a range that starts past the end with `416` and `Content-Range: bytes */<size>`.
-- `range-declined` serves the full `200` for a malformed range, several ranges, two `Range` headers, an unknown unit, any `If-Range`, a position with too many digits to parse, or a suffix of an empty file.
+- `range-declined` serves the full `200` for a malformed range, several ranges, two `Range` headers, an unknown unit, any `If-Range`, a position with too many digits to parse, or a nonzero suffix of an empty file.
 - `range-head` ignores `Range` on HEAD, even past the end, and reports the full length.
 
 ## How to get to it (user POV)
@@ -29,7 +29,7 @@ Preconditions:
 - **Request past the end.** Run `curl -sS -D - -H 'Range: bytes=1024-' "$URL/narration/audio.mp3"`. The status is `416` with `Content-Range: bytes */1024` and an empty body.
 - **Send declined ranges.** Repeat the request with `-H 'Range: bytes=5-2'`, then `-H 'Range: bytes=0-1,5-6'`, then `-H 'Range: bytes=0-1' -H 'Range: bytes=5-6'`, then `-H 'Range: items=0-1'`, then `-H 'Range: bytes=0-1' -H "If-Range: $LM"`, saving each body to `$ARTIFACTS/declined.bin`. Each returns `200` with `Content-Length: 1024` and no `Content-Range`, and `cmp "$SRC" "$ARTIFACTS/declined.bin"` exits 0.
 - **Send ranges on HEAD.** Run `curl -sS -I -H 'Range: bytes=0-1' "$URL/narration/audio.mp3"`, then repeat it with `Range: bytes=1024-`. Each returns `200` with `Content-Length: 1024`, `Accept-Ranges: bytes`, and no `Content-Range`.
-- **Run the edge-case owner.** Run `uv run python -m unittest -v tests.e2e.test_server.PublicationServerTest.test_ignored_byte_ranges_return_the_whole_current_file` from `$REPO_ROOT` for a position with too many digits to parse and a suffix of an empty file. It drives the source checkout, not the installed wheel.
+- **Run the edge-case owner.** Run `uv run python -m unittest -v tests.e2e.test_server.PublicationServerTest.test_ignored_byte_ranges_return_the_whole_current_file` from `$REPO_ROOT` for a position with too many digits to parse and a nonzero suffix of an empty file. It drives the source checkout, not the installed wheel.
 - **Proof.** Save the transcript, headers, and `cmp` results under `$ARTIFACTS/byte-ranges-<run_id>.txt`.
 
 ## Gotchas
