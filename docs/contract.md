@@ -452,12 +452,14 @@ asset-versioning platform.
 The read-only delivery helper sends `Accept-Ranges: bytes` with each file it serves and answers one
 byte range on GET with `206`, `Content-Range`, and `Content-Length`, so iOS Safari can play and
 seek published audio. An unsatisfiable range returns `416` with `Content-Range: bytes */<size>`.
-A malformed, multi-range, or repeated `Range` header gets the full `200`. So does any `If-Range`,
-because the helper sends no ETag and two revisions can share an mtime, which leaves no strong
-validator ([RFC 9110 §13.1.5](https://www.rfc-editor.org/rfc/rfc9110#section-13.1.5)). HEAD
-ignores `Range` ([RFC 9110 §14.2](https://www.rfc-editor.org/rfc/rfc9110#section-14.2)). Each range
-is a separate request, so seeking across a publication switch can combine bytes of two revisions;
-this is the accepted limitation above.
+A malformed, multi-range, or repeated `Range` header gets the full `200`, and so do a position
+with too many digits to parse and a nonzero suffix of an empty file, which no `206` can carry. Any
+`If-Range` also gets the full `200`, because the helper sends no ETag and two revisions can share
+an mtime, which leaves no strong validator
+([RFC 9110 §13.1.5](https://www.rfc-editor.org/rfc/rfc9110#section-13.1.5)). HEAD ignores `Range`
+([RFC 9110 §14.2](https://www.rfc-editor.org/rfc/rfc9110#section-14.2)). Each range is a separate
+request, so seeking across a publication switch can combine bytes of two revisions; this is the
+accepted limitation above.
 
 ## S7. Recovery and retention
 
