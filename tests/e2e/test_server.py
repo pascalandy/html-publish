@@ -255,6 +255,15 @@ class PublicationServerTest(unittest.TestCase):
                 self.assertEqual(body, audio[first : last + 1])
                 self.assert_head_ignores_range("/report/audio.mp3", value, len(audio))
 
+        with socket.create_connection(("127.0.0.1", self.port), timeout=2) as connection:
+            connection.sendall(b"GET /report/audio.mp3 HTTP/1.0\r\nRange: bytes=100-199\r\n\r\n")
+            response = b""
+            while chunk := connection.recv(65536):
+                response += chunk
+        response_head, _, raw_body = response.partition(b"\r\n\r\n")
+        self.assertTrue(response_head.startswith(b"HTTP/1.0 206 "))
+        self.assertEqual(raw_body, audio[100:200])
+
     def test_unsatisfiable_byte_range_returns_416_with_the_complete_length(self) -> None:
         release = self.releases / "revision-a"
         release.mkdir()
