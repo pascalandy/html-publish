@@ -196,7 +196,8 @@ def _byte_range(value: str, size: int) -> range | None:
     """Select the bytes that one `Range` value asks for in a file of `size` bytes.
 
     An empty range is unsatisfiable. None means serve the whole file, because the value is
-    malformed, names several ranges, or asks for the suffix of an empty file, which no 206 carries.
+    malformed, names several ranges, or asks for a nonzero suffix of an empty file, which no 206
+    carries.
     """
     match = _SINGLE_BYTE_RANGE.fullmatch(value.strip())
     if match is None:
