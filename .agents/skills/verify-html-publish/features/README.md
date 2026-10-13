@@ -54,6 +54,7 @@ Keep implementation details out of the map. Name only user paths, stable handles
 - [Advisory planning](advisory-planning.md) covers prediction and differences without persistent writes.
 - [Status observation](status-observation.md) covers single-page state, the paged list, and absent state.
 - [Verification](verification.md) covers healthy verification, delivery failure, local corruption, and preserved observed state.
+- [Byte ranges](byte-ranges.md) covers single-range partial content, the unsatisfiable `416`, declined ranges, and HEAD.
 - [History and restore](history-and-restore.md) covers bounded history, encoded diff limits, guarded restore, and appended history.
 - [Host diagnostics](host-diagnostics.md) covers named and unnamed host checks, local corruption, and route drift.
 - [Artifact receipts](artifact-receipts.md) covers durable caller identity, guarded updates, observation, frozen retry, conflict review, and restore.
