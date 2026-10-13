@@ -138,7 +138,7 @@ class Verification:
 | `delivery.py` | URL construction, redirect boundaries, HTTP body comparison, delivery evidence, and host diagnostics |
 | `remote.py` | Private raw-source upload, bounded SSH execution, host-result correlation, and attempt staging cleanup |
 | `receipt.py` | Caller binding, frozen publish or restore intent, accepted output and record revisions, observation, local lock, and saved-result recovery |
-| `server.py` | Read-only HTTP delivery of selected files, without publication mutations |
+| `server.py` | Read-only HTTP delivery of selected files and single byte ranges, without publication mutations |
 | `host.py` | Linux service setup, its ownership record, systemd observations, loopback health, and owned-service inspection |
 | `host_route.py` | Route ownership record, route decisions, apply checks, pending retries, and effects |
 | `tailscale.py` | Bounded node and Serve reads, wire-format parsing, and scoped Serve path mutation |
