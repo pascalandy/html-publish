@@ -83,20 +83,33 @@ class PublicationServerTest(unittest.TestCase):
         )
 
     def request(
-        self, path: str, headers: dict[str, str] | None = None
+        self, path: str, headers: dict[str, str] | None = None, *, method: str = "GET"
     ) -> tuple[int, dict[str, str], bytes]:
-        return self.request_at(self.port, path, headers)
+        return self.request_at(self.port, path, headers, method=method)
 
     def request_at(
-        self, port: int, path: str, headers: dict[str, str] | None = None
+        self,
+        port: int,
+        path: str,
+        headers: dict[str, str] | None = None,
+        *,
+        method: str = "GET",
     ) -> tuple[int, dict[str, str], bytes]:
         connection = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
         try:
-            connection.request("GET", path, headers=headers or {})
+            connection.request(method, path, headers=headers or {})
             response = connection.getresponse()
             return response.status, dict(response.getheaders()), response.read()
         finally:
             connection.close()
+
+    def assert_head_ignores_range(self, path: str, value: str, size: int) -> None:
+        status, headers, body = self.request(path, {"Range": value}, method="HEAD")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Length"], str(size))
+        self.assertEqual(headers["Accept-Ranges"], "bytes")
+        self.assertNotIn("Content-Range", headers)
+        self.assertEqual(body, b"")
 
     def select(self, release: str) -> None:
         staged = self.runtime / f"selection-{release}"
@@ -208,6 +221,113 @@ class PublicationServerTest(unittest.TestCase):
         self.assertEqual(second_status, 200)
         self.assertEqual(second_headers["Cache-Control"], "no-store")
         self.assertEqual(second_body, b"page B")
+
+    def test_single_byte_range_returns_partial_content_to_get_only(self) -> None:
+        audio = bytes(range(256)) * 4
+        release = self.releases / "revision-a"
+        release.mkdir()
+        (release / "index.html").write_bytes(b"published")
+        (release / "audio.mp3").write_bytes(audio)
+        self.select("revision-a")
+
+        status, headers, body = self.request("/report/audio.mp3")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Accept-Ranges"], "bytes")
+        self.assertEqual(body, audio)
+
+        for value, first, last in (
+            ("bytes=0-1", 0, 1),
+            ("bytes=100-199", 100, 199),
+            ("bytes=1000-", 1000, 1023),
+            ("bytes=-24", 1000, 1023),
+            ("bytes=1000-99999", 1000, 1023),
+            ("bytes=-5000", 0, 1023),
+            ("Bytes=5-5", 5, 5),
+        ):
+            with self.subTest(range=value):
+                status, headers, body = self.request("/report/audio.mp3", {"Range": value})
+                self.assertEqual(status, 206)
+                self.assertEqual(headers["Content-Range"], f"bytes {first}-{last}/1024")
+                self.assertEqual(headers["Content-Length"], str(last - first + 1))
+                self.assertEqual(headers["Content-type"], "audio/mpeg")
+                self.assertEqual(headers["Accept-Ranges"], "bytes")
+                self.assertEqual(headers["Cache-Control"], "no-store")
+                self.assertEqual(body, audio[first : last + 1])
+                self.assert_head_ignores_range("/report/audio.mp3", value, len(audio))
+
+        with socket.create_connection(("127.0.0.1", self.port), timeout=2) as connection:
+            connection.sendall(b"GET /report/audio.mp3 HTTP/1.0\r\nRange: bytes=100-199\r\n\r\n")
+            response = b""
+            while chunk := connection.recv(65536):
+                response += chunk
+        response_head, _, raw_body = response.partition(b"\r\n\r\n")
+        self.assertTrue(response_head.startswith(b"HTTP/1.0 206 "))
+        self.assertEqual(raw_body, audio[100:200])
+
+    def test_unsatisfiable_byte_range_returns_416_with_the_complete_length(self) -> None:
+        release = self.releases / "revision-a"
+        release.mkdir()
+        (release / "index.html").write_bytes(b"published")
+        (release / "audio.mp3").write_bytes(bytes(1024))
+        (release / "empty.txt").write_bytes(b"")
+        self.select("revision-a")
+
+        for path, value, size in (
+            ("/report/audio.mp3", "bytes=1024-", 1024),
+            ("/report/audio.mp3", "bytes=5000-6000", 1024),
+            ("/report/audio.mp3", "bytes=-0", 1024),
+            ("/report/empty.txt", "bytes=0-", 0),
+        ):
+            with self.subTest(path=path, range=value):
+                status, headers, body = self.request(path, {"Range": value})
+                self.assertEqual(status, 416)
+                self.assertEqual(headers["Content-Range"], f"bytes */{size}")
+                self.assertEqual(headers["Cache-Control"], "no-store")
+                self.assertEqual(body, b"")
+                self.assert_head_ignores_range(path, value, size)
+
+    def test_ignored_byte_ranges_return_the_whole_current_file(self) -> None:
+        timestamp = 1_700_000_000
+        audio_a = bytes(range(256))
+        audio_b = bytes(reversed(range(256)))
+        for release_name, audio in (("revision-a", audio_a), ("revision-b", audio_b)):
+            release = self.releases / release_name
+            release.mkdir()
+            (release / "index.html").write_bytes(b"published")
+            (release / "audio.mp3").write_bytes(audio)
+            (release / "empty.txt").write_bytes(b"")
+            os.utime(release / "audio.mp3", (timestamp, timestamp))
+        self.select("revision-a")
+        _, first_headers, _ = self.request("/report/audio.mp3", {"Range": "bytes=0-1"})
+        self.select("revision-b")
+
+        for case, path, headers, expected in (
+            ("several ranges", "/report/audio.mp3", {"Range": "bytes=0-1,5-6"}, audio_b),
+            ("last before first", "/report/audio.mp3", {"Range": "bytes=5-2"}, audio_b),
+            ("no positions", "/report/audio.mp3", {"Range": "bytes=-"}, audio_b),
+            ("not digits", "/report/audio.mp3", {"Range": "bytes=a-b"}, audio_b),
+            ("unknown unit", "/report/audio.mp3", {"Range": "items=0-1"}, audio_b),
+            (
+                "numeral beyond int parsing",
+                "/report/audio.mp3",
+                {"Range": f"bytes=0-{'9' * 5000}"},
+                audio_b,
+            ),
+            (
+                "If-Range from the previous revision",
+                "/report/audio.mp3",
+                {"Range": "bytes=0-1", "If-Range": first_headers["Last-Modified"]},
+                audio_b,
+            ),
+            ("suffix of an empty file", "/report/empty.txt", {"Range": "bytes=-5"}, b""),
+        ):
+            with self.subTest(case=case):
+                status, response_headers, body = self.request(path, headers)
+                self.assertEqual(status, 200)
+                self.assertNotIn("Content-Range", response_headers)
+                self.assertEqual(response_headers["Content-Length"], str(len(expected)))
+                self.assertEqual(response_headers["Accept-Ranges"], "bytes")
+                self.assertEqual(body, expected)
 
     def test_redirect_and_errors_disable_caching_and_directory_listing(self) -> None:
         release = self.releases / "revision-a"
