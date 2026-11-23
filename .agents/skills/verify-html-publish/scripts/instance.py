@@ -86,9 +86,13 @@ def supervise(instance: Path, port: int) -> None:
         try:
             child = subprocess.Popen(
                 [
-                    str(instance / "venv/bin/html-publish-server"),
-                    "--directory",
-                    str(instance / "runtime/public"),
+                    str(instance / "venv/bin/python"),
+                    "-m",
+                    "html_publish",
+                    "--config",
+                    str(instance / "publisher.json"),
+                    "host",
+                    "serve",
                     "--bind",
                     "127.0.0.1",
                     "--port",

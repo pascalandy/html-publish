@@ -135,11 +135,41 @@ html-publish --config publisher.json --json status \
 
 The stable test URL is `http://127.0.0.1:8000/release-notes/`.
 
+The configured private host also serves **Mes publications** at `<base_url>_catalogue/`. Add
+optional metadata to the exact HTML revision in the document head:
+
+```html
+<meta name="html-publish-catalogue" content='{"title":"Demo","type":"prototype","topics":["Budget"],"projects":["Atlas"],"source_url":"https://github.com/example/project/blob/0123abc/docs/demo.md"}'>
+```
+
+`type` accepts `dashboard`, `prototype`, `report`, or `unclassified`. Omit unknown values rather
+than inventing a category. Use a GitHub `/blob/` or `/tree/` path, or a GitLab `/-/blob/` or
+`/-/tree/` path, with HTTPS and no credentials, query, fragment, whitespace, or backslash. Pin an
+immutable commit ref when the exact historical source matters. HTML-escape the JSON for the
+single-quoted `content` attribute, including apostrophes and ampersands. Do not put local source
+paths in metadata. The catalogue never fetches the source link.
+
+Use a `tree` URL when you want to resume at a project directory, for example
+`https://github.com/example/project/tree/0123abc/docs`.
+
 ## Publish Markdown
 
 Markdown is opt-in. A single `.md` file is the entry document. For a directory, pass `--entry`
 when needed; otherwise the publisher selects a sole root `index.md` or `README.md` and reports an
 error if neither or both are present.
+
+To add catalogue metadata, put one JSON payload on one line in the selected entry's initial
+frontmatter:
+
+```markdown
+---
+html-publish-catalogue: {"title":"Demo","type":"prototype","topics":["Budget"],"projects":["Atlas"],"source_url":"https://github.com/example/project/blob/0123abc/docs/demo.md"}
+---
+```
+
+The renderer strips the frontmatter from public HTML. The source line stays in the private record.
+Use the same metadata fields and repository path rules as the HTML form. Pin an immutable commit
+ref when the exact historical source matters.
 
 The selected entry becomes `index.html`. Other Markdown files become `.html` at their relative
 paths, and other files such as images are copied to the same paths. Headings, prose, lists, fenced

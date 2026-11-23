@@ -80,6 +80,10 @@ Every executable follows the [command-line conventions](docs/contract.md#command
 
 The MVP implements the first vertical slice of the [publisher architecture](docs/architecture.md). `uv run html-publish --help` owns the current syntax
 
+The configured private host also serves **Mes publications** at `<base_url>_catalogue/`; see
+[contract section S13](docs/contract.md#s13-private-publication-catalogue) for its metadata and
+privacy rules.
+
 - `plan`, `publish`, `status`, `verify`, `history`, and `restore`
 - `artifact publish`, `artifact retry`, `artifact status`, and `artifact restore`
 - `config init/show/validate`, `doctor`, `host serve/setup`, and `host route setup`

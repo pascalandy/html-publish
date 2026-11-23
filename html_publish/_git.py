@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import selectors
 import shlex
 import subprocess
 import time
@@ -67,19 +68,7 @@ def _environment(extra: Mapping[str, str] | None = None) -> dict[str, str]:
     return env
 
 
-def command(
-    git_dir: Path | None,
-    args: Sequence[str],
-    deadline: Deadline,
-    *,
-    cwd: Path | None = None,
-    input_bytes: bytes | None = None,
-    stdin: BinaryIO | None = None,
-    stdout: BinaryIO | int = subprocess.PIPE,
-    extra_env: Mapping[str, str] | None = None,
-    phase: str = "archive",
-    allowed_returncodes: frozenset[int] = frozenset({0}),
-) -> bytes:
+def _invocation(git_dir: Path | None, args: Sequence[str]) -> list[str]:
     invocation = [
         "git",
         "-c",
@@ -100,6 +89,23 @@ def command(
     if git_dir is not None:
         invocation.append(f"--git-dir={git_dir}")
     invocation.extend(args)
+    return invocation
+
+
+def command(
+    git_dir: Path | None,
+    args: Sequence[str],
+    deadline: Deadline,
+    *,
+    cwd: Path | None = None,
+    input_bytes: bytes | None = None,
+    stdin: BinaryIO | None = None,
+    stdout: BinaryIO | int = subprocess.PIPE,
+    extra_env: Mapping[str, str] | None = None,
+    phase: str = "archive",
+    allowed_returncodes: frozenset[int] = frozenset({0}),
+) -> bytes:
+    invocation = _invocation(git_dir, args)
     started = time.monotonic()
     try:
         completed = subprocess.run(
@@ -142,6 +148,109 @@ def command(
             "inspect",
         )
     return completed.stdout
+
+
+def read_blob_prefix(
+    git_dir: Path,
+    object_id: str,
+    size: int,
+    prefix_bytes: int,
+    deadline: Deadline,
+) -> bytes:
+    """Read at most one bounded prefix of an immutable archive blob."""
+    if (
+        re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", object_id) is None
+        or size < 0
+        or prefix_bytes <= 0
+    ):
+        raise PublishError(
+            "archive_corrupt", "archive", "The catalogue metadata object is invalid", "inspect"
+        )
+    expected = min(size, prefix_bytes)
+    args = ["cat-file", "blob", object_id]
+    if size <= prefix_bytes:
+        try:
+            value = command(git_dir, args, deadline, phase="catalogue")
+        except PublishError as error:
+            raise PublishError(
+                "archive_corrupt",
+                "catalogue",
+                "The catalogue metadata object is unavailable",
+                "inspect",
+            ) from error
+        if len(value) != size:
+            raise PublishError(
+                "archive_corrupt",
+                "catalogue",
+                "The catalogue metadata object is incomplete",
+                "inspect",
+            )
+        return value
+
+    process: subprocess.Popen[bytes] | None = None
+    output = bytearray()
+    try:
+        process = subprocess.Popen(
+            _invocation(git_dir, args),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env=_environment(),
+        )
+        assert process.stdout is not None
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while len(output) < expected:
+                remaining = deadline.remaining()
+                if not selector.select(remaining):
+                    raise PublishError(
+                        "git_timeout",
+                        "catalogue",
+                        "Git exceeded the catalogue read budget",
+                        "inspect",
+                    )
+                chunk = os.read(process.stdout.fileno(), min(8192, expected - len(output)))
+                if not chunk:
+                    break
+                output.extend(chunk)
+        if len(output) < expected:
+            process.wait(timeout=deadline.remaining())
+            raise PublishError(
+                "archive_corrupt",
+                "catalogue",
+                "The catalogue metadata object is incomplete",
+                "inspect",
+            )
+        if process.poll() is None:
+            process.terminate()
+        try:
+            process.wait(timeout=min(1.0, deadline.remaining()))
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=min(1.0, deadline.remaining()))
+        if process.returncode not in (0, -15, -9):
+            raise PublishError(
+                "archive_corrupt",
+                "catalogue",
+                "The catalogue metadata object is unavailable",
+                "inspect",
+            )
+        return bytes(output)
+    except PublishError:
+        raise
+    except (OSError, subprocess.SubprocessError) as error:
+        raise PublishError(
+            "archive_corrupt",
+            "catalogue",
+            "The catalogue metadata object is unavailable",
+            "inspect",
+        ) from error
+    finally:
+        if process is not None:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            if process.stdout is not None:
+                process.stdout.close()
 
 
 def init_bare(path: Path, object_format: str, deadline: Deadline) -> None:

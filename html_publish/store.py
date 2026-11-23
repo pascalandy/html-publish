@@ -5,16 +5,24 @@ import fcntl
 import json
 import logging
 import os
+import re
 import stat
 import tempfile
 import time
 import uuid
 from collections.abc import Generator
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import Literal, cast
 
 from html_publish import _git
 from html_publish.artifact import capture, warnings_for
+from html_publish.catalogue import (
+    CatalogueEntry,
+    CatalogueMetadata,
+    html_metadata,
+    markdown_metadata,
+)
 from html_publish.delivery import (
     publication_url,
     reachability_probe,
@@ -54,9 +62,29 @@ ARCHIVE_REF = "refs/heads/published"
 _PublishingOperation = Literal["publish", "restore"]
 _DIFF_CAP_BYTES = 64 * 1024
 _PublicationDecision = Literal["create", "update", "unchanged", "record"]
+_CATALOGUE_NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
+_CATALOGUE_PREFIX_BYTES = 64 * 1024
 
 
 log = logging.getLogger(__name__)
+
+
+def _catalogue_provenance_entry(prefix: bytes) -> str | None:
+    """Read only the leading entry field from the bounded, sorted provenance JSON."""
+    text = prefix[:_CATALOGUE_PREFIX_BYTES].decode("utf-8", "ignore")
+    index = len(text) - len(text.lstrip())
+    if index >= len(text) or text[index] != "{":
+        return None
+    decoder = json.JSONDecoder()
+    try:
+        key, index = decoder.raw_decode(text, index + 1)
+        index += len(text[index:]) - len(text[index:].lstrip())
+        if key != "entry" or index >= len(text) or text[index] != ":":
+            return None
+        value, _ = decoder.raw_decode(text, index + 1)
+    except (json.JSONDecodeError, RecursionError):
+        return None
+    return value if isinstance(value, str) else None
 
 
 def _fsync_directory(path: Path) -> None:
@@ -640,7 +668,7 @@ class PublicationStore:
         try:
             resolved = (link.parent / raw_target).resolve(strict=True)
             releases = (self.config.runtime / "releases").resolve(strict=True)
-        except OSError as error:
+        except (OSError, RuntimeError) as error:
             return Selection("degraded", detail=f"The public link is dangling: {error}")
         if resolved.parent != releases or resolved.is_symlink() or not resolved.is_dir():
             return Selection("degraded", detail="The public link escapes the release directory")
@@ -1897,3 +1925,127 @@ class PublicationStore:
                 publication_url(self.config.base_url, name) if name else None,
                 error=failure,
             )
+
+    def _catalogue_commit_date(self, commit: str) -> str:
+        value = (
+            _git.command(
+                self.config.archive,
+                ["show", "-s", "--format=%cI", commit],
+                self.deadline,
+                phase="catalogue",
+            )
+            .decode("ascii", "strict")
+            .strip()
+        )
+        date = datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+        return date.isoformat(timespec="seconds")
+
+    def _catalogue_page_at(self, name: Name, revision: str, commit: str) -> SavedPage:
+        record_tree = self._page_record_tree_at(commit, name)
+        site = self._site(revision)
+        record = self._record(record_tree) if record_tree is not None else None
+        return SavedPage(site, record, Commit(commit))
+
+    def _catalogue_metadata(
+        self, name: Name, site: StoredSite, record: StoredRecord | None
+    ) -> CatalogueMetadata:
+        index = next((entry for entry in site.entries if str(entry.path) == "index.html"), None)
+        html_prefix = (
+            _git.read_blob_prefix(
+                self.config.archive,
+                index.blob,
+                index.size,
+                _CATALOGUE_PREFIX_BYTES,
+                self.deadline,
+            )
+            if index is not None
+            else b""
+        )
+        fallback = html_metadata(html_prefix, str(name))
+        if record is None:
+            return fallback
+        paths = {str(entry.path): entry for entry in record.entries}
+        provenance_entry = paths.get("provenance.json")
+        if provenance_entry is None:
+            return fallback
+        provenance_bytes = _git.read_blob_prefix(
+            self.config.archive,
+            provenance_entry.blob,
+            provenance_entry.size,
+            _CATALOGUE_PREFIX_BYTES,
+            self.deadline,
+        )
+        if provenance_entry.size <= _CATALOGUE_PREFIX_BYTES:
+            try:
+                provenance = json.loads(provenance_bytes.decode("utf-8", "strict"))
+            except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+                return fallback
+            entry_path: object = (
+                cast(dict[str, object], provenance).get("entry")
+                if isinstance(provenance, dict)
+                else None
+            )
+        else:
+            entry_path = _catalogue_provenance_entry(provenance_bytes)
+        if not isinstance(entry_path, str) or not entry_path or "\\" in entry_path:
+            return fallback
+        source = paths.get(f"source/{entry_path}")
+        if source is None:
+            return fallback
+        source_prefix = _git.read_blob_prefix(
+            self.config.archive,
+            source.blob,
+            source.size,
+            _CATALOGUE_PREFIX_BYTES,
+            self.deadline,
+        )
+        return markdown_metadata(source_prefix, str(name), fallback.title)
+
+    def catalogue(self) -> tuple[CatalogueEntry, ...]:
+        """Project one per-name catalogue view without taking the mutation lock."""
+        if not self.config.archive.exists():
+            return ()
+        head = self._head()
+        if head is None:
+            return ()
+        root_entries = _git.read_tree(self.config.archive, f"{head}^{{tree}}", self.deadline)
+        names = sorted(
+            entry.name
+            for entry in root_entries
+            if entry.kind == "tree"
+            and len(entry.name) <= 80
+            and _CATALOGUE_NAME.fullmatch(entry.name) is not None
+        )
+        entries: list[CatalogueEntry] = []
+        for raw_name in names:
+            name = Name(raw_name)
+            # Observe selection before saved state: a just-committed publication may not
+            # have advanced its symlink yet.
+            selection = self._selection(name, full=False)
+            saved = self._saved(name)
+            if saved is None:
+                continue
+            chosen = saved
+            state = "unavailable" if selection.kind == "degraded" else "archived"
+            if selection.kind == "selected" and selection.revision is not None:
+                if str(saved.site.revision) == str(selection.revision):
+                    state = "selected"
+                else:
+                    for commit in self._page_commits(name):
+                        site_revision = self._page_tree_at(commit, name)
+                        if site_revision is None or site_revision != str(selection.revision):
+                            continue
+                        chosen = self._catalogue_page_at(name, site_revision, commit)
+                        state = "selected"
+                        break
+            metadata = self._catalogue_metadata(name, chosen.site, chosen.record)
+            entries.append(
+                CatalogueEntry(
+                    raw_name,
+                    metadata,
+                    publication_url(self.config.base_url, name),
+                    state,
+                    self._catalogue_commit_date(str(chosen.commit)),
+                )
+            )
+        return tuple(entries)

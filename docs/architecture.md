@@ -139,6 +139,7 @@ class Verification:
 | `remote.py` | Private raw-source upload, bounded SSH execution, host-result correlation, and attempt staging cleanup |
 | `receipt.py` | Caller binding, frozen publish or restore intent, accepted output and record revisions, observation, local lock, and saved-result recovery |
 | `server.py` | Read-only HTTP delivery of selected files and single byte ranges, without publication mutations |
+| `catalogue.py` | Bounded metadata parsing and escaped semantic HTML for the private catalogue |
 | `host.py` | Linux service setup, its ownership record, systemd observations, loopback health, and owned-service inspection |
 | `host_route.py` | Route ownership record, route decisions, apply checks, pending retries, and effects |
 | `tailscale.py` | Bounded node and Serve reads, wire-format parsing, and scoped Serve path mutation |
@@ -146,6 +147,8 @@ class Verification:
 `_git.py` is a private mechanism shared by capture and storage. It owns the one sanitized Git invocation policy and exposes no publication decisions
 
 `PublicationStore` is the only archive and publication mutation owner. `markdown.py` is pure preparation: it runs after `artifact.py` freezes source bytes and before the store acquires its process lock. A render error therefore cannot alter the branch, releases, or selected symlink. The caller cannot archive without selection checks or activate before archive persistence. `restore` reads the exact `site/` and associated `record/` trees from committed blobs and enters the same guarded transaction as `publish`; it never rerenders historical source.
+
+Configured `host serve` adds the read-only `/_catalogue/` HTTP view. Each request projects reachable Git history with the current public selection; it writes no archive data, generated page, or sidecar index. The view uses only the metadata attached to the selected or archived revision and does not fetch source links. It inherits the existing private Serve route and serves trusted same-origin readers; it is not a general API or a file under `runtime/public/`. The standalone `html-publish-server --directory` remains a selected-file server and does not add the catalogue.
 
 The remote helper uses the same six-command JSON contract and the CLI's serializer. Markdown sends
 the frozen raw source and assets to the host, which renders them before entering its store lock.

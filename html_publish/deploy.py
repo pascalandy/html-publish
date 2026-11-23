@@ -325,15 +325,22 @@ def _preflight_config(layout: Layout) -> bool:
 
 def _unit_content(layout: Layout) -> str:
     python = layout.current / ".venv" / "bin" / "python"
-    public = layout.runtime / "public"
+
+    def systemd_arg(value: str) -> str:
+        escaped = (
+            value.replace("%", "%%").replace("$", "$$").replace("\\", "\\\\").replace('"', '\\"')
+        )
+        return f'"{escaped}"'
+
     return (
         "[Unit]\n"
         "Description=html-publish static publication server\n"
         "After=network.target\n\n"
         "[Service]\n"
         "Type=simple\n"
-        f"ExecStart={python} -m html_publish.server --port 4177 --bind 127.0.0.1 "
-        f"--directory {public}\n"
+        f"ExecStart={systemd_arg(str(python))} -m html_publish.server --directory "
+        f"{systemd_arg(str(layout.runtime / 'public'))} --port 4177 --bind 127.0.0.1\n"
+        f"Environment={systemd_arg('HTML_PUBLISH_PUBLISHER_CONFIG=' + str(layout.config))}\n"
         "Restart=on-failure\n"
         "RestartSec=2\n"
         "NoNewPrivileges=true\n"

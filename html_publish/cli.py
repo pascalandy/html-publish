@@ -1756,7 +1756,9 @@ def _main(arguments: list[str]) -> int:
                 if parsed.host_action == "serve":
                     try:
                         return serve(
-                            ServerConfig(config.runtime / "public", parsed.bind, parsed.port)
+                            ServerConfig(
+                                config.runtime / "public", parsed.bind, parsed.port, config
+                            )
                         )
                     except BindError as error:
                         failure = Failure("bind_failed", "serve", str(error), "choose_port")

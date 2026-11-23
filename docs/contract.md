@@ -778,6 +778,49 @@ identities, and results, history, restore, remote reports, and Markdown-aware re
 Rendering or mapping failure returns before any archive or runtime publication mutation, leaving
 the active page unchanged.
 
+## S13. Private publication catalogue
+
+Configured loopback `html-publish host serve` exposes one read-only catalogue at
+`<base_url>_catalogue/` under the same private mounted Serve policy as publications. The
+standalone, unconfigured `html-publish-server --directory` keeps its existing behavior. The
+catalogue is a per-request projection of reachable archive history and current public selection;
+it creates no generated file, separate data store, or self-card. It shows one card per publication
+name.
+
+For a healthy selected site, the card uses the newest matching reachable site and record pair.
+Otherwise it shows the latest archived pair and labels it `Archivée`; degraded state may be
+labeled `Indisponible`. Archived and degraded cards have no open-publication link. Each card shows
+the latest matching archive commit's UTC date and canonical publication URL. Search matches words
+in title, name, topics, and projects. Filters cover type, topic, project, and state. The page has a
+useful GET form and French labels.
+
+Optional metadata is attached to the exact existing revision bytes. HTML may contain this element
+in its head:
+
+```html
+<meta name="html-publish-catalogue" content='{"title":"Demo","type":"prototype","topics":["Budget"],"projects":["Atlas"],"source_url":"https://github.com/example/project/blob/0123abc/docs/demo.md"}'>
+```
+
+A Markdown selected entry may contain this single line inside its existing initial `---`
+frontmatter; frontmatter remains stripped from rendered output and the private record is unchanged:
+
+```text
+html-publish-catalogue: {"title":"Demo","type":"prototype","topics":["Budget"],"projects":["Atlas"],"source_url":"https://github.com/example/project/blob/0123abc/docs/demo.md"}
+```
+
+Read a JSON object only. Fields are optional; empty or invalid fields collapse to defaults and
+unknown keys are ignored. Bound metadata size and collection lengths. Do not expose raw source.
+Allowed type tokens are `dashboard`, `prototype`, `report`, and `unclassified`. Fall back to the
+HTML title or publication slug; do not invent a source or classification. A source link is accepted
+only when it is an absolute, credential-free HTTPS repository path with no query or fragment and
+with a file or directory path under a GitHub `/blob/` or `/tree/` ref, or a GitLab `/-/blob/` or
+`/-/tree/` ref. Ref names can move. Pin an immutable commit ref when the exact historical source
+matters. Escape every value and never fetch links.
+
+The catalogue page loads no scripts or external resources. It sends a restrictive Content Security
+Policy, `Referrer-Policy: no-referrer`, and `Cache-Control: no-store`. It does not change publish or
+restore behavior, archive schema, receipts, existing flags, or publication URLs.
+
 ## Technical references
 
 These describe primitives, not evidence that om1 passes the gates:

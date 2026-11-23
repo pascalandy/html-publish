@@ -61,5 +61,6 @@ Keep implementation details out of the map. Name only user paths, stable handles
 - [Bounded reports and asset warnings](bounded-reports.md) covers HTML reference warnings, detail and summary reports, and the receipt output floor.
 - [Remote forwarding](remote-forwarding.md) covers six SSH-forwarded operations, protocol validation, staging, and the external route prerequisite.
 - [Installed Linux hosting](installed-linux-hosting.md) covers foreground serving, service and route setup, scoped route apply and recovery, and isolated user-service proof
+- [Private catalogue](catalogue.md) covers the configured host's archive-backed catalogue, metadata, filters, and archived state
 - [Recovery](recovery.md) covers persistence errors and retry state after real process termination.
 - [Skills discovery](skills-discovery.md) covers the bundled version-matched guides, offline list and get, and the remote boundary.
