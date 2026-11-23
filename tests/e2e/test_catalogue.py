@@ -52,6 +52,7 @@ class PublicationCatalogueTest(unittest.TestCase):
             "--allow-http",
         )
         self.server: subprocess.Popen[str] | None = None
+        self.last_server_stderr = ""
         self.addCleanup(self._stop_server)
 
     def _cli(self, *arguments: str) -> dict[str, object]:
@@ -126,6 +127,8 @@ class PublicationCatalogueTest(unittest.TestCase):
         while time.monotonic() < deadline:
             if self.server.poll() is not None:
                 stdout, stderr = self.server.communicate()
+                self.last_server_stderr = stderr
+                self.server = None
                 self.fail(f"host serve exited early: {stderr}\n{stdout}")
             with socket.socket() as probe:
                 probe.settimeout(0.25)
@@ -135,21 +138,18 @@ class PublicationCatalogueTest(unittest.TestCase):
         self.fail("host serve did not answer the synthetic publication")
 
     def _stop_server(self) -> None:
-        if self.server is None:
+        server = self.server
+        if server is None:
             return
+        if server.poll() is None:
+            server.terminate()
         try:
-            if self.server.poll() is None:
-                self.server.terminate()
-                try:
-                    self.server.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    self.server.kill()
-                    self.server.wait(timeout=5)
+            _, self.last_server_stderr = server.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            server.kill()
+            _, self.last_server_stderr = server.communicate(timeout=5)
         finally:
-            if self.server.stdout is not None:
-                self.server.stdout.close()
-            if self.server.stderr is not None:
-                self.server.stderr.close()
+            self.server = None
 
     def _catalogue(self, query: dict[str, str] | None = None) -> tuple[int, str]:
         suffix = "?" + urlencode(query) if query else ""
@@ -426,32 +426,66 @@ content='{"title":"Ignored metadata title","type":"report"}'>
         self.assertIn("Budget A", restored)
         self.assertIn(f'href="{self.base_url}demo/"', restored)
 
-    def test_configured_server_rejects_a_runtime_mismatch(self) -> None:
-        environment = os.environ.copy()
-        environment["HTML_PUBLISH_PUBLISHER_CONFIG"] = str(self.config)
-        other_public = self.root / "other" / "public"
-        other_public.mkdir(parents=True)
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "html_publish.server",
-                "--directory",
-                str(other_public),
-                "--bind",
-                "127.0.0.1",
-                "--port",
-                str(self.port),
-            ],
-            cwd=REPO_ROOT,
-            env=environment,
-            capture_output=True,
-            text=True,
-            check=False,
+    def _assert_managed_config_failure_keeps_stable_page(
+        self, name: str, config_contents: str, untouched_paths: tuple[Path, ...] = ()
+    ) -> None:
+        self._start_server()
+        source = self.root / f"{name}.html"
+        fixture = f"<!doctype html><title>{name}</title><p>Known stable bytes for {name}.</p>\n"
+        source.write_text(fixture, encoding="utf-8")
+        published = self._publish(name, source)
+        self.assertEqual(published["outcome"], "published")
+        self.assertIsInstance(published.get("active_revision"), str)
+        with urlopen(f"{self.base_url}{name}/", timeout=2) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.read(), fixture.encode("utf-8"))
+        self._stop_server()
+
+        self.config.write_text(config_contents, encoding="utf-8")
+        self._start_server()
+        try:
+            self.assertIsNotNone(self.server)
+            assert self.server is not None
+            self.assertIsNone(self.server.poll())
+            with urlopen(f"{self.base_url}{name}/", timeout=2) as response:
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.read(), fixture.encode("utf-8"))
+            self.assertEqual(self._catalogue()[0], 503)
+            self.assertIsNone(self.server.poll())
+            for path in untouched_paths:
+                self.assertFalse(path.exists(), f"unexpected managed-config access: {path.name}")
+        finally:
+            self._stop_server()
+        self.assertEqual(
+            self.last_server_stderr.count("managed catalogue config unavailable or mismatched"), 1
         )
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("configured publisher runtime does not match served directory", result.stderr)
-        self.assertNotIn(str(self.config), result.stderr)
+        self.assertNotIn(str(self.config), self.last_server_stderr)
+
+    def test_invalid_managed_config_keeps_existing_stable_page(self) -> None:
+        valid_config = json.loads(self.config.read_text(encoding="utf-8"))
+        invalid_configs = (
+            ("malformed-managed-config", "{ not valid JSON\n"),
+            (
+                "unknown-field-managed-config",
+                json.dumps({**valid_config, "unknown": "synthetic"}),
+            ),
+        )
+        for name, contents in invalid_configs:
+            with self.subTest(config=name):
+                self.config.write_text(json.dumps(valid_config), encoding="utf-8")
+                self._assert_managed_config_failure_keeps_stable_page(name, contents)
+
+    def test_mismatched_managed_runtime_keeps_existing_stable_page(self) -> None:
+        other_archive = self.root / "other-archive.git"
+        other_runtime = self.root / "other-runtime"
+        config = json.loads(self.config.read_text(encoding="utf-8"))
+        config["archive"] = str(other_archive)
+        config["runtime"] = str(other_runtime)
+        self._assert_managed_config_failure_keeps_stable_page(
+            "mismatched-managed-runtime",
+            json.dumps(config),
+            (other_archive, other_runtime),
+        )
 
     def test_unconfigured_standalone_server_keeps_file_only_behavior(self) -> None:
         self._start_server(configured=False)

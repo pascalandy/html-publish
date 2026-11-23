@@ -41,6 +41,7 @@ class ServerConfig:
     bind: str
     port: int
     publisher: Config | None = None
+    catalogue_unavailable: bool = False
 
 
 class PublicationHTTPServer(http.server.ThreadingHTTPServer):
@@ -62,9 +63,11 @@ class PublicationRequestHandler(http.server.SimpleHTTPRequestHandler):
         *,
         directory: str,
         publisher: Config | None = None,
+        catalogue_unavailable: bool = False,
     ) -> None:
         self.root = Path(directory)
         self.publisher = publisher
+        self.catalogue_unavailable = catalogue_unavailable
         super().__init__(request, client_address, server, directory=str(self.root))
 
     def end_headers(self) -> None:
@@ -84,6 +87,8 @@ class PublicationRequestHandler(http.server.SimpleHTTPRequestHandler):
             return io.BytesIO(_HEALTH_BODY)
 
         raw_path, query_separator, raw_query = self.path.partition("?")
+        if self.catalogue_unavailable and raw_path in {"/_catalogue", "/_catalogue/"}:
+            return self._catalogue_error(503)
         if self.publisher is not None and raw_path in {"/_catalogue", "/_catalogue/"}:
             if len(self.path) > 4096:
                 return self._catalogue_error(400)
@@ -409,17 +414,28 @@ def _server_config(arguments: argparse.Namespace, argv: Sequence[str]) -> Server
     )
     directory = cast(Path, arguments.directory)
     publisher = None
+    catalogue_unavailable = False
     configured_path = os.environ.get(_PUBLISHER_CONFIG_ENV)
     if configured_path:
         from html_publish.cli import load_config
 
         try:
             publisher = load_config(Path(configured_path))
-        except (OSError, PublishError, UnicodeError, ValueError, RecursionError) as error:
-            raise ValueError("configured publisher config could not be loaded") from error
-        if (publisher.runtime / "public").resolve() != directory.resolve():
-            raise ValueError("configured publisher runtime does not match served directory")
-    return ServerConfig(directory, cast(str, arguments.bind), cast(int, arguments.port), publisher)
+            if (publisher.runtime / "public").resolve() != directory.resolve():
+                raise ValueError("managed publisher runtime does not match served directory")
+        except (OSError, PublishError, UnicodeError, ValueError, RecursionError, RuntimeError):
+            log.warning(
+                "managed catalogue config unavailable or mismatched; static serving remains enabled"
+            )
+            publisher = None
+            catalogue_unavailable = True
+    return ServerConfig(
+        directory,
+        cast(str, arguments.bind),
+        cast(int, arguments.port),
+        publisher,
+        catalogue_unavailable,
+    )
 
 
 class BindError(Exception):
@@ -432,6 +448,7 @@ def serve(config: ServerConfig) -> int:
         PublicationRequestHandler,
         directory=str(config.directory),
         publisher=config.publisher,
+        catalogue_unavailable=config.catalogue_unavailable,
     )
     try:
         server = PublicationHTTPServer((config.bind, config.port), handler)

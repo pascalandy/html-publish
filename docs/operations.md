@@ -80,11 +80,14 @@ The deployment module builds a wheel on `om1` and exports the locked runtime req
 The systemd unit keeps the backward-compatible `python -m html_publish.server --directory <public>`
 command and passes the nonsecret publisher-config path through
 `HTML_PUBLISH_PUBLISHER_CONFIG`. Older wheels ignore that environment variable and continue to
-serve stable files with the same command. New wheels load and validate the config against the exact
-served runtime before adding the catalogue at `<base_url>_catalogue/`, for example
+serve stable files with the same command. A new wheel enables the catalogue only when the config
+loads and its runtime matches the exact served public directory. If the managed config is invalid
+or mismatched, static pages continue from that explicit directory and `/_catalogue/` returns a
+generic 503 without probing another archive. With the environment variable absent, standalone
+file-only behavior remains unchanged. The catalogue is available at `<base_url>_catalogue/`, for example
 `https://publisher.example/pages/_catalogue/`. It reads Git history and selection on each request;
-it needs no archive migration. The standalone `html-publish-server --directory` and native file
-serving do not implement the catalogue.
+it needs no archive migration. An unconfigured standalone `html-publish-server --directory` and
+native file serving do not implement the catalogue.
 
 Before upgrading this route, run the existing manual on-`main` Checks procedure above against the
 exact candidate SHA. Install only that checked SHA with the authorized `html-publish-install`

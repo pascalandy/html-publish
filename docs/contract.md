@@ -787,6 +787,14 @@ catalogue is a per-request projection of reachable archive history and current p
 it creates no generated file, separate data store, or self-card. It shows one card per publication
 name.
 
+The managed `html-publish-server --directory` invocation may receive its publisher config through
+`HTML_PUBLISH_PUBLISHER_CONFIG`. A valid config whose runtime matches the explicit public directory
+enables the catalogue. If the config is unreadable, invalid, or names another runtime, the server
+keeps serving files from the explicit directory and returns a generic 503 for `/_catalogue/`;
+the disabled catalogue does not query an archive. With the environment variable absent, standalone
+file-only behavior remains unchanged. Invalid public directories and bind failures still fail
+startup.
+
 For a healthy selected site, the card uses the newest matching reachable site and record pair.
 Otherwise it shows the latest archived pair and labels it `Archivée`; degraded state may be
 labeled `Indisponible`. Archived and degraded cards have no open-publication link. Each card shows
