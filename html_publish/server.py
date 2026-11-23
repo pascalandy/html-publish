@@ -4,6 +4,7 @@ import argparse
 import functools
 import http.server
 import io
+import ipaddress
 import logging
 import os
 import re
@@ -33,6 +34,19 @@ _HEALTH_BODY = b"ok\n"
 _PUBLISHER_CONFIG_ENV = "HTML_PUBLISH_PUBLISHER_CONFIG"
 _INDEX_PAGES = ("index.html", "index.htm")
 _SINGLE_BYTE_RANGE = re.compile(r"bytes=(?:([0-9]+)-([0-9]*)|-([0-9]+))", re.IGNORECASE)
+
+
+def _is_loopback_address(server_address: object) -> bool:
+    """Classify the numeric address reported by an already-bound listener."""
+    if not isinstance(server_address, tuple) or not server_address:
+        return False
+    host = cast(tuple[object, ...], server_address)[0]
+    if not isinstance(host, str):
+        return False
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 @dataclass(frozen=True)
@@ -87,9 +101,11 @@ class PublicationRequestHandler(http.server.SimpleHTTPRequestHandler):
             return io.BytesIO(_HEALTH_BODY)
 
         raw_path, query_separator, raw_query = self.path.partition("?")
-        if self.catalogue_unavailable and raw_path in {"/_catalogue", "/_catalogue/"}:
+        catalogue_path = raw_path in {"/_catalogue", "/_catalogue/"}
+        catalogue_on_listener = catalogue_path and _is_loopback_address(self.server.server_address)
+        if catalogue_on_listener and self.catalogue_unavailable:
             return self._catalogue_error(503)
-        if self.publisher is not None and raw_path in {"/_catalogue", "/_catalogue/"}:
+        if catalogue_on_listener and self.publisher is not None:
             if len(self.path) > 4096:
                 return self._catalogue_error(400)
             if any(
@@ -382,7 +398,11 @@ def _parser() -> Parser:
         type=_directory,
         help="publisher runtime/public directory to serve",
     )
-    parser.add_argument("--bind", default="127.0.0.1", help="listen address (default: %(default)s)")
+    parser.add_argument(
+        "--bind",
+        default="127.0.0.1",
+        help="listen address; non-loopback listeners serve files without the catalogue",
+    )
     parser.add_argument(
         "--port",
         default=8000,

@@ -81,13 +81,15 @@ The systemd unit keeps the backward-compatible `python -m html_publish.server --
 command and passes the nonsecret publisher-config path through
 `HTML_PUBLISH_PUBLISHER_CONFIG`. Older wheels ignore that environment variable and continue to
 serve stable files with the same command. A new wheel enables the catalogue only when the config
-loads and its runtime matches the exact served public directory. If the managed config is invalid
-or mismatched, static pages continue from that explicit directory and `/_catalogue/` returns a
-generic 503 without probing another archive. With the environment variable absent, standalone
-file-only behavior remains unchanged. The catalogue is available at `<base_url>_catalogue/`, for example
-`https://publisher.example/pages/_catalogue/`. It reads Git history and selection on each request;
-it needs no archive migration. An unconfigured standalone `html-publish-server --directory` and
-native file serving do not implement the catalogue.
+loads, its runtime matches the exact served public directory, and the actual bound listener address
+is loopback. `html-publish --config <publisher.json> host serve` also enables the catalogue on an
+actual loopback listener. If the managed config is invalid or mismatched on loopback, static pages
+continue from the explicit directory and `/_catalogue/` returns a generic 503 without probing
+another archive. On a wildcard or non-loopback listener, static serving stays unchanged, the
+catalogue route returns 404, and no catalogue archive is read. With the environment variable absent,
+standalone file-only behavior remains unchanged and the route returns 404. The catalogue is available
+at `<base_url>_catalogue/`, for example `https://publisher.example/pages/_catalogue/`. It reads Git
+history and selection on each request; it needs no archive migration.
 
 Before upgrading this route, run the existing manual on-`main` Checks procedure above against the
 exact candidate SHA. Install only that checked SHA with the authorized `html-publish-install`
