@@ -353,7 +353,7 @@ main,form,label,article{{min-width:0}}
 form{{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,12rem),1fr));gap:.75rem;
 margin:1rem 0 2rem}}
 label{{display:grid;gap:.25rem}}input,select,button{{font:inherit;padding:.55rem;min-width:0;max-width:100%}}
-input,select{{width:100%}}article{{border-top:1px solid #bbb;padding:1rem 0}}
+input,select{{width:100%;box-sizing:border-box}}article{{border-top:1px solid #bbb;padding:1rem 0}}
 nav{{display:flex;flex-wrap:wrap;gap:1rem}}h2,.publication-url,.url,.tag{{overflow-wrap:anywhere;word-break:break-word}}
 .facets{{display:flex;flex-wrap:wrap;gap:.4rem;align-items:baseline}}
 .tag{{border:1px solid #aaa;padding:.1rem .4rem;max-width:100%}}
