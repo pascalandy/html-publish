@@ -492,7 +492,10 @@ class HelperCliTest(ReceiptFixture):
                         if reported
                         else ""
                     )
-                    + f"Path({str(pid_file)!r}).write_text(str(os.getpid()))\n"
+                    + f"pid_file = Path({str(pid_file)!r})\n"
+                    + "pid_record = pid_file.with_name(pid_file.name + '.tmp')\n"
+                    + "pid_record.write_text(str(os.getpid()))\n"
+                    + "os.replace(pid_record, pid_file)\n"
                     + "time.sleep(0.8)\n"
                     + f"Path({str(marker)!r}).write_text('late effect')\n"
                     + "time.sleep(30)\n"
