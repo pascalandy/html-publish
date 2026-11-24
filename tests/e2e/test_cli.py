@@ -5,6 +5,7 @@ import errno
 import functools
 import gzip
 import http.server
+import itertools
 import json
 import os
 import shlex
@@ -2909,6 +2910,142 @@ class PublisherCliTest(unittest.TestCase):
         history = self.run_cli("history", "--name", "report")
         self.assertEqual(history.returncode, 0, history.stdout)
         self.assertEqual(len(self.payload(history)["entries"]), 2)
+
+    def test_retry_removed_path_check_exhausts_bounded_file_sets(self) -> None:
+        stale_paths: set[str] = set()
+
+        class StaleHandler(QuietHandler):
+            def do_GET(self) -> None:
+                if self.path in stale_paths:
+                    body = b"stale retired file\n"
+                    self.send_response(200)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                super().do_GET()
+
+        self.server.RequestHandlerClass = functools.partial(
+            StaleHandler, directory=str(self.runtime / "public")
+        )
+        optional_paths = ("shared.css", "retired.css")
+        path_sets = tuple(
+            frozenset(
+                path for path, included in zip(optional_paths, choices, strict=True) if included
+            )
+            for choices in itertools.product((False, True), repeat=len(optional_paths))
+        )
+        cases = [(previous, selected) for previous in path_sets for selected in path_sets]
+        cases.append((frozenset({"assets"}), frozenset({"assets/theme.css"})))
+
+        for case_index, (previous_assets, selected_assets) in enumerate(cases):
+            with self.subTest(previous=sorted(previous_assets), selected=sorted(selected_assets)):
+                name = f"bounded-{case_index:02d}"
+                source = self.root / name
+                source.mkdir()
+                bodies = {
+                    "index.html": b"<!doctype html><h1>bounded retry</h1>\n",
+                    **{
+                        path: f"{name}:{path}\n".encode()
+                        for path in previous_assets | selected_assets
+                    },
+                }
+
+                def write_site(
+                    site_root: Path,
+                    paths: frozenset[str],
+                    file_bodies: dict[str, bytes],
+                ) -> None:
+                    shutil.rmtree(site_root)
+                    site_root.mkdir()
+                    for path in paths | {"index.html"}:
+                        destination = site_root / path
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        destination.write_bytes(file_bodies[path])
+
+                arguments = (
+                    "--name",
+                    name,
+                    "--source",
+                    str(source),
+                    "--target",
+                    self.base_url,
+                )
+                write_site(source, previous_assets, bodies)
+                first = self.run_cli("publish", *arguments)
+                self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+                previous_revision = self.payload(first)["active_revision"]
+
+                write_site(source, selected_assets, bodies)
+                updated = self.run_cli(
+                    "publish",
+                    *arguments,
+                    "--expected-revision",
+                    previous_revision,
+                )
+                self.assertEqual(updated.returncode, 0, updated.stdout + updated.stderr)
+                updated_payload = self.payload(updated)
+                expected_update = "unchanged" if previous_assets == selected_assets else "published"
+                self.assertEqual(updated_payload["outcome"], expected_update)
+                selected_revision = updated_payload["active_revision"]
+                selected_link = self.runtime / "public" / name
+                selected_link_target = os.readlink(selected_link)
+                selected_link_stat = selected_link.lstat()
+                expected_removed = {
+                    path
+                    for path in previous_assets - selected_assets
+                    if not any(new_path.startswith(f"{path}/") for new_path in selected_assets)
+                }
+                stale_subsets: list[frozenset[str]] = [frozenset()]
+                stale_subsets.extend(frozenset({path}) for path in sorted(expected_removed))
+                for stale_subset_index, stale_subset in enumerate(stale_subsets):
+                    with self.subTest(
+                        previous=sorted(previous_assets),
+                        selected=sorted(selected_assets),
+                        stale=sorted(stale_subset),
+                    ):
+                        stale_paths.clear()
+                        stale_paths.update(f"/{name}/{path}" for path in stale_subset)
+                        archive_ref_before_retry = self.git("rev-parse", "refs/heads/published")
+                        retry = self.run_cli(
+                            "publish",
+                            *arguments,
+                            "--expected-revision",
+                            previous_revision,
+                            "--request-id",
+                            f"retry-{case_index:02d}-{stale_subset_index:02d}",
+                        )
+                        retry_payload = self.payload(retry)
+                        if stale_subset:
+                            self.assertEqual(retry.returncode, 1, retry.stdout + retry.stderr)
+                            self.assertEqual(retry_payload["error"]["code"], "delivery_failure")
+                            self.assertEqual(retry_payload["verification"]["result"], "failed")
+                        else:
+                            self.assertEqual(retry.returncode, 0, retry.stdout + retry.stderr)
+                            self.assertEqual(retry_payload["outcome"], "unchanged")
+                            self.assertEqual(retry_payload["verification"]["result"], "passed")
+                        self.assertEqual(retry_payload["active_revision"], selected_revision)
+                        self.assertEqual(
+                            retry_payload["effects"],
+                            {"archive_advanced": False, "activated": False},
+                        )
+                        self.assertEqual(
+                            self.git("rev-parse", "refs/heads/published"),
+                            archive_ref_before_retry,
+                            "an identical retry must not move the archive ref",
+                        )
+                        self.assertEqual(
+                            os.readlink(selected_link),
+                            selected_link_target,
+                            "an identical retry must preserve the selected link target",
+                        )
+                        link_stat_after_retry = selected_link.lstat()
+                        self.assertEqual(
+                            (link_stat_after_retry.st_dev, link_stat_after_retry.st_ino),
+                            (selected_link_stat.st_dev, selected_link_stat.st_ino),
+                            "an identical retry must preserve the selected link inode",
+                        )
+                    stale_paths.clear()
 
     def test_file_and_directory_transitions_appear_in_plan_differences(self) -> None:
         file_site = self.root / "file-site"
