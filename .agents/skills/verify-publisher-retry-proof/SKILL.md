@@ -21,9 +21,9 @@ From the repository root, run:
 uv run python -m unittest tests.e2e.test_cli.PublisherCliTest.test_retry_removed_path_check_exhausts_bounded_file_sets
 ```
 
-The test drives `python -m html_publish`, a temporary bare Git archive, and controlled loopback HTTP. It exhausts all 16 pairs formed by predecessor and selected sets of `shared.css` and `retired.css`. For each pair, it retries once with no stale paths and once with each retired path stale by itself. It also checks the transition from an `assets` file to `assets/theme.css`. The independent expected set comes from the contract's path-set rule. The CLI result, selected revision, effects, and per-page Git commit count come from the real publisher.
+The test drives `python -m html_publish`, a temporary bare Git archive, and controlled loopback HTTP. It exhausts all 16 pairs formed by predecessor and selected sets of `shared.css` and `retired.css`. For each pair, it retries once with no stale paths and once with each retired path stale by itself. It also checks the transition from an `assets` file to `assets/theme.css`. The independent expected set comes from the contract's path-set rule. For each retry, the test compares the complete `refs/heads/published` object ID before and after. It also compares the selected symlink's `readlink` target and `lstat` device and inode with the state after the clean update.
 
-The check fails when a retired path is still served but the retry succeeds, or when a retry creates another archive commit or activation. It passes when stale retired paths cause verification failure and cases with no retired paths pass without another mutation.
+The check fails when a retired path is still served but the retry succeeds, when any commit moves `refs/heads/published`, or when the retry replaces the selected symlink even with an equal target. It passes when stale retired paths cause verification failure and cases with no retired paths pass without changing the archive ref or selected link.
 
 The existing integration anchor is `tests.e2e.test_cli.PublisherCliTest.test_identical_retry_preserves_known_removed_path_verification`. Keep it. It covers no expectation, the selected revision, an unreachable revision, another publication's revision, standalone `verify` scope, and the repaired-host retry. The bounded set check does not enumerate those expectation cases.
 

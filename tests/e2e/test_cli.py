@@ -2988,6 +2988,9 @@ class PublisherCliTest(unittest.TestCase):
                 expected_update = "unchanged" if previous_assets == selected_assets else "published"
                 self.assertEqual(updated_payload["outcome"], expected_update)
                 selected_revision = updated_payload["active_revision"]
+                selected_link = self.runtime / "public" / name
+                selected_link_target = os.readlink(selected_link)
+                selected_link_stat = selected_link.lstat()
                 expected_removed = {
                     path
                     for path in previous_assets - selected_assets
@@ -2995,7 +2998,6 @@ class PublisherCliTest(unittest.TestCase):
                 }
                 stale_subsets: list[frozenset[str]] = [frozenset()]
                 stale_subsets.extend(frozenset({path}) for path in sorted(expected_removed))
-                expected_commits = "1" if previous_assets == selected_assets else "2"
                 for stale_subset_index, stale_subset in enumerate(stale_subsets):
                     with self.subTest(
                         previous=sorted(previous_assets),
@@ -3004,6 +3006,7 @@ class PublisherCliTest(unittest.TestCase):
                     ):
                         stale_paths.clear()
                         stale_paths.update(f"/{name}/{path}" for path in stale_subset)
+                        archive_ref_before_retry = self.git("rev-parse", "refs/heads/published")
                         retry = self.run_cli(
                             "publish",
                             *arguments,
@@ -3027,8 +3030,20 @@ class PublisherCliTest(unittest.TestCase):
                             {"archive_advanced": False, "activated": False},
                         )
                         self.assertEqual(
-                            self.git("rev-list", "--count", "refs/heads/published", "--", name),
-                            expected_commits,
+                            self.git("rev-parse", "refs/heads/published"),
+                            archive_ref_before_retry,
+                            "an identical retry must not move the archive ref",
+                        )
+                        self.assertEqual(
+                            os.readlink(selected_link),
+                            selected_link_target,
+                            "an identical retry must preserve the selected link target",
+                        )
+                        link_stat_after_retry = selected_link.lstat()
+                        self.assertEqual(
+                            (link_stat_after_retry.st_dev, link_stat_after_retry.st_ino),
+                            (selected_link_stat.st_dev, selected_link_stat.st_ino),
+                            "an identical retry must preserve the selected link inode",
                         )
                     stale_paths.clear()
 
