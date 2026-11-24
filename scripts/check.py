@@ -26,8 +26,8 @@ EPILOG = """\
 Each check is one row of CHECKS in scripts/check.py; add a row to add a check.
 Checks run in order: formatting and lint, the test rules, types, isolated tests,
 E2E tests, then the E2E artifact audit. A failing check does not stop the others.
---fast skips the E2E rows; lefthook runs it before each commit and runs the full
-verdict before each push.
+--fast skips the E2E rows; lefthook runs it before each commit. The pre-push hook
+skips the full verdict only when a push deletes refs and updates no others.
 
 examples:
   just check

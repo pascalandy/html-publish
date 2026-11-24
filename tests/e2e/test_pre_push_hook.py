@@ -59,6 +59,15 @@ class PrePushHookTest(unittest.TestCase):
         )
 
     def test_deletion_only_push_skips_check_and_other_refs_run_it(self) -> None:
+        self.assertIn(
+            "pre-push:\n"
+            "  commands:\n"
+            "    check:\n"
+            "      run: scripts/pre-push-check.sh\n"
+            "      use_stdin: true",
+            (ROOT / "lefthook.yml").read_text(encoding="utf-8"),
+            "Lefthook must forward Git's ref-update input to the pre-push check",
+        )
         for object_format in FORMATS:
             with self.subTest(object_format=object_format):
                 root = Path(

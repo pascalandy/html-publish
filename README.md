@@ -27,7 +27,7 @@ html-publish skills get core
 just check
 ```
 
-`just check` prints nothing when every check passes; `just check -v` streams each check on stderr. `just check --fast` skips the E2E checks. Run `lefthook install` once per clone to run the fast checks before each commit and the full verdict before each push. [Testing](docs/testing.md) explains the test rules the checks enforce
+`just check` prints nothing when every check passes; `just check -v` streams each check on stderr. `just check --fast` skips the E2E checks. Run `lefthook install` once per clone. The pre-commit hook runs the fast check. The pre-push hook skips the full check only when a push deletes refs and updates no others. [Testing](docs/testing.md) explains the test rules the checks enforce
 
 ## Set up a target
 
