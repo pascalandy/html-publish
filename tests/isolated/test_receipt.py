@@ -812,27 +812,87 @@ class HelperCliTest(ReceiptFixture):
     def test_timeout_terminates_descendant_process_group(self) -> None:
         """Proves F10."""
 
+        ready = self.root / "child-ready"
         marker = self.root / "child-finished"
         pid_file = self.root / "child.pid"
-        self.fake.write_text(
-            "import subprocess, sys, time\n"
+        publisher_pid_file = self.root / "publisher.pid"
+        child_code = (
+            "import os, time\n"
             "from pathlib import Path\n"
-            f"marker=Path({str(marker)!r})\n"
-            "child=subprocess.Popen([sys.executable, '-c', "
-            'f"import time; from pathlib import Path; time.sleep(0.5); '
-            "Path({str(marker)!r}).write_text('survived')\"])\n"
-            f"Path({str(pid_file)!r}).write_text(str(child.pid))\n"
-            "time.sleep(5)\n"
+            f"ready = Path({str(ready)!r})\n"
+            f"marker = Path({str(marker)!r})\n"
+            "parent = os.getppid()\n"
+            "ready.write_text(str(os.getpid()))\n"
+            "while os.getppid() == parent:\n"
+            "    time.sleep(0.005)\n"
+            "marker.write_text('survived')\n"
         )
-        self.write_config(command_seconds=0.1)
+        self.fake.write_text(
+            "import os, signal, subprocess, sys, time\n"
+            "from pathlib import Path\n"
+            f"ready = Path({str(ready)!r})\n"
+            f"Path({str(publisher_pid_file)!r}).write_text(str(os.getpid()))\n"
+            f"child = subprocess.Popen([sys.executable, '-c', {child_code!r}])\n"
+            f"Path({str(pid_file)!r}).write_text(str(child.pid))\n"
+            "deadline = time.monotonic() + 1.5\n"
+            "while not ready.exists() and time.monotonic() < deadline:\n"
+            "    time.sleep(0.005)\n"
+            "if not ready.exists(): raise SystemExit('child did not become ready')\n"
+            "signal.pause()\n"
+        )
+        self.write_config(command_seconds=2)
         source = self.root / "child.html"
         source.write_text("child")
 
-        result = self.run_helper("publish", str(source), "--new", "child-timeout")
-        time.sleep(0.65)
+        process = subprocess.Popen(
+            [
+                *PUBLISHER,
+                "--config",
+                str(self.config),
+                "artifact",
+                "publish",
+                str(source),
+                "--new",
+                "child-timeout",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            try:
+                stdout, stderr = process.communicate(timeout=8)
+            except subprocess.TimeoutExpired:
+                self.fail("publisher CLI exceeded the 8s test bound")
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            for owned_pid_file in (publisher_pid_file, pid_file):
+                if not owned_pid_file.exists():
+                    continue
+                try:
+                    owned_pid = int(owned_pid_file.read_text())
+                except ValueError:
+                    continue
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    if owned_pid_file == publisher_pid_file:
+                        os.killpg(owned_pid, signal.SIGKILL)
+                    else:
+                        os.kill(owned_pid, signal.SIGKILL)
 
-        self.assertEqual(result.returncode, 1)
-        self.assertTrue(pid_file.exists())
+        self.assertEqual(process.returncode, 1, stdout + stderr)
+        self.assertTrue(stdout, stderr)
+        payload = json.loads(stdout)
+        error = payload["error"]
+        publisher = payload["publisher"]
+        assert isinstance(error, dict) and isinstance(publisher, dict)
+        self.assertEqual(error["code"], "publisher_timeout", payload)
+        self.assertTrue(pid_file.exists(), stdout + stderr)
+        self.assertTrue(ready.exists(), stdout + stderr)
+        self.assertTrue(publisher["group_stopped"], payload)
+        state = self.receipt(Path(str(source) + ".publish"))
+        self.assertIsNotNone(state["pending"])
         self.assertFalse(marker.exists())
 
     def test_output_limit_stops_process_without_spooling_unbounded_bytes(self) -> None:
