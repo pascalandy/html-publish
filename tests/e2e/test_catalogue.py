@@ -5,6 +5,8 @@ The test uses real CLI processes, temporary Git and runtime directories, and loo
 
 from __future__ import annotations
 
+import errno
+import http.client
 import json
 import os
 import re
@@ -36,24 +38,27 @@ class PublicationCatalogueTest(unittest.TestCase):
             listener.bind(("127.0.0.1", 0))
             self.port = listener.getsockname()[1]
         self.base_url = f"http://127.0.0.1:{self.port}/"
+        self._init_publisher(self.config, self.base_url)
+        self.server: subprocess.Popen[str] | None = None
+        self.last_server_stderr = ""
+        self.addCleanup(self._stop_server)
+
+    def _init_publisher(self, config: Path, base_url: str) -> None:
         self._cli(
             "config",
             "init",
             "--role",
             "publisher",
             "--config",
-            str(self.config),
+            str(config),
             "--archive",
             str(self.archive),
             "--runtime",
             str(self.runtime),
             "--base-url",
-            self.base_url,
+            base_url,
             "--allow-http",
         )
-        self.server: subprocess.Popen[str] | None = None
-        self.last_server_stderr = ""
-        self.addCleanup(self._stop_server)
 
     def _cli(self, *arguments: str) -> dict[str, object]:
         result = subprocess.run(
@@ -105,7 +110,7 @@ class PublicationCatalogueTest(unittest.TestCase):
             environment["HTML_PUBLISH_PUBLISHER_CONFIG"] = str(self.config)
         else:
             environment.pop("HTML_PUBLISH_PUBLISHER_CONFIG", None)
-        self.server = subprocess.Popen(
+        self._launch_server(
             [
                 sys.executable,
                 "-m",
@@ -117,6 +122,16 @@ class PublicationCatalogueTest(unittest.TestCase):
                 "--port",
                 str(self.port),
             ],
+            environment,
+            "127.0.0.1",
+            self.port,
+        )
+
+    def _launch_server(
+        self, argv: list[str], environment: dict[str, str], host: str, port: int
+    ) -> None:
+        self.server = subprocess.Popen(
+            argv,
             cwd=REPO_ROOT,
             env=environment,
             stdout=subprocess.PIPE,
@@ -129,13 +144,13 @@ class PublicationCatalogueTest(unittest.TestCase):
                 stdout, stderr = self.server.communicate()
                 self.last_server_stderr = stderr
                 self.server = None
-                self.fail(f"host serve exited early: {stderr}\n{stdout}")
-            with socket.socket() as probe:
-                probe.settimeout(0.25)
-                if probe.connect_ex(("127.0.0.1", self.port)) == 0:
+                self.fail(f"server exited early: {stderr}\n{stdout}")
+            try:
+                with socket.create_connection((host, port), timeout=0.25):
                     return
-            time.sleep(0.05)
-        self.fail("host serve did not answer the synthetic publication")
+            except OSError:
+                time.sleep(0.05)
+        self.fail("server did not answer the synthetic publication")
 
     def _stop_server(self) -> None:
         server = self.server
@@ -158,6 +173,62 @@ class PublicationCatalogueTest(unittest.TestCase):
                 return response.status, response.read().decode("utf-8")
         except HTTPError as error:
             return error.code, error.read().decode("utf-8")
+
+    def test_ipv6_loopback_serves_page_and_catalogue_from_both_commands(self) -> None:
+        try:
+            with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as listener:
+                listener.bind(("::1", 0))
+                port = int(listener.getsockname()[1])
+        except OSError as error:
+            if error.errno in {errno.EAFNOSUPPORT, errno.EPROTONOSUPPORT, errno.EADDRNOTAVAIL}:
+                self.skipTest(f"IPv6 loopback is unavailable: {error}")
+            raise
+
+        fixture = self._page("IPv6 loopback fixture").encode("utf-8")
+        source = self.root / "ipv6.html"
+        source.write_bytes(fixture)
+        self._start_server()
+        self._publish("ipv6", source)
+        self._stop_server()
+
+        config = self.root / "publisher-ipv6.json"
+        self._init_publisher(config, f"http://[::1]:{port}/")
+        for module, arguments, environment in (
+            (
+                "html_publish.server",
+                ["--directory", str(self.runtime / "public")],
+                {**os.environ, "HTML_PUBLISH_PUBLISHER_CONFIG": str(config)},
+            ),
+            ("html_publish", ["--config", str(config), "host", "serve"], os.environ.copy()),
+        ):
+            with self.subTest(module=module):
+                connection = http.client.HTTPConnection("::1", port, timeout=2)
+                try:
+                    self._launch_server(
+                        [
+                            sys.executable,
+                            "-m",
+                            module,
+                            *arguments,
+                            "--bind",
+                            "::1",
+                            "--port",
+                            str(port),
+                        ],
+                        environment,
+                        "::1",
+                        port,
+                    )
+                    connection.request("GET", "/ipv6/")
+                    page = connection.getresponse()
+                    self.assertEqual((page.status, page.read()), (200, fixture))
+                    connection.request("GET", "/_catalogue/")
+                    catalogue = connection.getresponse()
+                    self.assertEqual(catalogue.status, 200)
+                    self.assertEqual(catalogue.read().count(b'data-publication="ipv6"'), 1)
+                finally:
+                    connection.close()
+                    self._stop_server()
 
     def test_catalogue_tracks_update_restore_and_archived_inventory(self) -> None:
         self._start_server()

@@ -68,11 +68,15 @@ class PublicationHTTPServer(http.server.ThreadingHTTPServer):
         self.server_port = port
 
 
+class _IPv6PublicationHTTPServer(PublicationHTTPServer):
+    address_family = socket.AF_INET6
+
+
 class PublicationRequestHandler(http.server.SimpleHTTPRequestHandler):
     def __init__(
         self,
         request: socket.socket,
-        client_address: tuple[str, int],
+        client_address: tuple[str, int] | tuple[str, int, int, int],
         server: socketserver.BaseServer,
         *,
         directory: str,
@@ -401,7 +405,10 @@ def _parser() -> Parser:
     parser.add_argument(
         "--bind",
         default="127.0.0.1",
-        help="listen address; non-loopback listeners serve files without the catalogue",
+        help=(
+            "listen address (default: %(default)s, IPv6 loopback: ::1). "
+            "Non-loopback listeners serve files without the catalogue"
+        ),
     )
     parser.add_argument(
         "--port",
@@ -470,11 +477,14 @@ def serve(config: ServerConfig) -> int:
         publisher=config.publisher,
         catalogue_unavailable=config.catalogue_unavailable,
     )
+    ipv6 = ":" in config.bind
+    server_type = _IPv6PublicationHTTPServer if ipv6 else PublicationHTTPServer
+    endpoint_host = f"[{config.bind}]" if ipv6 else config.bind
     try:
-        server = PublicationHTTPServer((config.bind, config.port), handler)
+        server = server_type((config.bind, config.port), handler)
     except OSError as error:
-        raise BindError(f"cannot listen on {config.bind}:{config.port}: {error}") from error
-    log.info("serving %s on http://%s:%d/", config.directory, config.bind, server.server_port)
+        raise BindError(f"cannot listen on {endpoint_host}:{config.port}: {error}") from error
+    log.info("serving %s on http://%s:%d/", config.directory, endpoint_host, server.server_port)
     previous = {name: signal.getsignal(name) for name in (signal.SIGINT, signal.SIGTERM)}
     received: list[int] = []
 
