@@ -11,4 +11,5 @@ pre-commit:
 pre-push:
   commands:
     check:
-      run: just check
+      run: scripts/pre-push-check.sh
+      use_stdin: true

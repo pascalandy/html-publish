@@ -4,7 +4,7 @@
 - Read [docs/architecture.md](docs/architecture.md) before changing ownership or state transitions
 - Run `just check` before handing off code changes; the full verdict takes about 3 minutes, so give its shell call a 15-minute timeout
 - Read [docs/testing.md](docs/testing.md) before adding or changing a test; `just check` enforces its rules, and `just check --list` names each check in order
-- Run `lefthook install` once per clone; pre-commit runs `just check --fast` and pre-push runs `just check`
+- Run `lefthook install` once per clone. The pre-commit hook runs `just check --fast`. The pre-push hook runs `just check` unless the push only deletes refs
 - Treat `html_publish/cli.py` as the JSON and command-line boundary
 - Treat `html_publish/store.py` as the only mutation owner
 - Keep controlled HTTP evidence separate from Tailscale, browser, and production evidence
