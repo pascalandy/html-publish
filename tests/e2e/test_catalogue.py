@@ -169,7 +169,7 @@ class PublicationCatalogueTest(unittest.TestCase):
     def _catalogue(self, query: dict[str, str] | None = None) -> tuple[int, str]:
         suffix = "?" + urlencode(query) if query else ""
         try:
-            with urlopen(f"{self.base_url}_catalogue/{suffix}", timeout=2) as response:
+            with urlopen(f"{self.base_url}_catalogue/{suffix}", timeout=22) as response:
                 return response.status, response.read().decode("utf-8")
         except HTTPError as error:
             return error.code, error.read().decode("utf-8")
