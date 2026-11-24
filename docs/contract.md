@@ -642,9 +642,11 @@ requirement to preserve Postplan-owned URLs: replacement produces new private UR
 ## S11. Installed Linux host
 
 `host serve` reads the selected, validated publisher configuration and serves its `runtime/public`
-directory. It defaults to IPv4 loopback. On SIGINT or SIGTERM it stops serving, closes its socket,
-and dies from the signal. It writes an access log only with `--verbose`. Serving does not create
-publisher state or hold a publication lock.
+directory. Both `host serve` and `html-publish-server --directory` default to `127.0.0.1`.
+On hosts with IPv6 loopback, both accept `--bind ::1`. An HTTP URL for that listener uses brackets,
+as in `http://[::1]:4177/` for port 4177. On SIGINT or SIGTERM, `host serve` stops serving,
+closes its socket, and dies from the signal. It writes an access log only with `--verbose`.
+Serving does not create publisher state or hold a publication lock.
 
 `host setup` previews an owned systemd user service. Preview reports its selected paths,
 executable, rendered unit, current state, blockers, and proposed effects without writing files or

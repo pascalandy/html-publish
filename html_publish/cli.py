@@ -718,7 +718,10 @@ def _parser(json_version: bool = False) -> Parser:
     serve_command.add_argument(
         "--bind",
         default="127.0.0.1",
-        help="listen address; non-loopback listeners serve files without the catalogue",
+        help=(
+            "listen address (default: %(default)s, IPv6 loopback: ::1). "
+            "Non-loopback listeners serve files without the catalogue"
+        ),
     )
     serve_command.add_argument(
         "--port",
