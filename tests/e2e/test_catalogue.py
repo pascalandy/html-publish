@@ -247,29 +247,13 @@ class PublicationCatalogueTest(unittest.TestCase):
                 finally:
                     self._stop_server()
 
-    def test_cold_catalogue_shares_history_walks_across_current_pages(self) -> None:
-        self._start_server()
-        page = self.root / "page.html"
-        for index in range(4):
-            page.write_text(self._page(f"Current page {index}"), encoding="utf-8")
-            self._publish(f"page-{index}", page)
-        self._stop_server()
-
-        # Count the costly history walks independently of runner speed.
+    def _start_with_git_shim(self, script: str) -> None:
         git = shutil.which("git")
         assert git is not None
         shim = self.root / "bin"
         shim.mkdir()
-        calls = self.root / "history-walks"
-        calls.touch()
         wrapper = shim / "git"
-        wrapper.write_text(
-            "#!/bin/sh\n"
-            'for arg do case "$arg" in log|rev-list) '
-            f"echo walk >> {shlex.quote(str(calls))} ;; esac; done\n"
-            f'exec {shlex.quote(git)} "$@"\n',
-            encoding="utf-8",
-        )
+        wrapper.write_text("#!/bin/sh\nset -eu\n" + script + f'exec {shlex.quote(git)} "$@"\n')
         wrapper.chmod(0o755)
         self._launch_server(
             [
@@ -287,10 +271,70 @@ class PublicationCatalogueTest(unittest.TestCase):
             "127.0.0.1",
             self.port,
         )
+
+    def test_cold_catalogue_shares_history_walks_across_current_pages(self) -> None:
+        self._start_server()
+        page = self.root / "page.html"
+        for index in range(4):
+            page.write_text(self._page(f"Current page {index}"), encoding="utf-8")
+            self._publish(f"page-{index}", page)
+        self._stop_server()
+
+        # Count the costly history walks independently of runner speed.
+        calls = self.root / "history-walks"
+        calls.touch()
+        self._start_with_git_shim(
+            'for arg do case "$arg" in log|rev-list) '
+            f"echo walk >> {shlex.quote(str(calls))} ;; esac; done\n"
+        )
         status, body = self._catalogue()
         self.assertEqual(status, 200)
         self.assertEqual(body.count("data-publication="), 4)
         self.assertLessEqual(len(calls.read_text().splitlines()), 2)
+
+    def test_catalogue_reads_archive_after_concurrent_activation(self) -> None:
+        self._start_server()
+        page = self.root / "page.html"
+        page.write_text(self._page("First selection"), encoding="utf-8")
+        initial = self._publish("concurrent", page)
+        self._stop_server()
+
+        # After the reader receives the original head, let the real publisher
+        # commit and activate its update before the reader observes the public link.
+        page.write_text(self._page("Second selection"), encoding="utf-8")
+        git = shutil.which("git")
+        assert git is not None
+        publish = [
+            sys.executable,
+            "-m",
+            "html_publish",
+            "--config",
+            str(self.config),
+            "publish",
+            "--name",
+            "concurrent",
+            "--source",
+            str(page),
+            "--target",
+            self.base_url,
+            "--expected-revision",
+            str(initial["active_revision"]),
+        ]
+        triggered = shlex.quote(str(self.root / "triggered"))
+        self._start_with_git_shim(
+            "for arg do\n"
+            f'  if [ "$arg" = "rev-parse" ] && [ ! -e {triggered} ]; then\n'
+            f"    touch {triggered}\n"
+            f'    {shlex.quote(git)} "$@"\n'
+            f"    PATH={shlex.quote(os.environ['PATH'])} {shlex.join(publish)} >/dev/null\n"
+            "    exit 0\n"
+            "  fi\n"
+            "done\n"
+        )
+        status, body = self._catalogue()
+        self.assertEqual(status, 200)
+        self.assertIn("Second selection", body)
+        self.assertIn(f'href="{self.base_url}concurrent/"', body)
 
     def test_catalogue_tracks_update_restore_and_archived_inventory(self) -> None:
         self._start_server()
@@ -528,7 +572,17 @@ content='{"title":"Ignored metadata title","type":"report"}'>
         self.assertNotIn("<script", body.lower())
         self.assertNotIn("<link", body.lower())
 
-        os.unlink(self.runtime / "public" / "demo")
+        # Activation can lag behind an archive commit. An earlier selection must
+        # display its own metadata, even though the archived head restored A.
+        demo_link = self.runtime / "public" / "demo"
+        demo_link.unlink()
+        demo_link.symlink_to(Path("../releases") / str(published_b["active_revision"]))
+        selected_status, selected = self._catalogue({"project": "Mixtape"})
+        self.assertEqual(selected_status, 200)
+        self.assertIn("Budget B", selected)
+        self.assertNotIn("Budget A", selected)
+        self.assertIn(f'href="{self.base_url}demo/"', selected)
+        demo_link.unlink()
         cyclic_selection = self.runtime / "public" / "legacy"
         self.assertTrue(cyclic_selection.is_symlink())
         cyclic_selection.unlink()

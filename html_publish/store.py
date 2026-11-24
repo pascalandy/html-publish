@@ -11,6 +11,7 @@ import tempfile
 import time
 import uuid
 from collections.abc import Generator
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Literal, cast
@@ -67,6 +68,21 @@ _CATALOGUE_PREFIX_BYTES = 64 * 1024
 
 
 log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _CatalogueChange:
+    name: Name
+    commit: str
+    date: str
+
+
+@dataclass(frozen=True)
+class _CatalogueRevision:
+    site: str
+    record: str | None
+    date: str
+    state: str
 
 
 def _catalogue_provenance_entry(prefix: bytes) -> str | None:
@@ -654,7 +670,7 @@ class PublicationStore:
                     "inspect",
                 )
 
-    def _selection(self, name: Name, *, full: bool) -> Selection:
+    def _selected_release(self, name: Name) -> Selection:
         link = self.config.runtime / "public" / str(name)
         try:
             info = link.lstat()
@@ -672,7 +688,14 @@ class PublicationStore:
             return Selection("degraded", detail=f"The public link is dangling: {error}")
         if resolved.parent != releases or resolved.is_symlink() or not resolved.is_dir():
             return Selection("degraded", detail="The public link escapes the release directory")
-        revision = Revision(resolved.name)
+        return Selection("selected", Revision(resolved.name), resolved)
+
+    def _selection(self, name: Name, *, full: bool) -> Selection:
+        selection = self._selected_release(name)
+        if selection.kind != "selected":
+            return selection
+        revision, resolved = selection.revision, selection.release
+        assert revision is not None and resolved is not None
         if not self.config.archive.exists() or not self._reachable(name, revision):
             return Selection(
                 "degraded",
@@ -1926,26 +1949,6 @@ class PublicationStore:
                 error=failure,
             )
 
-    def _catalogue_commit_date(self, commit: str) -> str:
-        value = (
-            _git.command(
-                self.config.archive,
-                ["show", "-s", "--format=%cI", commit],
-                self.deadline,
-                phase="catalogue",
-            )
-            .decode("ascii", "strict")
-            .strip()
-        )
-        date = datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
-        return date.isoformat(timespec="seconds")
-
-    def _catalogue_page_at(self, name: Name, revision: str, commit: str) -> SavedPage:
-        record_tree = self._page_record_tree_at(commit, name)
-        site = self._site(revision)
-        record = self._record(record_tree) if record_tree is not None else None
-        return SavedPage(site, record, Commit(commit))
-
     def _catalogue_metadata(
         self, name: Name, site: StoredSite, record: StoredRecord | None
     ) -> CatalogueMetadata:
@@ -2001,51 +2004,138 @@ class PublicationStore:
         )
         return markdown_metadata(source_prefix, str(name), fallback.title)
 
+    def _catalogue_changes(
+        self, head: str, pending: set[Name]
+    ) -> Generator[list[_CatalogueChange], None, None]:
+        """Read bounded pages of shared history, newest first."""
+        skip = 0
+        while pending:
+            history = _git.command(
+                self.config.archive,
+                [
+                    "log",
+                    "--no-renames",
+                    "--name-only",
+                    "-z",
+                    "--format=format:%x00%H %cI%x00",
+                    "--max-count=256",
+                    f"--skip={skip}",
+                    head,
+                    "--",
+                    ":(glob)*/site/**",
+                    ":(glob)*/record/**",
+                ],
+                self.deadline,
+            )
+            if not history:
+                return
+            # A filename cannot contain NUL. Each commit adds a leading NUL to
+            # Git's NUL-separated path list and NUL commit separator.
+            commits = history.strip(b"\0").split(b"\0\0\0")
+            changes: list[_CatalogueChange] = []
+            for item in commits:
+                header, _, files = item.partition(b"\0")
+                commit, date = header.decode("ascii").split(" ")
+                names = {
+                    Name(path.partition(b"/")[0].decode("utf-8", "surrogateescape"))
+                    for path in files.removeprefix(b"\n").split(b"\0")
+                    if path
+                }
+                changes.extend(_CatalogueChange(name, commit, date) for name in names & pending)
+            yield changes
+            if len(commits) < 256:
+                return
+            skip += len(commits)
+
+    def _catalogue_revisions(
+        self, head: str, selections: dict[Name, Selection]
+    ) -> dict[Name, _CatalogueRevision]:
+        pending = set(selections)
+        chosen: dict[Name, _CatalogueRevision] = {}
+        for changes in self._catalogue_changes(head, pending):
+            if not changes:
+                continue
+            # Resolve every site's paired record at the *same* historical commit.
+            # Batch-check reads identity and type only, including for private sources.
+            requests = b"".join(
+                f"{change.commit}:{change.name}/{part}\n".encode("ascii")
+                for change in changes
+                for part in ("site", "record")
+            )
+            objects = (
+                _git.command(
+                    self.config.archive,
+                    ["cat-file", "--batch-check=%(objecttype) %(objectname)"],
+                    self.deadline,
+                    input_bytes=requests,
+                )
+                .decode("ascii")
+                .splitlines()
+            )
+            pairs = zip(objects[::2], objects[1::2], strict=True)
+            for change, (site, record) in zip(changes, pairs, strict=True):
+                if change.name not in pending:
+                    continue
+                if not site.startswith("tree "):
+                    if change.name not in chosen:
+                        pending.remove(change.name)
+                    continue
+                site_id = site.removeprefix("tree ")
+                selection = selections[change.name]
+                matches = selection.kind == "selected" and selection.revision == site_id
+                if change.name in chosen and not matches:
+                    continue
+                record_id = None
+                if not record.endswith(" missing"):
+                    if not record.startswith("tree "):
+                        raise PublishError(
+                            "archive_corrupt", "catalogue", "Invalid record tree", "inspect"
+                        )
+                    record_id = record.removeprefix("tree ")
+                state = "archived" if selection.kind == "absent" else "unavailable"
+                if matches:
+                    state = "selected"
+                chosen[change.name] = _CatalogueRevision(site_id, record_id, change.date, state)
+                if matches or selection.kind != "selected":
+                    pending.remove(change.name)
+        return chosen
+
     def catalogue(self) -> tuple[CatalogueEntry, ...]:
         """Project one per-name catalogue view without taking the mutation lock."""
-        if not self.config.archive.exists():
-            return ()
         head = self._head()
         if head is None:
             return ()
-        root_entries = _git.read_tree(self.config.archive, f"{head}^{{tree}}", self.deadline)
+        roots = _git.read_tree(self.config.archive, f"{head}^{{tree}}", self.deadline)
         names = sorted(
-            entry.name
-            for entry in root_entries
+            Name(entry.name)
+            for entry in roots
             if entry.kind == "tree"
             and len(entry.name) <= 80
             and _CATALOGUE_NAME.fullmatch(entry.name) is not None
         )
+        selections = {name: self._selected_release(name) for name in names}
+        # Activation follows the archive write. Pin history *after* observing
+        # the links so a newly selected revision is already reachable.
+        snapshot = self._head()
+        if snapshot is None:
+            return ()
+        chosen = self._catalogue_revisions(snapshot, selections)
         entries: list[CatalogueEntry] = []
-        for raw_name in names:
-            name = Name(raw_name)
-            # Observe selection before saved state: a just-committed publication may not
-            # have advanced its symlink yet.
-            selection = self._selection(name, full=False)
-            saved = self._saved(name)
-            if saved is None:
+        for name in names:
+            revision = chosen.get(name)
+            if revision is None:
                 continue
-            chosen = saved
-            state = "unavailable" if selection.kind == "degraded" else "archived"
-            if selection.kind == "selected" and selection.revision is not None:
-                if str(saved.site.revision) == str(selection.revision):
-                    state = "selected"
-                else:
-                    for commit in self._page_commits(name):
-                        site_revision = self._page_tree_at(commit, name)
-                        if site_revision is None or site_revision != str(selection.revision):
-                            continue
-                        chosen = self._catalogue_page_at(name, site_revision, commit)
-                        state = "selected"
-                        break
-            metadata = self._catalogue_metadata(name, chosen.site, chosen.record)
+            site = self._site(revision.site)
+            record = self._record(revision.record) if revision.record is not None else None
             entries.append(
                 CatalogueEntry(
-                    raw_name,
-                    metadata,
+                    str(name),
+                    self._catalogue_metadata(name, site, record),
                     publication_url(self.config.base_url, name),
-                    state,
-                    self._catalogue_commit_date(str(chosen.commit)),
+                    revision.state,
+                    datetime.fromisoformat(revision.date)
+                    .astimezone(UTC)
+                    .isoformat(timespec="seconds"),
                 )
             )
         return tuple(entries)
