@@ -28,6 +28,8 @@ class CatalogueListenerBindingTest(unittest.TestCase):
         self.public = self.root / "runtime" / "public"
         page = self.public / "witness" / "index.html"
         page.parent.mkdir(parents=True)
+        # Match the canonical path produced by _directory on macOS temp paths.
+        self.public = self.public.resolve()
         self.expected_page = b"synthetic stable page\n"
         page.write_bytes(self.expected_page)
         self.config = Config(
