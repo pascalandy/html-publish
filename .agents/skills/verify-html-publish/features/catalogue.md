@@ -26,8 +26,9 @@ Preconditions:
 - Start an isolated installed-wheel instance with the [verification harness](../SKILL.md#launch).
 - The harness installs a wheel and starts configured `host serve`; this recipe exercises that mode.
 - `tests.e2e.test_catalogue` separately starts the source-checkout managed standalone server with
-  `HTML_PUBLISH_PUBLISHER_CONFIG` and covers matching, invalid, mismatched, and non-loopback
-  catalogue behavior over isolated loopback transport.
+  `HTML_PUBLISH_PUBLISHER_CONFIG` and covers matching, invalid, mismatched, and unconfigured
+  behavior over real loopback HTTP. `tests.isolated.test_server` covers non-loopback catalogue
+  denial and static serving with a mocked post-bind listener address over real loopback transport.
 - Export the harness values, including `INSTANCE`, `CONFIG`, `URL`, `CLI`, and `ARTIFACTS`.
 - Use only synthetic pages in the generated instance. Do not copy real publication data or source paths.
 - Define `HP() { "$CLI" --config "$CONFIG" --json "$@"; }`.
