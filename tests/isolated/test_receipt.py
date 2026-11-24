@@ -860,10 +860,61 @@ class HelperCliTest(ReceiptFixture):
             text=True,
         )
         try:
+            ready_deadline = time.monotonic() + 1.8
+            while not ready.exists() and process.poll() is None:
+                self.assertLess(
+                    time.monotonic(),
+                    ready_deadline,
+                    "fake publisher did not expose a ready child before the timeout",
+                )
+                time.sleep(0.005)
+            self.assertTrue(pid_file.exists(), "fake publisher did not record its child PID")
+            self.assertTrue(ready.exists(), "child readiness marker was not written")
+            child_pid = int(pid_file.read_text())
+
+            def process_state(pid: int) -> str:
+                result = subprocess.run(
+                    ["ps", "-o", "stat=", "-p", str(pid)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=1,
+                )
+                self.assertIn(result.returncode, (0, 1), result.stderr)
+                states = result.stdout.split()
+                if not states:
+                    with self.assertRaises(ProcessLookupError):
+                        os.kill(pid, 0)
+                return states[0] if states else ""
+
+            os.kill(child_pid, signal.SIGSTOP)
+            stopped_deadline = time.monotonic() + 0.5
+            state = process_state(child_pid)
+            while state and not state.startswith("T") and time.monotonic() < stopped_deadline:
+                time.sleep(0.005)
+                state = process_state(child_pid)
+            self.assertTrue(state.startswith("T"), f"child did not stop; ps state={state!r}")
+
             try:
                 stdout, stderr = process.communicate(timeout=8)
             except subprocess.TimeoutExpired:
                 self.fail("publisher CLI exceeded the 8s test bound")
+            self.assertEqual(process.returncode, 1, stdout + stderr)
+            self.assertTrue(stdout, stderr)
+            payload = json.loads(stdout)
+            error = payload["error"]
+            publisher = payload["publisher"]
+            assert isinstance(error, dict) and isinstance(publisher, dict)
+            self.assertEqual(error["code"], "publisher_timeout", payload)
+            self.assertTrue(publisher["group_stopped"], payload)
+            receipt_state = self.receipt(Path(str(source) + ".publish"))
+            self.assertIsNotNone(receipt_state["pending"])
+            child_state = process_state(child_pid)
+            self.assertFalse(
+                child_state and child_state[0] not in "ZX",
+                f"descendant remains alive before fixture cleanup; ps state={child_state!r}",
+            )
+            self.assertFalse(marker.exists())
         finally:
             if process.poll() is None:
                 process.kill()
@@ -880,20 +931,6 @@ class HelperCliTest(ReceiptFixture):
                         os.killpg(owned_pid, signal.SIGKILL)
                     else:
                         os.kill(owned_pid, signal.SIGKILL)
-
-        self.assertEqual(process.returncode, 1, stdout + stderr)
-        self.assertTrue(stdout, stderr)
-        payload = json.loads(stdout)
-        error = payload["error"]
-        publisher = payload["publisher"]
-        assert isinstance(error, dict) and isinstance(publisher, dict)
-        self.assertEqual(error["code"], "publisher_timeout", payload)
-        self.assertTrue(pid_file.exists(), stdout + stderr)
-        self.assertTrue(ready.exists(), stdout + stderr)
-        self.assertTrue(publisher["group_stopped"], payload)
-        state = self.receipt(Path(str(source) + ".publish"))
-        self.assertIsNotNone(state["pending"])
-        self.assertFalse(marker.exists())
 
     def test_output_limit_stops_process_without_spooling_unbounded_bytes(self) -> None:
         """Proves F11."""
