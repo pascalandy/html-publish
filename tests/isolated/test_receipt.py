@@ -761,6 +761,18 @@ class HelperCliTest(ReceiptFixture):
         elapsed = time.monotonic() - started
         time.sleep(1.5)
 
+        stream_diagnostic = json.dumps(
+            {
+                "elapsed_seconds": round(elapsed, 3),
+                "returncode": result.returncode,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+            },
+            sort_keys=True,
+        ).replace(str(self.root), "<fixture>")
+        self.assertLess(elapsed, 1.0, stream_diagnostic)
+        self.assertEqual(result.returncode, 1, stream_diagnostic)
+
         payload = self.payload(result)
 
         def selected_fields(value: object, keys: tuple[str, ...]) -> object:
@@ -778,19 +790,16 @@ class HelperCliTest(ReceiptFixture):
         )
         diagnostic = json.dumps(
             {
-                "assertion": 'payload["outcome"] == "uncertain"',
                 "elapsed_seconds": round(elapsed, 3),
                 "returncode": result.returncode,
                 "outcome": payload.get("outcome"),
                 "error": error_details,
                 "publisher": publisher_details,
-                "stdout": result.stdout.replace(str(self.root), "<fixture>"),
-                "stderr": result.stderr.replace(str(self.root), "<fixture>"),
+                "stdout": result.stdout,
+                "stderr": result.stderr,
             },
             sort_keys=True,
-        )
-        self.assertLess(elapsed, 1.0, diagnostic)
-        self.assertEqual(result.returncode, 1, diagnostic)
+        ).replace(str(self.root), "<fixture>")
         self.assertEqual(payload["outcome"], "uncertain", diagnostic)
         self.assertIsNone(cast(dict[str, object], payload["publisher"])["group_stopped"])
         self.assertIsNotNone(self.receipt(Path(str(source) + ".publish"))["pending"])
