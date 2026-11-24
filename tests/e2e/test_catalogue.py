@@ -10,6 +10,8 @@ import http.client
 import json
 import os
 import re
+import shlex
+import shutil
 import socket
 import subprocess
 import sys
@@ -244,6 +246,51 @@ class PublicationCatalogueTest(unittest.TestCase):
                         catalogue_connection.close()
                 finally:
                     self._stop_server()
+
+    def test_cold_catalogue_shares_history_walks_across_current_pages(self) -> None:
+        self._start_server()
+        page = self.root / "page.html"
+        for index in range(4):
+            page.write_text(self._page(f"Current page {index}"), encoding="utf-8")
+            self._publish(f"page-{index}", page)
+        self._stop_server()
+
+        # Count the costly history walks independently of runner speed.
+        git = shutil.which("git")
+        assert git is not None
+        shim = self.root / "bin"
+        shim.mkdir()
+        calls = self.root / "history-walks"
+        calls.touch()
+        wrapper = shim / "git"
+        wrapper.write_text(
+            "#!/bin/sh\n"
+            'for arg do case "$arg" in log|rev-list) '
+            f"echo walk >> {shlex.quote(str(calls))} ;; esac; done\n"
+            f'exec {shlex.quote(git)} "$@"\n',
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o755)
+        self._launch_server(
+            [
+                sys.executable,
+                "-m",
+                "html_publish",
+                "--config",
+                str(self.config),
+                "host",
+                "serve",
+                "--port",
+                str(self.port),
+            ],
+            {**os.environ, "PATH": f"{shim}{os.pathsep}{os.environ['PATH']}"},
+            "127.0.0.1",
+            self.port,
+        )
+        status, body = self._catalogue()
+        self.assertEqual(status, 200)
+        self.assertEqual(body.count("data-publication="), 4)
+        self.assertLessEqual(len(calls.read_text().splitlines()), 2)
 
     def test_catalogue_tracks_update_restore_and_archived_inventory(self) -> None:
         self._start_server()
