@@ -1279,7 +1279,7 @@ elif "restart" in arguments and os.environ.get("HP_SYSTEMCTL_RESTART_FAILURES"):
     attempts += 1
     counter.write_text(str(attempts), encoding="utf-8")
     if attempts <= int(os.environ["HP_SYSTEMCTL_RESTART_FAILURES"]):
-        print("fixture restart failure", file=sys.stderr)
+        print(f"fixture restart failure attempt {attempts}", file=sys.stderr)
         raise SystemExit(1)
 """
 )
@@ -1300,6 +1300,9 @@ elif arguments[:1] == ["export"]:
         "fixture==1\\n", encoding="utf-8"
     )
 elif arguments[:1] == ["venv"]:
+    release_log = Path(os.environ["HP_UV_RELEASE_LOG"])
+    with release_log.open("a", encoding="utf-8") as stream:
+        stream.write(str(Path(arguments[-1]).parent) + "\\n")
     binary = Path(arguments[-1]) / "bin"
     binary.mkdir(parents=True, exist_ok=True)
     interpreter = binary / "python"
@@ -1480,6 +1483,7 @@ class DeployContractTest(unittest.TestCase):
             + "\n"
         ).encode()
         self.unit_bytes = b"pre-existing fixture unit bytes\n"
+        self.release_log = self.root / "release-paths"
 
     def deploy(
         self, *arguments: str, env: Mapping[str, str] | None = None
@@ -1510,34 +1514,85 @@ class DeployContractTest(unittest.TestCase):
 
         (self.root / "publisher.json").write_bytes(self.config_bytes)
         (self.root / "html-publish.service").write_bytes(self.unit_bytes)
-        pointers = (os.readlink(self.state / "current"), os.readlink(self.state / "previous"))
-        counter = self.root / "restart-attempts"
-        failed = self.deploy_executable(
+        original_pointers = (
+            os.readlink(self.state / "current"),
+            os.readlink(self.state / "previous"),
+        )
+        original_releases = set((self.state / "app-releases").iterdir())
+        bootstrap_counter = self.root / "bootstrap-restart-attempts"
+        bootstrap = self.deploy_executable(
             "install",
             "--source",
             str(ROOT),
             env={
                 "HP_WHEEL_CONTENT": "candidate release",
-                "HP_SYSTEMCTL_RESTART_FAILURES": "2",
-                "HP_SYSTEMCTL_RESTART_COUNTER": str(counter),
+                "HP_SYSTEMCTL_RESTART_FAILURES": "1",
+                "HP_SYSTEMCTL_RESTART_COUNTER": str(bootstrap_counter),
+                "HP_UV_RELEASE_LOG": str(self.release_log),
             },
         )
-
-        self.assertEqual(failed.returncode, 1, failed.stdout + failed.stderr)
-        self.assertEqual(failed.stdout, "")
-        report = json_object(failed.stderr)
-        error = str(report["error"])
-        self.assertEqual((report["operation"], report["outcome"]), ("install", "error"))
-        self.assertIn("systemctl --user restart html-publish.service", error)
-        self.assertIn("recovery errors: service state:", error)
-        self.assertIn("fixture restart failure", error)
-        self.assertEqual(counter.read_text(encoding="utf-8"), "2")
+        self.assertEqual(bootstrap.returncode, 1, bootstrap.stdout + bootstrap.stderr)
+        bootstrap_error = str(json_object(bootstrap.stderr)["error"])
+        self.assertIn("fixture restart failure attempt 1", bootstrap_error)
+        self.assertNotIn("recovery errors:", bootstrap_error)
+        self.assertEqual(bootstrap_counter.read_text(encoding="utf-8"), "2")
         self.assertEqual(
             (os.readlink(self.state / "current"), os.readlink(self.state / "previous")),
-            pointers,
+            original_pointers,
         )
-        self.assertEqual((self.root / "publisher.json").read_bytes(), self.config_bytes)
-        self.assertEqual((self.root / "html-publish.service").read_bytes(), self.unit_bytes)
+
+        created_releases = set((self.state / "app-releases").iterdir()) - original_releases
+        self.assertEqual(len(created_releases), 1)
+        candidate_release = created_releases.pop()
+        self.assertEqual(
+            self.release_log.read_text(encoding="utf-8").splitlines(),
+            [str(candidate_release)],
+        )
+        self.assertTrue((candidate_release / ".ready").is_file())
+
+        for scenario, current_release in (
+            ("changed-release", self.state / "app-releases" / "sha256-a"),
+            ("same-wheel", candidate_release),
+        ):
+            with self.subTest(scenario=scenario):
+                current = self.state / "current"
+                previous = self.state / "previous"
+                current.unlink()
+                current.symlink_to(current_release)
+                previous.unlink()
+                previous.symlink_to(self.state / "app-releases" / "sha256-b")
+                (self.root / "publisher.json").write_bytes(self.config_bytes)
+                (self.root / "html-publish.service").write_bytes(self.unit_bytes)
+                pointers = (os.readlink(current), os.readlink(previous))
+                counter = self.root / f"{scenario}-restart-attempts"
+                failed = self.deploy_executable(
+                    "install",
+                    "--source",
+                    str(ROOT),
+                    env={
+                        "HP_WHEEL_CONTENT": "candidate release",
+                        "HP_SYSTEMCTL_RESTART_FAILURES": "2",
+                        "HP_SYSTEMCTL_RESTART_COUNTER": str(counter),
+                    },
+                )
+
+                self.assertEqual(failed.returncode, 1, failed.stdout + failed.stderr)
+                self.assertEqual(failed.stdout, "")
+                report = json_object(failed.stderr)
+                error = str(report["error"])
+                self.assertEqual((report["operation"], report["outcome"]), ("install", "error"))
+                self.assertIn("systemctl --user restart html-publish.service", error)
+                activation_failure = error.index("fixture restart failure attempt 1")
+                recovery = error.index("recovery errors:")
+                service_state = error.index("service state:")
+                recovery_failure = error.index("fixture restart failure attempt 2")
+                self.assertLess(activation_failure, recovery, error)
+                self.assertLess(recovery, service_state, error)
+                self.assertLess(service_state, recovery_failure, error)
+                self.assertEqual(counter.read_text(encoding="utf-8"), "2")
+                self.assertEqual((os.readlink(current), os.readlink(previous)), pointers)
+                self.assertEqual((self.root / "publisher.json").read_bytes(), self.config_bytes)
+                self.assertEqual((self.root / "html-publish.service").read_bytes(), self.unit_bytes)
 
     def test_deploy_exit_codes(self) -> None:
         planned = self.deploy("install", "--source", str(ROOT), "-n")

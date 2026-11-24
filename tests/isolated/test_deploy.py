@@ -1,7 +1,8 @@
 """Deployment install, rollback, and health against a simulated om1 host.
 
-FakeRunner stands in for uv, systemctl, and tailscale, so these failure paths run
-without touching a real host. No E2E test reaches them.
+FakeRunner stands in for uv, systemctl, and tailscale in the remaining isolated
+failure paths. F16 recovery diagnostics are covered at the executable boundary
+in tests/e2e/test_cli_contract.py.
 
 Failure modes:
 F1: deploy: reinstalling the same checkout creates a release or rewrites config, unit, or route
