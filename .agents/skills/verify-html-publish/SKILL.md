@@ -128,6 +128,7 @@ SSH fixture does not prove an authenticated external route.
 - [Status observation](features/status-observation.md)
 - [Verification](features/verification.md)
 - [Byte ranges](features/byte-ranges.md)
+- [Private catalogue](features/catalogue.md)
 - [History and restore](features/history-and-restore.md)
 - [Host diagnostics](features/host-diagnostics.md)
 - [Artifact receipts](features/artifact-receipts.md)

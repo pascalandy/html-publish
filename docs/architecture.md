@@ -139,6 +139,7 @@ class Verification:
 | `remote.py` | Private raw-source upload, bounded SSH execution, host-result correlation, and attempt staging cleanup |
 | `receipt.py` | Caller binding, frozen publish or restore intent, accepted output and record revisions, observation, local lock, and saved-result recovery |
 | `server.py` | Read-only HTTP delivery of selected files and single byte ranges, without publication mutations |
+| `catalogue.py` | Bounded metadata parsing and escaped semantic HTML for the private catalogue |
 | `host.py` | Linux service setup, its ownership record, systemd observations, loopback health, and owned-service inspection |
 | `host_route.py` | Route ownership record, route decisions, apply checks, pending retries, and effects |
 | `tailscale.py` | Bounded node and Serve reads, wire-format parsing, and scoped Serve path mutation |
@@ -146,6 +147,16 @@ class Verification:
 `_git.py` is a private mechanism shared by capture and storage. It owns the one sanitized Git invocation policy and exposes no publication decisions
 
 `PublicationStore` is the only archive and publication mutation owner. `markdown.py` is pure preparation: it runs after `artifact.py` freezes source bytes and before the store acquires its process lock. A render error therefore cannot alter the branch, releases, or selected symlink. The caller cannot archive without selection checks or activate before archive persistence. `restore` reads the exact `site/` and associated `record/` trees from committed blobs and enters the same guarded transaction as `publish`; it never rerenders historical source.
+
+With a validated publisher config, both `host serve` and the managed
+`html-publish-server --directory` can add the read-only `/_catalogue/` HTTP view, but only when the
+actual bound listener address is numeric loopback. A wildcard or non-loopback listener keeps its
+existing static-file behavior and does not expose the catalogue or read its archive. On loopback,
+each catalogue request projects reachable Git history with the current public selection; it writes
+no archive data, generated page, or sidecar index. The view uses only metadata attached to the
+selected or archived revision and does not fetch source links. It inherits the configured private
+Serve route and is not a general API or a file under `runtime/public/`. An unconfigured standalone
+server keeps its file-only behavior.
 
 The remote helper uses the same six-command JSON contract and the CLI's serializer. Markdown sends
 the frozen raw source and assets to the host, which renders them before entering its store lock.

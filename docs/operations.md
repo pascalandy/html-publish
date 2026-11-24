@@ -77,6 +77,36 @@ The [reviewed dotfiles installer](https://github.com/pascalandy/dotfiles/blob/e8
 
 The deployment module builds a wheel on `om1` and exports the locked runtime requirements from `uv.lock`. It installs both in a content-addressed virtual environment. The release ID hashes the wheel and requirements bytes. The module writes the publisher configuration and user unit, starts the service, installs the Tailscale route, and runs health checks. Repeating the command with the same wheel and requirements reports `unchanged`. A changed wheel or a lockfile-only change to the exported requirements creates and activates a new application release. `just deploy-om1` remains a repository convenience command without the dotfiles entrypoint's machine and revision checks
 
+The systemd unit keeps the backward-compatible `python -m html_publish.server --directory <public>`
+command and passes the nonsecret publisher-config path through
+`HTML_PUBLISH_PUBLISHER_CONFIG`. Older wheels ignore that environment variable and continue to
+serve stable files with the same command. A new wheel enables the catalogue only when the config
+loads, its runtime matches the exact served public directory, and the actual bound listener address
+is loopback. `html-publish --config <publisher.json> host serve` also enables the catalogue on an
+actual loopback listener. If the managed config is invalid or mismatched on loopback, static pages
+continue from the explicit directory and `/_catalogue/` returns a generic 503 without probing
+another archive. On a wildcard or non-loopback listener, static serving stays unchanged, the
+catalogue route returns 404, and no catalogue archive is read. With the environment variable absent,
+standalone file-only behavior remains unchanged and the route returns 404. The catalogue is available
+at `<base_url>_catalogue/`, for example `https://publisher.example/pages/_catalogue/`. It reads Git
+history and selection on each request; it needs no archive migration.
+
+Before upgrading this route, run the existing manual on-`main` Checks procedure above against the
+exact candidate SHA. Install only that checked SHA with the authorized `html-publish-install`
+entrypoint. Keep the existing private Tailscale Serve mapping and its user/device ACL. Do not add
+Funnel or another public ingress. Confirm the mapping has no unexpected handlers and no Funnel
+entry. An authenticated second tailnet client must be allowed by the ACL.
+
+After the service restarts, check loopback health at
+`http://127.0.0.1:4177/_html-publish-health`. Also request an existing publication and the
+catalogue through loopback at `http://127.0.0.1:4177/<name>/` and
+`http://127.0.0.1:4177/_catalogue/`. From the authenticated second tailnet client, request the
+same existing canonical publication URL and `<base_url>_catalogue/`. If any check fails, use the
+existing [application rollback](#application-rollback) procedure to restore the previous wheel.
+After rollback, recheck loopback health and existing stable publication URLs. A previous wheel
+without catalogue support may correctly return 404 for `<base_url>_catalogue/`; compare rollback
+health with that previous wheel's capabilities. Do not change the archive or publication URLs.
+
 To preview an install without changing anything, run the preflight alone from the checkout. The JSON result reports `outcome` `planned`, `release` `null`, and whether install would write the configuration or create the route. Add `-v` to print each step on stderr, or `--debug` to add every command with its timing
 
 ```sh

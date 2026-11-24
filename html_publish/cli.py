@@ -709,10 +709,16 @@ def _parser(json_version: bool = False) -> Parser:
             "html-publish --config publisher.json host serve --port 4177",
             "html-publish host serve --bind 127.0.0.1 --port 8080",
         ),
-        effects=("reads runtime/public", "binds to loopback by default"),
+        effects=(
+            "reads runtime/public",
+            "binds to loopback by default",
+            "serves the private catalogue only on a loopback listener",
+        ),
     )
     serve_command.add_argument(
-        "--bind", default="127.0.0.1", help="listen address (non-loopback exposes HTTP)"
+        "--bind",
+        default="127.0.0.1",
+        help="listen address; non-loopback listeners serve files without the catalogue",
     )
     serve_command.add_argument(
         "--port",
@@ -1756,7 +1762,9 @@ def _main(arguments: list[str]) -> int:
                 if parsed.host_action == "serve":
                     try:
                         return serve(
-                            ServerConfig(config.runtime / "public", parsed.bind, parsed.port)
+                            ServerConfig(
+                                config.runtime / "public", parsed.bind, parsed.port, config
+                            )
                         )
                     except BindError as error:
                         failure = Failure("bind_failed", "serve", str(error), "choose_port")

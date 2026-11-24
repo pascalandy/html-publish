@@ -27,6 +27,7 @@ F20: deploy: recovery removes a route that another owner replaced after install 
 F21: deploy: a command descendant outlives its deadline or its parent's normal exit
 F22: deploy: SIGTERM stops the deploy executable but leaves its command or descendant running
 F23: deploy: cancellation skips install or rollback recovery or leaves the signal handlers replaced
+F24: deploy: systemd expands or splits a configured ExecStart path containing special characters
 """
 
 from __future__ import annotations
@@ -185,9 +186,9 @@ class DeploymentTest(unittest.TestCase):
             * 2,
         )
         unit = self.layout.unit.read_text(encoding="utf-8")
-        self.assertIn("-m html_publish.server --port 4177 --bind 127.0.0.1", unit)
-        self.assertIn(f"--directory {self.layout.runtime / 'public'}", unit)
-        self.assertNotIn("-m http.server", unit)
+        self.assertIn("-m html_publish.server --directory", unit)
+        self.assertIn(f'"{self.layout.runtime / "public"}" --port 4177 --bind 127.0.0.1', unit)
+        self.assertIn(f'Environment="HTML_PUBLISH_PUBLISHER_CONFIG={self.layout.config}"', unit)
         first_build = next(
             index for index, call in enumerate(self.runner.calls) if call[:2] == ("uv", "build")
         )
@@ -199,6 +200,28 @@ class DeploymentTest(unittest.TestCase):
         first_serve_write = self.runner.calls.index(serve_writes[0])
         self.assertLess(first_build, first_restart)
         self.assertLess(first_restart, first_serve_write)
+
+    def test_unit_quotes_systemd_sensitive_execstart_paths(self) -> None:
+        """Proves F24."""
+        special_root = self.root / "space % and $value"
+        layout = Layout(
+            special_root / "state",
+            special_root / "config files %" / "publisher.json",
+            special_root / "unit files" / "html-publish.service",
+        )
+
+        install(layout, self.source, self.runner, successful_probe)
+
+        unit = layout.unit.read_text(encoding="utf-8")
+        python = layout.current / ".venv" / "bin" / "python"
+        expected_python = str(python).replace("%", "%%").replace("$", "$$")
+        expected_config = str(layout.config).replace("%", "%%").replace("$", "$$")
+        expected_public = str(layout.runtime / "public").replace("%", "%%").replace("$", "$$")
+        self.assertIn(f'"{expected_python}"', unit)
+        self.assertIn("-m html_publish.server --directory", unit)
+        self.assertIn(f'"{expected_public}" --port 4177 --bind 127.0.0.1', unit)
+        self.assertIn(f'Environment="HTML_PUBLISH_PUBLISHER_CONFIG={expected_config}"', unit)
+        self.assertNotIn("host serve", unit)
 
     def test_upgrade_preserves_publication_state_and_existing_config(self) -> None:
         """Proves F2."""

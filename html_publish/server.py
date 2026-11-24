@@ -4,6 +4,7 @@ import argparse
 import functools
 import http.server
 import io
+import ipaddress
 import logging
 import os
 import re
@@ -19,8 +20,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
 from typing import TYPE_CHECKING, BinaryIO, NoReturn, cast
+from urllib.parse import parse_qs
 
 from html_publish import __version__, command_line
+from html_publish.model import Config, Deadline, PublishError
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
@@ -28,8 +31,22 @@ if TYPE_CHECKING:
 log = logging.getLogger("html_publish.server")
 _HEALTH_PATH = "/_html-publish-health"
 _HEALTH_BODY = b"ok\n"
+_PUBLISHER_CONFIG_ENV = "HTML_PUBLISH_PUBLISHER_CONFIG"
 _INDEX_PAGES = ("index.html", "index.htm")
 _SINGLE_BYTE_RANGE = re.compile(r"bytes=(?:([0-9]+)-([0-9]*)|-([0-9]+))", re.IGNORECASE)
+
+
+def _is_loopback_address(server_address: object) -> bool:
+    """Classify the numeric address reported by an already-bound listener."""
+    if not isinstance(server_address, tuple) or not server_address:
+        return False
+    host = cast(tuple[object, ...], server_address)[0]
+    if not isinstance(host, str):
+        return False
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 @dataclass(frozen=True)
@@ -37,6 +54,8 @@ class ServerConfig:
     directory: Path
     bind: str
     port: int
+    publisher: Config | None = None
+    catalogue_unavailable: bool = False
 
 
 class PublicationHTTPServer(http.server.ThreadingHTTPServer):
@@ -57,8 +76,12 @@ class PublicationRequestHandler(http.server.SimpleHTTPRequestHandler):
         server: socketserver.BaseServer,
         *,
         directory: str,
+        publisher: Config | None = None,
+        catalogue_unavailable: bool = False,
     ) -> None:
         self.root = Path(directory)
+        self.publisher = publisher
+        self.catalogue_unavailable = catalogue_unavailable
         super().__init__(request, client_address, server, directory=str(self.root))
 
     def end_headers(self) -> None:
@@ -76,6 +99,62 @@ class PublicationRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.send_header("Content-Length", str(len(_HEALTH_BODY)))
             self.end_headers()
             return io.BytesIO(_HEALTH_BODY)
+
+        raw_path, query_separator, raw_query = self.path.partition("?")
+        catalogue_path = raw_path in {"/_catalogue", "/_catalogue/"}
+        catalogue_on_listener = catalogue_path and _is_loopback_address(self.server.server_address)
+        if catalogue_on_listener and self.catalogue_unavailable:
+            return self._catalogue_error(503)
+        if catalogue_on_listener and self.publisher is not None:
+            if len(self.path) > 4096:
+                return self._catalogue_error(400)
+            if any(
+                ord(character) < 32 or 0x7F <= ord(character) <= 0x9F for character in raw_query
+            ):
+                return self._catalogue_error(400)
+            if re.search(r"%(?![0-9a-fA-F]{2})", raw_query):
+                return self._catalogue_error(400)
+            if raw_path == "/_catalogue":
+                location = "_catalogue/" + (f"?{raw_query}" if query_separator else "")
+                return self._catalogue_response(
+                    301,
+                    b"",
+                    "text/plain; charset=utf-8",
+                    location=location,
+                )
+            try:
+                parsed = parse_qs(
+                    raw_query,
+                    keep_blank_values=False,
+                    strict_parsing=True,
+                    max_num_fields=10,
+                    encoding="utf-8",
+                    errors="strict",
+                )
+                allowed = {"q", "type", "topic", "project", "state"}
+                if any(key not in allowed or len(values) != 1 for key, values in parsed.items()):
+                    raise ValueError("invalid catalogue query")
+                query = {key: values[0] for key, values in parsed.items()}
+                if any(
+                    len(value) > 160
+                    or any(
+                        ord(character) < 32 or 0x7F <= ord(character) <= 0x9F for character in value
+                    )
+                    for value in query.values()
+                ):
+                    raise ValueError("catalogue query is too long")
+            except (UnicodeError, ValueError):
+                return self._catalogue_error(400)
+            try:
+                from html_publish.catalogue import render_catalogue
+                from html_publish.store import PublicationStore
+
+                deadline = Deadline.start(min(20.0, self.publisher.limits.command_seconds))
+                entries = PublicationStore(self.publisher, deadline).catalogue()
+                body = render_catalogue(entries, query)
+            except (OSError, PublishError, UnicodeError, ValueError):
+                return self._catalogue_error(503)
+            return self._catalogue_response(200, body, "text/html; charset=utf-8")
 
         if not self._path_is_publishable():
             self.send_error(404, "File not found")
@@ -102,6 +181,34 @@ class PublicationRequestHandler(http.server.SimpleHTTPRequestHandler):
         except BaseException:
             file.close()
             raise
+
+    def _catalogue_response(
+        self,
+        status: int,
+        body: bytes,
+        content_type: str,
+        *,
+        location: str | None = None,
+    ) -> io.BytesIO:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Robots-Tag", "noindex, nofollow, noarchive")
+        self.send_header("Referrer-Policy", "no-referrer")
+        if location is not None:
+            self.send_header("Location", location)
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; "
+            "form-action 'self'; "
+            "base-uri 'none'; frame-ancestors 'none'",
+        )
+        self.end_headers()
+        return io.BytesIO(body)
+
+    def _catalogue_error(self, status: int) -> io.BytesIO:
+        body = b"Catalogue indisponible.\n" if status == 503 else b"Requete invalide.\n"
+        return self._catalogue_response(status, body, "text/plain; charset=utf-8")
 
     def _send_file(self, file: BinaryIO, content_type: str) -> BinaryIO | None:
         metadata = os.fstat(file.fileno())
@@ -291,7 +398,11 @@ def _parser() -> Parser:
         type=_directory,
         help="publisher runtime/public directory to serve",
     )
-    parser.add_argument("--bind", default="127.0.0.1", help="listen address (default: %(default)s)")
+    parser.add_argument(
+        "--bind",
+        default="127.0.0.1",
+        help="listen address; non-loopback listeners serve files without the catalogue",
+    )
     parser.add_argument(
         "--port",
         default=8000,
@@ -321,8 +432,29 @@ def _server_config(arguments: argparse.Namespace, argv: Sequence[str]) -> Server
         verbose=arguments.verbose,
         debug=arguments.debug or command_line.debug_requested("html-publish-server", argv),
     )
+    directory = cast(Path, arguments.directory)
+    publisher = None
+    catalogue_unavailable = False
+    configured_path = os.environ.get(_PUBLISHER_CONFIG_ENV)
+    if configured_path:
+        from html_publish.cli import load_config
+
+        try:
+            publisher = load_config(Path(configured_path))
+            if (publisher.runtime / "public").resolve() != directory.resolve():
+                raise ValueError("managed publisher runtime does not match served directory")
+        except (OSError, PublishError, UnicodeError, ValueError, RecursionError, RuntimeError):
+            log.warning(
+                "managed catalogue config unavailable or mismatched; static serving remains enabled"
+            )
+            publisher = None
+            catalogue_unavailable = True
     return ServerConfig(
-        cast(Path, arguments.directory), cast(str, arguments.bind), cast(int, arguments.port)
+        directory,
+        cast(str, arguments.bind),
+        cast(int, arguments.port),
+        publisher,
+        catalogue_unavailable,
     )
 
 
@@ -332,7 +464,12 @@ class BindError(Exception):
 
 def serve(config: ServerConfig) -> int:
     """Serve until SIGINT or SIGTERM, close the socket, then die from that signal."""
-    handler = functools.partial(PublicationRequestHandler, directory=str(config.directory))
+    handler = functools.partial(
+        PublicationRequestHandler,
+        directory=str(config.directory),
+        publisher=config.publisher,
+        catalogue_unavailable=config.catalogue_unavailable,
+    )
     try:
         server = PublicationHTTPServer((config.bind, config.port), handler)
     except OSError as error:

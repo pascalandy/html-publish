@@ -25,8 +25,9 @@ changes one owned Tailscale Serve path and records the result.
 
 Preconditions:
 
-- Use an isolated installed wheel. The host instance script still launches the legacy server, so
-  the installed host command receives its own process in `tests.e2e.test_host`.
+- Use an isolated installed wheel. The verification instance launches configured `host serve`;
+  the managed standalone `html-publish-server --directory` environment mode is covered separately
+  by the catalogue end-to-end test.
 - Keep the service proof on a dedicated Ubuntu runner account. Do not run it on `om1`.
 
 - **Foreground, service preview, route preview, and route apply.** Run
@@ -65,7 +66,8 @@ Preconditions:
 
 ## Gotchas
 
-- The existing verification instance owns `html-publish-server`, not the new `host serve` process.
+- The verification instance owns configured `host serve`. This does not by itself exercise the
+  generated managed standalone invocation.
 - Route preview and apply JSONL are controlled evidence even though they run the installed wheel.
   Fake systemctl and Tailscale responses cannot be reported as real service or private HTTPS proof
 - A matching unowned resource is a collision, not permission to adopt it.
