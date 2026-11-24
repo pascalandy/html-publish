@@ -24,7 +24,7 @@ class CatalogueListenerBindingTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="html-publish-listener-")
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.public = self.root / "runtime" / "public"
         page = self.public / "witness" / "index.html"
         page.parent.mkdir(parents=True)
