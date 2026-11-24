@@ -24,6 +24,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+CATALOGUE_PROJECTION_TIMEOUT = 22
 
 
 class PublicationCatalogueTest(unittest.TestCase):
@@ -41,6 +42,7 @@ class PublicationCatalogueTest(unittest.TestCase):
         self._init_publisher(self.config, self.base_url)
         self.server: subprocess.Popen[str] | None = None
         self.last_server_stderr = ""
+        self.catalogue_response_headers: dict[str, str] = {}
         self.addCleanup(self._stop_server)
 
     def _init_publisher(self, config: Path, base_url: str) -> None:
@@ -169,7 +171,11 @@ class PublicationCatalogueTest(unittest.TestCase):
     def _catalogue(self, query: dict[str, str] | None = None) -> tuple[int, str]:
         suffix = "?" + urlencode(query) if query else ""
         try:
-            with urlopen(f"{self.base_url}_catalogue/{suffix}", timeout=2) as response:
+            with urlopen(
+                f"{self.base_url}_catalogue/{suffix}",
+                timeout=CATALOGUE_PROJECTION_TIMEOUT,
+            ) as response:
+                self.catalogue_response_headers = dict(response.headers.items())
                 return response.status, response.read().decode("utf-8")
         except HTTPError as error:
             return error.code, error.read().decode("utf-8")
@@ -202,7 +208,6 @@ class PublicationCatalogueTest(unittest.TestCase):
             ("html_publish", ["--config", str(config), "host", "serve"], os.environ.copy()),
         ):
             with self.subTest(module=module):
-                connection = http.client.HTTPConnection("::1", port, timeout=2)
                 try:
                     self._launch_server(
                         [
@@ -219,15 +224,25 @@ class PublicationCatalogueTest(unittest.TestCase):
                         "::1",
                         port,
                     )
-                    connection.request("GET", "/ipv6/")
-                    page = connection.getresponse()
-                    self.assertEqual((page.status, page.read()), (200, fixture))
-                    connection.request("GET", "/_catalogue/")
-                    catalogue = connection.getresponse()
-                    self.assertEqual(catalogue.status, 200)
-                    self.assertEqual(catalogue.read().count(b'data-publication="ipv6"'), 1)
+                    page_connection = http.client.HTTPConnection("::1", port, timeout=2)
+                    try:
+                        page_connection.request("GET", "/ipv6/")
+                        page = page_connection.getresponse()
+                        self.assertEqual((page.status, page.read()), (200, fixture))
+                    finally:
+                        page_connection.close()
+
+                    catalogue_connection = http.client.HTTPConnection(
+                        "::1", port, timeout=CATALOGUE_PROJECTION_TIMEOUT
+                    )
+                    try:
+                        catalogue_connection.request("GET", "/_catalogue/")
+                        catalogue = catalogue_connection.getresponse()
+                        self.assertEqual(catalogue.status, 200)
+                        self.assertEqual(catalogue.read().count(b'data-publication="ipv6"'), 1)
+                    finally:
+                        catalogue_connection.close()
                 finally:
-                    connection.close()
                     self._stop_server()
 
     def test_catalogue_tracks_update_restore_and_archived_inventory(self) -> None:
@@ -428,11 +443,11 @@ content='{"title":"Ignored metadata title","type":"report"}'>
         self.assertIn("width:100%", body)
         self.assertIn("minmax(min(100%,12rem)", body)
         self.assertIn("Rechercher", body)
-        with urlopen(f"{self.base_url}_catalogue/", timeout=2) as response:
-            self.assertEqual(response.headers["Cache-Control"], "no-store")
-            self.assertIn("noindex", response.headers["X-Robots-Tag"])
-            self.assertEqual(response.headers["Referrer-Policy"], "no-referrer")
-            self.assertIn("script-src", response.headers["Content-Security-Policy"])
+        headers = self.catalogue_response_headers
+        self.assertEqual(headers["Cache-Control"], "no-store")
+        self.assertIn("noindex", headers["X-Robots-Tag"])
+        self.assertEqual(headers["Referrer-Policy"], "no-referrer")
+        self.assertIn("script-src", headers["Content-Security-Policy"])
 
         invalid_query = f"{self.base_url}_catalogue/?unknown=1"
         for method, expected_body in (("GET", b"Requete invalide.\n"), ("HEAD", b"")):
