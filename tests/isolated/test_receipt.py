@@ -769,18 +769,21 @@ class HelperCliTest(ReceiptFixture):
                 escaped_fixture_root, "<fixture>"
             )
 
-        diagnostic = (
+        raw_diagnostic = (
             f"elapsed_seconds={elapsed:.3f} returncode={result.returncode}\n"
-            f"stdout:\n{redact_fixture_path(result.stdout)}\n"
-            f"stderr:\n{redact_fixture_path(result.stderr)}"
+            f"stdout:\n{result.stdout}\n"
+            f"stderr:\n{result.stderr}"
         )
+        diagnostic = redact_fixture_path(raw_diagnostic)
         self.assertLess(elapsed, 1.0, diagnostic)
         self.assertEqual(result.returncode, 1, diagnostic)
 
         try:
             payload = json.loads(result.stdout)
         except json.JSONDecodeError as exc:
-            self.fail(f"publisher stdout is not valid JSON: {exc}\n{diagnostic}")
+            self.fail(
+                redact_fixture_path(f"publisher stdout is not valid JSON: {exc}\n{raw_diagnostic}")
+            )
         self.assertIsInstance(payload, dict, diagnostic)
         payload = cast(dict[str, object], payload)
         self.assertEqual(payload.get("outcome"), "uncertain", diagnostic)
