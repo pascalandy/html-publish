@@ -784,9 +784,27 @@ class HelperCliTest(ReceiptFixture):
             self.fail(
                 redact_fixture_path(f"publisher stdout is not valid JSON: {exc}\n{raw_diagnostic}")
             )
-        self.assertIsInstance(payload, dict, diagnostic)
+        if not isinstance(payload, dict):
+            self.fail(
+                redact_fixture_path(
+                    f"publisher stdout JSON must be an object; got {type(payload).__name__}\n"
+                    f"{raw_diagnostic}"
+                )
+            )
         payload = cast(dict[str, object], payload)
-        self.assertEqual(payload.get("outcome"), "uncertain", diagnostic)
+        outcome = payload.get("outcome")
+        if outcome != "uncertain":
+            observed_outcome = (
+                redact_fixture_path(repr(outcome))
+                if isinstance(outcome, str)
+                else f"<{type(outcome).__name__}>"
+            )
+            self.fail(
+                redact_fixture_path(
+                    f"publisher outcome must be 'uncertain'; got {type(outcome).__name__} "
+                    f"{observed_outcome}\n{raw_diagnostic}"
+                )
+            )
         self.assertIsNone(cast(dict[str, object], payload["publisher"])["group_stopped"])
         self.assertIsNotNone(self.receipt(Path(str(source) + ".publish"))["pending"])
         self.assertFalse(marker.exists())
