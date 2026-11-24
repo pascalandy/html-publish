@@ -761,46 +761,29 @@ class HelperCliTest(ReceiptFixture):
         elapsed = time.monotonic() - started
         time.sleep(1.5)
 
-        stream_diagnostic = json.dumps(
-            {
-                "elapsed_seconds": round(elapsed, 3),
-                "returncode": result.returncode,
-                "stdout": result.stdout,
-                "stderr": result.stderr,
-            },
-            sort_keys=True,
-        ).replace(str(self.root), "<fixture>")
-        self.assertLess(elapsed, 1.0, stream_diagnostic)
-        self.assertEqual(result.returncode, 1, stream_diagnostic)
+        fixture_root = str(self.root)
+        escaped_fixture_root = json.dumps(fixture_root)[1:-1]
 
-        payload = self.payload(result)
+        def redact_fixture_path(value: str) -> str:
+            return value.replace(fixture_root, "<fixture>").replace(
+                escaped_fixture_root, "<fixture>"
+            )
 
-        def selected_fields(value: object, keys: tuple[str, ...]) -> object:
-            if not isinstance(value, dict):
-                return value
-            details = cast(dict[str, object], value)
-            return {key: details.get(key) for key in keys}
-
-        error_details = selected_fields(
-            payload.get("error"), ("code", "phase", "message", "next_action")
+        diagnostic = (
+            f"elapsed_seconds={elapsed:.3f} returncode={result.returncode}\n"
+            f"stdout:\n{redact_fixture_path(result.stdout)}\n"
+            f"stderr:\n{redact_fixture_path(result.stderr)}"
         )
-        publisher_details = selected_fields(
-            payload.get("publisher"),
-            ("outcome", "exit_code", "group_stopped", "timed_out", "cancelled"),
-        )
-        diagnostic = json.dumps(
-            {
-                "elapsed_seconds": round(elapsed, 3),
-                "returncode": result.returncode,
-                "outcome": payload.get("outcome"),
-                "error": error_details,
-                "publisher": publisher_details,
-                "stdout": result.stdout,
-                "stderr": result.stderr,
-            },
-            sort_keys=True,
-        ).replace(str(self.root), "<fixture>")
-        self.assertEqual(payload["outcome"], "uncertain", diagnostic)
+        self.assertLess(elapsed, 1.0, diagnostic)
+        self.assertEqual(result.returncode, 1, diagnostic)
+
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            self.fail(f"publisher stdout is not valid JSON: {exc}\n{diagnostic}")
+        self.assertIsInstance(payload, dict, diagnostic)
+        payload = cast(dict[str, object], payload)
+        self.assertEqual(payload.get("outcome"), "uncertain", diagnostic)
         self.assertIsNone(cast(dict[str, object], payload["publisher"])["group_stopped"])
         self.assertIsNotNone(self.receipt(Path(str(source) + ".publish"))["pending"])
         self.assertFalse(marker.exists())
