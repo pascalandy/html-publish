@@ -380,6 +380,18 @@ While daily pushes succeed, up to one day of publications exists only on `om1`. 
 
 GitHub warns about files larger than 50 MiB and rejects files larger than 100 MiB. The archive already holds one file of about 51 MiB. The publisher's default `max_bytes` input limit is 100 MiB, so no captured file can exceed the GitHub limit. If you raise `max_bytes`, one larger file blocks every later push, because the archive history is never rewritten
 
+### Recover the editable source on another machine
+
+Start with the publication name and the private [GitHub backup on `published`](https://github.com/pascalandy/html-publish-archive/tree/published). Open the name's directory or check out that branch locally. The commit history lets you select an older version. Work from a single archive commit throughout recovery.
+
+- For a Markdown publication, recover the whole `<name>/record/source/` directory. Its sibling `provenance.json` identifies the entry, renderer profile and expected site revision. Use that renderer profile to rebuild the site.
+- For hand-authored HTML, recover the whole `<name>/site/` directory, including the relative assets and any additional pages.
+- For generated HTML, look for the catalogue's `source_url` in the archived entry's head. Follow it to the producer's repository and use its build instructions. If there is no source reference or build recipe, record the generator and inputs as missing. A successful site restore alone only verifies the delivered files.
+
+For a new generated page, commit the inputs, template, generator and its build instructions to the producer's repository before publication. Put a link to that directory **at the source commit** in the page's [catalogue metadata](contract.md#s13-private-publication-catalogue). Preserve any additional build inputs outside the publisher host, with the same access controls as their project. A link to a moving branch or an untracked local file cannot identify the version used.
+
+To check recovery, build from the backed-up sources in a new directory and compare the resulting site with `<name>/site/` at the selected archive commit. Then change one input in the disposable copy and verify that the expected part of the output changes. These checks can run while the publisher is offline.
+
 ### Restore from the backup
 
 A restore brings back each page's newest archived version. If an interrupted publication left a saved but inactive version, that version becomes live
