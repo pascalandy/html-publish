@@ -384,9 +384,15 @@ GitHub warns about files larger than 50 MiB and rejects files larger than 100 Mi
 
 Start with the publication name and the private [GitHub backup on `published`](https://github.com/pascalandy/html-publish-archive/tree/published). Open the name's directory or check out that branch locally. The commit history lets you select an older version. Work from a single archive commit throughout recovery.
 
-- For a Markdown publication, recover the whole `<name>/record/source/` directory. Its sibling `provenance.json` identifies the entry, renderer profile and expected site revision. Use that renderer profile to rebuild the site.
-- For hand-authored HTML, recover the whole `<name>/site/` directory, including the relative assets and any additional pages.
-- For generated HTML, look for the catalogue's `source_url` in the archived entry's head. Follow it to the producer's repository and use its build instructions. If there is no source reference or build recipe, record the generator and inputs as missing. A successful site restore alone only verifies the delivered files.
+1. Look for `<name>/record/source/`. For Markdown, recover that entire directory and inspect its sibling `provenance.json`. With a [disposable local publisher configuration](../html_publish/guides/core.md#configure-a-target), run the following against the recovered directory. Set `entry` to the path recorded in the provenance. Compare the returned `render_profile_id` and `requested_revision` with `render_profile_id` and `site_revision` in the provenance. If the profiles differ, use a publisher version with the recorded profile.
+
+   ```sh
+   html-publish --config publisher.json --json plan --name "$name" \
+     --source "$source_dir" --format markdown --entry "$entry" \
+     --target http://127.0.0.1:8000/
+   ```
+
+2. For HTML, look for the catalogue's `source_url` in the archived entry's head and look up the name in the private [source recovery register](https://github.com/pascalandy/html-publish-archive/tree/sources). Match the register's site revision to the version you selected. For a documented hand-authored site, recover the whole `<name>/site/` directory. For a generated site, use the producer's source commit, build inputs and recipe. If neither location identifies the inputs, record what is missing and leave reconstruction unverified.
 
 For a new generated page, commit the inputs, template, generator and its build instructions to the producer's repository before publication. Put a link to that directory **at the source commit** in the page's [catalogue metadata](contract.md#s13-private-publication-catalogue). Preserve any additional build inputs outside the publisher host, with the same access controls as their project. A link to a moving branch or an untracked local file cannot identify the version used.
 
