@@ -492,7 +492,10 @@ class HelperCliTest(ReceiptFixture):
                         if reported
                         else ""
                     )
-                    + f"Path({str(pid_file)!r}).write_text(str(os.getpid()))\n"
+                    + f"pid_file = Path({str(pid_file)!r})\n"
+                    + "pid_record = pid_file.with_name(pid_file.name + '.tmp')\n"
+                    + "pid_record.write_text(str(os.getpid()))\n"
+                    + "os.replace(pid_record, pid_file)\n"
                     + "time.sleep(0.8)\n"
                     + f"Path({str(marker)!r}).write_text('late effect')\n"
                     + "time.sleep(30)\n"
@@ -812,28 +815,141 @@ class HelperCliTest(ReceiptFixture):
     def test_timeout_terminates_descendant_process_group(self) -> None:
         """Proves F10."""
 
+        ready = self.root / "child-ready"
         marker = self.root / "child-finished"
-        pid_file = self.root / "child.pid"
-        self.fake.write_text(
-            "import subprocess, sys, time\n"
+        publisher_pid_file = self.root / "publisher.pid"
+        child_code = (
+            "import json, os, sys, time\n"
             "from pathlib import Path\n"
-            f"marker=Path({str(marker)!r})\n"
-            "child=subprocess.Popen([sys.executable, '-c', "
-            'f"import time; from pathlib import Path; time.sleep(0.5); '
-            "Path({str(marker)!r}).write_text('survived')\"])\n"
-            f"Path({str(pid_file)!r}).write_text(str(child.pid))\n"
-            "time.sleep(5)\n"
+            f"ready = Path({str(ready)!r})\n"
+            f"marker = Path({str(marker)!r})\n"
+            "parent = int(sys.argv[1])\n"
+            "if os.getppid() != parent: raise SystemExit('unexpected parent PID')\n"
+            "record = ready.with_name(ready.name + '.tmp')\n"
+            "record.write_text(json.dumps({'child_pid': os.getpid(), 'parent_pid': parent}))\n"
+            "os.replace(record, ready)\n"
+            "while os.getppid() == parent:\n"
+            "    time.sleep(0.005)\n"
+            "marker.write_text('survived')\n"
         )
-        self.write_config(command_seconds=0.1)
+        self.fake.write_text(
+            "import os, signal, subprocess, sys, time\n"
+            "from pathlib import Path\n"
+            f"ready = Path({str(ready)!r})\n"
+            f"Path({str(publisher_pid_file)!r}).write_text(str(os.getpid()))\n"
+            f"subprocess.Popen([sys.executable, '-c', {child_code!r}, str(os.getpid())])\n"
+            "deadline = time.monotonic() + 1.5\n"
+            "while not ready.exists() and time.monotonic() < deadline:\n"
+            "    time.sleep(0.005)\n"
+            "if not ready.exists(): raise SystemExit('child did not become ready')\n"
+            "signal.pause()\n"
+        )
+        self.write_config(command_seconds=2)
         source = self.root / "child.html"
         source.write_text("child")
 
-        result = self.run_helper("publish", str(source), "--new", "child-timeout")
-        time.sleep(0.65)
+        process = subprocess.Popen(
+            [
+                *PUBLISHER,
+                "--config",
+                str(self.config),
+                "artifact",
+                "publish",
+                str(source),
+                "--new",
+                "child-timeout",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            ready_deadline = time.monotonic() + 1.8
+            while not ready.exists() and process.poll() is None:
+                self.assertLess(
+                    time.monotonic(),
+                    ready_deadline,
+                    "fake publisher did not expose a ready child before the timeout",
+                )
+                time.sleep(0.005)
+            self.assertTrue(ready.exists(), "child readiness marker was not written")
+            ready_record = json.loads(ready.read_text())
+            self.assertIsInstance(ready_record, dict)
+            child_pid = ready_record["child_pid"]
+            publisher_pid = ready_record["parent_pid"]
+            self.assertIsInstance(child_pid, int)
+            self.assertIsInstance(publisher_pid, int)
+            self.assertEqual(publisher_pid_file.read_text(), str(publisher_pid))
 
-        self.assertEqual(result.returncode, 1)
-        self.assertTrue(pid_file.exists())
-        self.assertFalse(marker.exists())
+            def process_state(pid: int) -> str:
+                result = subprocess.run(
+                    ["ps", "-o", "stat=", "-p", str(pid)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=1,
+                )
+                self.assertIn(result.returncode, (0, 1), result.stderr)
+                states = result.stdout.split()
+                if not states:
+                    with self.assertRaises(ProcessLookupError):
+                        os.kill(pid, 0)
+                return states[0] if states else ""
+
+            os.kill(child_pid, signal.SIGSTOP)
+            stopped_deadline = time.monotonic() + 0.5
+            state = process_state(child_pid)
+            while state and not state.startswith("T") and time.monotonic() < stopped_deadline:
+                time.sleep(0.005)
+                state = process_state(child_pid)
+            self.assertTrue(state.startswith("T"), f"child did not stop; ps state={state!r}")
+
+            try:
+                stdout, stderr = process.communicate(timeout=8)
+            except subprocess.TimeoutExpired:
+                self.fail("publisher CLI exceeded the 8s test bound")
+            self.assertEqual(process.returncode, 1, stdout + stderr)
+            self.assertTrue(stdout, stderr)
+            payload = json.loads(stdout)
+            error = payload["error"]
+            publisher = payload["publisher"]
+            assert isinstance(error, dict) and isinstance(publisher, dict)
+            self.assertEqual(error["code"], "publisher_timeout", payload)
+            self.assertTrue(publisher["group_stopped"], payload)
+            receipt_state = self.receipt(Path(str(source) + ".publish"))
+            self.assertIsNotNone(receipt_state["pending"])
+            for process_name, owned_pid in (
+                ("publisher", publisher_pid),
+                ("descendant", child_pid),
+            ):
+                state = process_state(owned_pid)
+                self.assertFalse(
+                    state and state[0] not in "ZX",
+                    f"{process_name} process {owned_pid} remains alive before fixture cleanup; "
+                    f"ps state={state!r}",
+                )
+            self.assertFalse(marker.exists())
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            if publisher_pid_file.exists():
+                try:
+                    publisher_pid = int(publisher_pid_file.read_text())
+                except ValueError:
+                    publisher_pid = None
+                if publisher_pid is not None:
+                    with contextlib.suppress(ProcessLookupError, PermissionError):
+                        os.killpg(publisher_pid, signal.SIGKILL)
+            if ready.exists():
+                try:
+                    ready_record = json.loads(ready.read_text())
+                    child_pid = int(ready_record["child_pid"])
+                except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                    child_pid = None
+                if child_pid is not None:
+                    with contextlib.suppress(ProcessLookupError, PermissionError):
+                        os.kill(child_pid, signal.SIGKILL)
 
     def test_output_limit_stops_process_without_spooling_unbounded_bytes(self) -> None:
         """Proves F11."""
