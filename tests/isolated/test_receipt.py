@@ -761,10 +761,50 @@ class HelperCliTest(ReceiptFixture):
         elapsed = time.monotonic() - started
         time.sleep(1.5)
 
-        self.assertLess(elapsed, 1.0)
-        self.assertEqual(result.returncode, 1, result.stderr)
-        payload = self.payload(result)
-        self.assertEqual(payload["outcome"], "uncertain")
+        fixture_root = str(self.root)
+        escaped_fixture_root = json.dumps(fixture_root)[1:-1]
+
+        def redact_fixture_path(value: str) -> str:
+            return value.replace(fixture_root, "<fixture>").replace(
+                escaped_fixture_root, "<fixture>"
+            )
+
+        raw_diagnostic = (
+            f"elapsed_seconds={elapsed:.3f} returncode={result.returncode}\n"
+            f"stdout:\n{result.stdout}\n"
+            f"stderr:\n{result.stderr}"
+        )
+        diagnostic = redact_fixture_path(raw_diagnostic)
+        self.assertLess(elapsed, 1.0, diagnostic)
+        self.assertEqual(result.returncode, 1, diagnostic)
+
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            self.fail(
+                redact_fixture_path(f"publisher stdout is not valid JSON: {exc}\n{raw_diagnostic}")
+            )
+        if not isinstance(payload, dict):
+            self.fail(
+                redact_fixture_path(
+                    f"publisher stdout JSON must be an object; got {type(payload).__name__}\n"
+                    f"{raw_diagnostic}"
+                )
+            )
+        payload = cast(dict[str, object], payload)
+        outcome = payload.get("outcome")
+        if outcome != "uncertain":
+            observed_outcome = (
+                redact_fixture_path(repr(outcome))
+                if isinstance(outcome, str)
+                else f"<{type(outcome).__name__}>"
+            )
+            self.fail(
+                redact_fixture_path(
+                    f"publisher outcome must be 'uncertain'; got {type(outcome).__name__} "
+                    f"{observed_outcome}\n{raw_diagnostic}"
+                )
+            )
         self.assertIsNone(cast(dict[str, object], payload["publisher"])["group_stopped"])
         self.assertIsNotNone(self.receipt(Path(str(source) + ".publish"))["pending"])
         self.assertFalse(marker.exists())
