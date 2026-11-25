@@ -1273,8 +1273,52 @@ if "is-active" in arguments:
     print(os.environ.get("HP_SERVICE_STATE", "active"))
 elif "--property=UnitFileState" in arguments:
     print("enabled")
+elif "restart" in arguments and os.environ.get("HP_SYSTEMCTL_RESTART_FAILURES"):
+    counter = Path(os.environ["HP_SYSTEMCTL_RESTART_COUNTER"])
+    attempts = int(counter.read_text(encoding="utf-8")) if counter.exists() else 0
+    attempts += 1
+    counter.write_text(str(attempts), encoding="utf-8")
+    if attempts <= int(os.environ["HP_SYSTEMCTL_RESTART_FAILURES"]):
+        print(f"fixture restart failure attempt {attempts}", file=sys.stderr)
+        raise SystemExit(1)
 """
 )
+UV_SHIM = """\
+import os
+import sys
+from pathlib import Path
+
+arguments = sys.argv[1:]
+if arguments[:1] == ["build"]:
+    output = Path(arguments[arguments.index("--out-dir") + 1])
+    output.mkdir(parents=True, exist_ok=True)
+    (output / "html_publish-fixture.whl").write_bytes(
+        os.environ["HP_WHEEL_CONTENT"].encode()
+    )
+elif arguments[:1] == ["export"]:
+    Path(arguments[arguments.index("--output-file") + 1]).write_text(
+        "fixture==1\\n", encoding="utf-8"
+    )
+elif arguments[:1] == ["venv"]:
+    release_log = Path(os.environ["HP_UV_RELEASE_LOG"])
+    with release_log.open("a", encoding="utf-8") as stream:
+        stream.write(str(Path(arguments[-1]).parent) + "\\n")
+    binary = Path(arguments[-1]) / "bin"
+    binary.mkdir(parents=True, exist_ok=True)
+    interpreter = binary / "python"
+    interpreter.write_text(f"#!{sys.executable}\\nraise SystemExit(0)\\n", encoding="utf-8")
+    interpreter.chmod(0o755)
+elif arguments[:2] == ["pip", "install"]:
+    binary = Path(arguments[arguments.index("--python") + 1]).parent
+    for name in ("html-publish", "html-publish-deploy"):
+        executable = binary / name
+        executable.write_text(
+            f"#!{sys.executable}\\nraise SystemExit(0)\\n", encoding="utf-8"
+        )
+        executable.chmod(0o755)
+else:
+    raise SystemExit(f"unexpected uv fixture command: {arguments!r}")
+"""
 TAILSCALE_SHIM = """\
 import json
 
@@ -1380,13 +1424,17 @@ class ServerContractTest(PublisherFixture):
 
 
 class DeployContractTest(unittest.TestCase):
-    """html-publish-deploy against systemctl and tailscale shims and a closed proxy port."""
+    """html-publish-deploy against controlled uv, systemctl, and tailscale commands."""
 
     def setUp(self) -> None:
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="hp-deploy-")))
         shims = self.root / "shims"
         shims.mkdir()
-        for name, body in (("systemctl", SYSTEMCTL_SHIM), ("tailscale", TAILSCALE_SHIM)):
+        for name, body in (
+            ("systemctl", SYSTEMCTL_SHIM),
+            ("tailscale", TAILSCALE_SHIM),
+            ("uv", UV_SHIM),
+        ):
             (shims / name).write_text(f"#!{PYTHON}\n{body}", encoding="utf-8")
             (shims / name).chmod(0o755)
         self.state = self.root / "state"
@@ -1414,6 +1462,28 @@ class DeployContractTest(unittest.TestCase):
             "--unit",
             str(self.root / "html-publish.service"),
         ]
+        self.config_bytes = (
+            json.dumps(
+                {
+                    "archive": str(self.state / "archive.git"),
+                    "runtime": str(self.state / "runtime"),
+                    "base_url": "https://om1.donkey-arcturus.ts.net:8444/html-publish/",
+                    "allow_http": False,
+                    "object_format": "sha1",
+                    "limits": {
+                        "command_seconds": 120,
+                        "lock_seconds": 30,
+                        "verification_seconds": 60,
+                    },
+                    "fixture_marker": "preserve existing config bytes",
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode()
+        self.unit_bytes = b"pre-existing fixture unit bytes\n"
+        self.release_log = self.root / "release-paths"
 
     def deploy(
         self, *arguments: str, env: Mapping[str, str] | None = None
@@ -1426,6 +1496,103 @@ class DeployContractTest(unittest.TestCase):
             text=True,
             timeout=60,
         )
+
+    def deploy_executable(
+        self, *arguments: str, env: Mapping[str, str] | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [str(Path(PYTHON).with_name("html-publish-deploy")), *self.layout, *arguments],
+            cwd=self.root,
+            env={**self.env, **(env or {})},
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+    def test_failed_upgrade_reports_recovery_restart_failure_and_restores_owned_state(self) -> None:
+        """Proves F16: PR #22 recovery errors remain visible at the executable boundary."""
+
+        (self.root / "publisher.json").write_bytes(self.config_bytes)
+        (self.root / "html-publish.service").write_bytes(self.unit_bytes)
+        original_pointers = (
+            os.readlink(self.state / "current"),
+            os.readlink(self.state / "previous"),
+        )
+        original_releases = set((self.state / "app-releases").iterdir())
+        bootstrap_counter = self.root / "bootstrap-restart-attempts"
+        bootstrap = self.deploy_executable(
+            "install",
+            "--source",
+            str(ROOT),
+            env={
+                "HP_WHEEL_CONTENT": "candidate release",
+                "HP_SYSTEMCTL_RESTART_FAILURES": "1",
+                "HP_SYSTEMCTL_RESTART_COUNTER": str(bootstrap_counter),
+                "HP_UV_RELEASE_LOG": str(self.release_log),
+            },
+        )
+        self.assertEqual(bootstrap.returncode, 1, bootstrap.stdout + bootstrap.stderr)
+        bootstrap_error = str(json_object(bootstrap.stderr)["error"])
+        self.assertIn("fixture restart failure attempt 1", bootstrap_error)
+        self.assertNotIn("recovery errors:", bootstrap_error)
+        self.assertEqual(bootstrap_counter.read_text(encoding="utf-8"), "2")
+        self.assertEqual(
+            (os.readlink(self.state / "current"), os.readlink(self.state / "previous")),
+            original_pointers,
+        )
+
+        created_releases = set((self.state / "app-releases").iterdir()) - original_releases
+        self.assertEqual(len(created_releases), 1)
+        candidate_release = created_releases.pop()
+        self.assertEqual(
+            self.release_log.read_text(encoding="utf-8").splitlines(),
+            [str(candidate_release)],
+        )
+        self.assertTrue((candidate_release / ".ready").is_file())
+
+        for scenario, current_release in (
+            ("changed-release", self.state / "app-releases" / "sha256-a"),
+            ("same-wheel", candidate_release),
+        ):
+            with self.subTest(scenario=scenario):
+                current = self.state / "current"
+                previous = self.state / "previous"
+                current.unlink()
+                current.symlink_to(current_release)
+                previous.unlink()
+                previous.symlink_to(self.state / "app-releases" / "sha256-b")
+                (self.root / "publisher.json").write_bytes(self.config_bytes)
+                (self.root / "html-publish.service").write_bytes(self.unit_bytes)
+                pointers = (os.readlink(current), os.readlink(previous))
+                counter = self.root / f"{scenario}-restart-attempts"
+                failed = self.deploy_executable(
+                    "install",
+                    "--source",
+                    str(ROOT),
+                    env={
+                        "HP_WHEEL_CONTENT": "candidate release",
+                        "HP_SYSTEMCTL_RESTART_FAILURES": "2",
+                        "HP_SYSTEMCTL_RESTART_COUNTER": str(counter),
+                    },
+                )
+
+                self.assertEqual(failed.returncode, 1, failed.stdout + failed.stderr)
+                self.assertEqual(failed.stdout, "")
+                report = json_object(failed.stderr)
+                error = str(report["error"])
+                self.assertEqual((report["operation"], report["outcome"]), ("install", "error"))
+                self.assertIn("systemctl --user restart html-publish.service", error)
+                activation_failure = error.index("fixture restart failure attempt 1")
+                recovery = error.index("recovery errors:")
+                service_state = error.index("service state:")
+                recovery_failure = error.index("fixture restart failure attempt 2")
+                self.assertLess(activation_failure, recovery, error)
+                self.assertLess(recovery, service_state, error)
+                self.assertLess(service_state, recovery_failure, error)
+                self.assertEqual(counter.read_text(encoding="utf-8"), "2")
+                self.assertEqual((os.readlink(current), os.readlink(previous)), pointers)
+                self.assertEqual((self.root / "publisher.json").read_bytes(), self.config_bytes)
+                self.assertEqual((self.root / "html-publish.service").read_bytes(), self.unit_bytes)
 
     def test_deploy_exit_codes(self) -> None:
         planned = self.deploy("install", "--source", str(ROOT), "-n")

@@ -1,7 +1,8 @@
 """Deployment install, rollback, and health against a simulated om1 host.
 
-FakeRunner stands in for uv, systemctl, and tailscale, so these failure paths run
-without touching a real host. No E2E test reaches them.
+FakeRunner stands in for uv, systemctl, and tailscale in the remaining isolated
+failure paths. F16 recovery diagnostics are covered at the executable boundary
+in tests/e2e/test_cli_contract.py.
 
 Failure modes:
 F1: deploy: reinstalling the same checkout creates a release or rewrites config, unit, or route
@@ -19,7 +20,6 @@ F12: deploy: a failed first install removes state it does not own or deletes the
 F13: deploy: recovery from a failed upgrade enables a disabled service or loses publication data
 F14: deploy: a failure between the two pointer swaps leaves a mismatched pointer pair
 F15: deploy: recovery overwrites a unit file edited mid-install or hides the original error
-F16: deploy: a failed recovery restart is missing from the install error
 F17: deploy: a route removed during the build is ignored and the new release activates
 F18: deploy: a retry overwrites an incomplete release left by an earlier failure
 F19: deploy: the installed release depends on the source checkout and fails from another directory
@@ -513,16 +513,6 @@ class DeploymentTest(unittest.TestCase):
         self.assertIn("recovery errors", str(raised.exception))
         self.assertIn("Refusing to restore changed file", str(raised.exception))
         self.assertEqual(self.layout.unit.read_bytes(), b"someone else's unit")
-
-    def test_recovery_restart_error_is_not_suppressed(self) -> None:
-        """Proves F16."""
-
-        install(self.layout, self.source, self.runner, successful_probe)
-        self.runner.restart_failures = 2
-        with self.assertRaisesRegex(
-            DeployError, "restart failed; recovery errors: service state: systemctl restart failed"
-        ):
-            install(self.layout, self.source, self.runner, successful_probe)
 
     def test_route_removed_during_build_stops_before_activation(self) -> None:
         """Proves F17."""
